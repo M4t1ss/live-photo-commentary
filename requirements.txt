@@ -1,0 +1,11 @@
+librosa
+kokoro
+soundfile
+torch
+transformers
+IPython
+scipy
+numpy
+gradio
+bitsandbytes
+flash-attn
