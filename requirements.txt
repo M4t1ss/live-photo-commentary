@@ -9,3 +9,4 @@ numpy
 gradio
 bitsandbytes
 flash-attn
+google-genai
