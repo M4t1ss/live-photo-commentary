@@ -13,6 +13,7 @@ from .describer import (
     DEFAULT_PROMPT,
     DEFAULT_HISTORY_PROMPT,
     DEFAULT_COMPACT_PROMPT,
+    image_to_bytes,
 )
 
 
@@ -49,7 +50,8 @@ class GeminiDescriber(Describer):
 
         # Create the prompt with text and multiple images (if appropriate)
         contents: genai_types.ContentListUnion = [
-            genai_types.Part.from_bytes(data=image, mime_type='image/png') for image in images
+            genai_types.Part.from_bytes(data=image_to_bytes(image), mime_type='image/png')
+            for image in images
         ]
         contents.insert(0, user_prompt)
 

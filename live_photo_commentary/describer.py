@@ -69,9 +69,9 @@ class Describer(ABC):
     def __call__(self, current_image, previous_image=None):
         images = []
 
-        images.append(image_to_bytes(current_image))
+        images.append(current_image)
         if previous_image:
-            images.append(image_to_bytes(previous_image))
+            images.append(previous_image)
             if self.max_history_size:
                 if len(self.history) >= self.max_history_size:
                     self.compact_history()
