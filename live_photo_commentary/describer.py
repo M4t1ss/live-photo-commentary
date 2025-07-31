@@ -73,7 +73,7 @@ class Describer(ABC):
         if previous_image:
             images.append(image_to_bytes(previous_image))
             if self.max_history_size:
-                if len(self.history) == self.max_history_size:
+                if len(self.history) >= self.max_history_size:
                     self.compact_history()
                 user_prompt = '\n'.join([
                     self.history_prompt,
