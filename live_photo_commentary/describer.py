@@ -1,12 +1,5 @@
-import os
 import io
-import importlib.util
-
-import torch
-from transformers import AutoModelForCausalLM, AutoProcessor
-from transformers.utils.quantization_config import BitsAndBytesConfig
-from google import genai
-from google.genai import types as genai_types
+from abc import ABC, abstractmethod
 
 
 
@@ -33,6 +26,18 @@ DEFAULT_FIRST_PROMPT = (
     "Summarize what is visible in this image: <|image_1|> "
 ) + DEFAULT_ENDING
 
+DEFAULT_HISTORY_PROMPT = (
+    "This is what you (the assistant) commented before, for context:"
+)
+
+DEFAULT_COMPACT_PROMPT = (
+    "Summarize in one short paragraph your (the assistant's) comments so far on the current activity; "
+    "i.e. compact it into a single comment, that encapsulates the essence of the current activity's past. "
+    "If some older comments pertain to a different activity, you can ignore them; focus only on the current activity. "
+    "This is what you (the assistant) commented before:"
+)
+
+
 def image_to_bytes(image):
     image_byteio = io.BytesIO()
     image.save(image_byteio, format='PNG')
@@ -40,57 +45,25 @@ def image_to_bytes(image):
     return image_bytes
 
 
-class Describer:
+class Describer(ABC):
     def __init__(self,
              system_prompt=DEFAULT_SYSTEM_PROMPT,
              ending=DEFAULT_ENDING,
              first_prompt=DEFAULT_FIRST_PROMPT,
              prompt=DEFAULT_PROMPT,
-             local=False, gemini_api_key=None
+             history_prompt=DEFAULT_HISTORY_PROMPT,
+             compact_prompt=DEFAULT_COMPACT_PROMPT,
+             max_history_size=False,
     ):
         self.ending = ending
         self.system_prompt = system_prompt
         self.first_prompt = first_prompt
         self.prompt = prompt
+        self.history_prompt = history_prompt
+        self.compact_prompt = compact_prompt
+        self.max_history_size = max_history_size
 
-        if local:
-            model_id = "microsoft/Phi-3.5-vision-instruct" 
-            quantization_config = BitsAndBytesConfig(load_in_4bit=True)
-            
-            attn_implementation = 'flash_attention_2' if importlib.util.find_spec('flash_attn') else 'eager'
-            cuda_available = torch.cuda.is_available()
-
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_id, 
-                device_map="cuda" if cuda_available else None, 
-                trust_remote_code=True, 
-                quantization_config=quantization_config,
-                torch_dtype="auto", 
-                _attn_implementation=attn_implementation
-            )
-
-            if not cuda_available:
-                device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-                self.model = self.model.to(device)
-
-            # for best performance, use num_crops=4 for multi-frame, num_crops=16 for single-frame.
-            self.processor = AutoProcessor.from_pretrained(model_id, 
-                trust_remote_code=True, 
-                num_crops=4
-            )
-
-            self.generation_args = { 
-                "max_new_tokens": 200, 
-                "temperature": 0.2, 
-                "do_sample": True, 
-            }
-
-            self.device = next(self.model.parameters()).device
-        else:
-            self.model = self.processor = None
-            if not gemini_api_key:
-                gemini_api_key = os.environ["GEMINI_API_KEY"]
-            self.client = genai.Client(api_key=gemini_api_key)
+        self.history = []
 
 
     def __call__(self, current_image, previous_image=None):
@@ -99,57 +72,37 @@ class Describer:
         images.append(image_to_bytes(current_image))
         if previous_image:
             images.append(image_to_bytes(previous_image))
-            user_prompt = self.prompt
+            if self.max_history_size:
+                if len(self.history) == self.max_history_size:
+                    self.compact_history()
+                user_prompt = '\n'.join([
+                    self.history_prompt,
+                    *self.history,
+                    "---",
+                    self.prompt
+                ])
+            else:
+                user_prompt = self.prompt
         else:
             user_prompt = self.first_prompt
 
-        if self.model and self.processor:
-        
-            messages = [
-                { "role": "system", "content": self.system_prompt },
-                { "role": "user", "content": user_prompt },
-            ]
-        
-            prompt = self.processor.tokenizer.apply_chat_template(
-              messages, 
-              tokenize=False, 
-              add_generation_prompt=True
-            )
-            
-            inputs = self.processor(prompt, images, return_tensors="pt").to(self.device)
-            
-            generate_ids = self.model.generate(**inputs, 
-              eos_token_id=self.processor.tokenizer.eos_token_id, 
-              **self.generation_args
-            )
-            
-            # remove input tokens 
-            generate_ids = generate_ids[:, inputs['input_ids'].shape[1]:]
-            response = self.processor.batch_decode(
-                generate_ids, 
-                skip_special_tokens=True, 
-                clean_up_tokenization_spaces=False
-            )[0]
-            
-            return response
-        else:
-            # Create the prompt with text and multiple images
-            contents: genai_types.ContentListUnion = [
-                genai_types.Part.from_bytes(data=image, mime_type='image/png') for image in images
-            ]
-            contents.insert(0, user_prompt)
+        response_text = self.prompt_model(user_prompt, images)
+        self.history.append(response_text)
+        return response_text
 
-            response = self.client.models.generate_content(
-                model="gemini-2.0-flash",
-                config=genai_types.GenerateContentConfig(system_instruction = self.system_prompt),
-                contents=contents,
-            )
 
-            return response.text
+    def compact_history(self):
+        user_prompt = '\n'.join([
+            self.compact_prompt,
+            *self.history[:-1],
+        ])
+        response_text = self.prompt_model(user_prompt)
+        self.history = [
+            response_text,
+            self.history[-1],
+        ]
 
-if __name__ == '__main__':
-    from PIL import ImageGrab
-    screenshot = ImageGrab.grab()
-    describer = Describer()
-    description = describer(screenshot)
-    print(description)
+
+    @abstractmethod
+    def prompt_model(self, user_prompt, images=None) -> str | None:
+        ...
