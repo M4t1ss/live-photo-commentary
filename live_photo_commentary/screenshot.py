@@ -1,3 +1,4 @@
+import os
 import platform
 import urllib.request
 import zipfile
@@ -26,25 +27,26 @@ def _get_nircmd_path():
     is_64bit = platform.machine().endswith('64') or platform.architecture()[0] == '64bit'
 
     if is_64bit:
-        subdir = "nircmd-x64"
-        download_url = "https://nircmd.com/wp-content/uploads/2025/01/nircmd-x64.zip"
+        name = "nircmd-x64"
     else:
-        subdir = "nircmd-x32"
-        download_url = "https://nircmd.com/wp-content/uploads/2025/01/nircmd-x32.zip"
+        name = "nircmd-x32"
+
+    download_url = f"https://nircmd.com/wp-content/uploads/2025/01/{name}.zip"
 
     # Check if nircmd.exe already exists
     current_dir = Path(__file__).parent
-    nircmd_dir = current_dir / subdir
+    nircmd_dir = current_dir / name
     nircmd_path = nircmd_dir / "nircmd.exe"
 
     if nircmd_path.is_file():
         return nircmd_path
 
     # Download and extract the ZIP file
-    zip_path = current_dir / f"{subdir}.zip"
+    zip_path = current_dir / f"{name}.zip"
+    nircmd_dir.mkdir(exist_ok=True)
     urllib.request.urlretrieve(download_url, zip_path)
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(current_dir)
+        zip_ref.extractall(nircmd_dir)
     zip_path.unlink()
 
     if not nircmd_path.is_file():
@@ -55,8 +57,13 @@ def _get_nircmd_path():
 def _screenshot_with_nircmd():
     nircmd_path = _get_nircmd_path()
 
-    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
-        temp_path = Path(temp_file.name)
+    try:
+        fd, temp_file = tempfile.mkstemp(suffix='.png')
+        os.close(fd)
+    except Exception as x:
+        raise Exception(f"Cannot make a tempfile: {x}")
+
+    temp_path = Path(temp_file)
 
     try:
         cmd = [str(nircmd_path), 'savescreenshot', str(temp_path)]
@@ -78,10 +85,10 @@ def _screenshot_with_nircmd():
 
     except subprocess.TimeoutExpired:
         raise Exception("nircmd.exe timed out after 30 seconds")
-    except subprocess.CalledProcessError as e:
-        raise Exception(f"nircmd.exe failed with return code {e.returncode}: {e.stderr}")
-    except Exception as e:
-        raise Exception(f"Failed to process screenshot: {str(e)}")
+    except subprocess.CalledProcessError as x:
+        raise Exception(f"nircmd.exe failed with return code {x.returncode}: {x.stderr}")
+    except Exception as x:
+        raise Exception(f"Failed to process screenshot: {x}")
     finally:
         try:
             if temp_path.exists():
