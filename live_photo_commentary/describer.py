@@ -7,6 +7,7 @@ DEFAULT_ENDING = (
     "Do not at all mention any specific layout elements or tools that may be visible on the screen, "
     "such as overlays, gridlines or sliders. To adjust intonation, please add dedicated punctuation like ; : , . ! ? … ( ) “ ” "
     "For example, to emphasize a word or a phrase, surround it with \"quotation marks\". "
+    "However, since the text will undergo speech synthesis, do not use anything unpronounceable, like emojis."
 )
 
 DEFAULT_SYSTEM_PROMPT = (

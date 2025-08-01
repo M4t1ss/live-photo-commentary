@@ -11,13 +11,16 @@ import io
 import torchaudio
 
 import ipywidgets as widgets
-from IPython.display import display, HTML, Javascript
+from IPython import get_ipython  # type: ignore[import]
+from IPython.display import display, HTML, Javascript, Image
 
 from live_photo_commentary.screenshot import screenshot
 
 
 thinking_label = '[Thinking]'
 timer_format = '[{:.1f}]'
+screenshot_height = 265
+screenshot_margin = 10
 
 
 def decide_gif(text):
@@ -48,6 +51,19 @@ def img_file_to_data_uri(path):
         b64 = base64.b64encode(data).decode("utf-8")
         ext = path.split(".")[-1]
         return f"data:image/{ext};base64,{b64}"
+
+
+def pil_to_image(img):
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return Image(data=buf.getvalue())
+
+
+def pil_resize_to_height(img, height):
+    original_width, original_height = img.size
+    width = int((height / original_height) * original_width)
+    resized_img = img.resize((width, height))
+    return resized_img
 
 
 def segment_to_data_url(segment, sample_rate):
@@ -92,14 +108,23 @@ class UI:
             style=dict(font_size='16px', font_weight='bold'),
         )
         self.output_image = widgets.Output(layout={'height': '550px'})
-        self.textbox = widgets.Output(layout={'height': '100px'})
+        self.textbox = widgets.HTML()
         self.javscr = widgets.Output()
-        hbox = widgets.HBox(
+        button_hbox = widgets.HBox(
             (self.btn_start, self.btn_stop, self.btn_wave, self.btn_look, self.btn_dance, self.btn_wait, self.timer),
             layout=widgets.Layout(align_items='center')
         )
+        screenshot_layout = dict(height=f'{screenshot_height}px')
+        self.curr_screenshot = widgets.Output(layout=screenshot_layout)
+        self.prev_screenshot = widgets.Output(layout=dict(margin=f'{screenshot_margin}px 0 0 0', **screenshot_layout))
+        screenshot_vbox = widgets.VBox(
+            (self.curr_screenshot, self.prev_screenshot),
+        )
+        image_hbox = widgets.HBox(
+            (self.output_image, screenshot_vbox)
+        )
 
-        display(hbox, self.output_image, self.textbox, self.javscr)
+        display(button_hbox, image_hbox, self.textbox, self.javscr)
 
         initial_uri = img_file_to_data_uri('gifs/waiting_bg.gif')
 
@@ -136,6 +161,12 @@ class UI:
         self.btn_wave.on_click(self.wave)
         self.btn_wait.on_click(self.wait)
 
+
+    def set_text(self, gs_list):
+        self.textbox.value = ''.join(
+            f'<div style="line-height: inherit; font-size: 16px">{gs}</div>'
+            for gs in gs_list
+        )
 
     def run_js(self, js):
         self.javscr.clear_output()
@@ -183,96 +214,102 @@ class UI:
 
 
     def run(self):
-        with self.textbox:
-            sample_rate = self.synthesizer.sample_rate()
-            self.fade_to_image('gifs/waving_bg.gif')
-            time_string = datetime.now().strftime("%Y-%m-%d_%H-%M")
-            if self.log_path:
-                logfile_path = self.log_path / (time_string + ".log.txt")
-                log_context = logfile_path.open('wt')
-            else:
-                log_context = nullcontext()
-            self.looping = True
-            curr_screenshot = None
-            prev_screenshot = None
-            animation_switch_time = timedelta(seconds=10)
-            animation_end = None
-            with log_context as logfile:
-                while self.looping:
-                    self.textbox.clear_output()
-                    prev_screenshot = curr_screenshot
-                    before = datetime.now()
-                    curr_screenshot = screenshot(**self.screenshot_kwargs)
-                    if self.crop:
-                        curr_screenshot = curr_screenshot.crop(self.crop)
+        sample_rate = self.synthesizer.sample_rate()
+        self.fade_to_image('gifs/waving_bg.gif')
+        time_string = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        if self.log_path:
+            logfile_path = self.log_path / (time_string + ".log.txt")
+            log_context = logfile_path.open('wt')
+        else:
+            log_context = nullcontext()
+        self.looping = True
+        curr_screenshot = None
+        prev_screenshot = None
+        animation_switch_time = timedelta(seconds=10)
+        animation_end = None
+        with log_context as logfile:
+            while self.looping:
+                prev_screenshot = curr_screenshot
+                before = datetime.now()
+                curr_screenshot = screenshot(**self.screenshot_kwargs)
+                if self.crop:
+                    curr_screenshot = curr_screenshot.crop(self.crop)
+
+                if logfile:
+                    elapsed_seconds = (datetime.now() - before).total_seconds()
+                    logfile.write(f"[screenshot {elapsed_seconds}]\n")
+                    logfile.flush()
+
+                self.curr_screenshot.outputs = ()
+                curr_image = pil_to_image(pil_resize_to_height(curr_screenshot, screenshot_height))
+                self.curr_screenshot.append_display_data(curr_image)
+                if prev_screenshot:
+                    self.prev_screenshot.outputs = ()
+                    prev_image = pil_to_image(pil_resize_to_height(prev_screenshot, screenshot_height))
+                    self.prev_screenshot.append_display_data(prev_image)
+
+                self.timer.value = thinking_label
+                before = datetime.now()
+                text = self.describer(curr_screenshot, prev_screenshot)
+                if logfile:
+                    elapsed_seconds = (datetime.now() - before).total_seconds()
+                    logfile.write(f"[describer {elapsed_seconds}]\n")
+                    logfile.flush()
+
+                generator = self.synthesizer(text)
+                gs_list = []
+                while True:
+                    try:
+                        before = datetime.now()
+                        gs, _, segment = next(generator)
+                    except StopIteration:
+                        break
+                    gs_list.append(gs)
+                    self.set_text(gs_list)
 
                     if logfile:
                         elapsed_seconds = (datetime.now() - before).total_seconds()
-                        logfile.write(f"[screenshot {elapsed_seconds}]\n")
+                        logfile.write(f"[synthesizer {elapsed_seconds}]\n")
+                        logfile.write(text.replace("\n", "") + "\n")
                         logfile.flush()
 
-                    self.timer.value = thinking_label
-                    before = datetime.now()
-                    text = self.describer(curr_screenshot, prev_screenshot)
-                    if logfile:
-                        elapsed_seconds = (datetime.now() - before).total_seconds()
-                        logfile.write(f"[describer {elapsed_seconds}]\n")
-                        logfile.flush()
+                    images = decide_gif(gs)
+                    audio_url = segment_to_data_url(segment, sample_rate)
+                    js = f"""
+                        window.{self.audio_id}.src = {json.dumps(audio_url)}
+                        window.{self.audio_id}.play()
+                    """
+                    self.run_js(js)
 
-                    generator = self.synthesizer(text)
+                    duration = len(segment) / sample_rate
+                    now = datetime.now()
+                    countdown_end = now + timedelta(seconds=duration + self.extra_delay)
+                    if animation_end is None:
+                        animation_end = now
+                    animation_end += animation_switch_time
                     while True:
-                        try:
-                            before = datetime.now()
-                            gs, _, segment = next(generator)
-                        except StopIteration:
+                        if not self.looping:
+                            js = f"""
+                                window.{self.audio_id}.pause()
+                            """
+                            self.run_js(js)
+                            self.timer.value = ''
                             break
-                        if logfile:
-                            elapsed = datetime.now() - before
-                            elapsed_seconds = (datetime.now() - before).total_seconds()
-                            logfile.write(f"[synthesizer {elapsed_seconds}]\n")
-                            logfile.write(text.replace("\n", "") + "\n")
-                            logfile.flush()
 
-                        print(gs)
-                        images = decide_gif(gs)
-                        audio_url = segment_to_data_url(segment, sample_rate)
-                        js = f"""
-                            window.{self.audio_id}.src = {json.dumps(audio_url)}
-                            window.{self.audio_id}.play()
-                        """
-                        self.run_js(js)
-
-                        duration = len(segment) / sample_rate
                         now = datetime.now()
-                        countdown_end = now + timedelta(seconds=duration + self.extra_delay)
-                        if animation_end is None:
+                        if animation_end and now > animation_end:
+                            animation_end = now + animation_switch_time
+                            animation_end = None
+                        if animation_end is None and images:
+                            next_image = images.pop(0)
+                            self.fade_to_image(next_image)
                             animation_end = now
-                        animation_end += animation_switch_time
-                        while True:
-                            if not self.looping:
-                                js = f"""
-                                    window.{self.audio_id}.pause()
-                                """
-                                self.run_js(js)
-                                self.timer.value = ''
-                                break
 
-                            now = datetime.now()
-                            if animation_end and now > animation_end:
-                                animation_end = now + animation_switch_time
-                                animation_end = None
-                            if animation_end is None and images:
-                                next_image = images.pop(0)
-                                self.fade_to_image(next_image)
-                                animation_end = now
+                        remaining_seconds = (countdown_end - now).total_seconds()
+                        if remaining_seconds <= 0:
+                            break
 
-                            remaining_seconds = (countdown_end - now).total_seconds()
-                            if remaining_seconds <= 0:
-                                break
+                        time.sleep(0.1)
+                        self.timer.value = timer_format.format(remaining_seconds)
 
-                            time.sleep(0.1)
-                            self.timer.value = timer_format.format(remaining_seconds)
-
-                        self.timer.value = ''
-                        self.textbox.clear_output()
-                        self.textbox.output = []
+                    self.timer.value = ''
