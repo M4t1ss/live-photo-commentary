@@ -4,9 +4,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 import tempfile
-import subprocess
 
-from PIL import ImageGrab, Image
 
 
 def _is_wsl():
@@ -17,8 +15,11 @@ def _is_wsl():
     except FileNotFoundError:
         return False
 
-def _screenshot_with_pil():
-    screenshot = ImageGrab.grab()
+
+def _screenshot_with_pil(bbox=None, include_layered_windows=False, all_screens=False, xdisplay=None, window=None):
+    screenshot = ImageGrab.grab(
+        bbox=bbox, include_layered_windows=include_layered_windows, all_screens=all_screens, xdisplay=xdisplay, window=window
+    )
     return screenshot
 
 
@@ -27,11 +28,11 @@ def _get_nircmd_path():
     is_64bit = platform.machine().endswith('64') or platform.architecture()[0] == '64bit'
 
     if is_64bit:
-        name = "nircmd-x64"
+        name = 'nircmd-x64'
     else:
-        name = "nircmd-x32"
+        name = 'nircmd-x32'
 
-    download_url = f"https://nircmd.com/wp-content/uploads/2025/01/{name}.zip"
+    download_url = f'https://nircmd.com/wp-content/uploads/2025/01/{name}.zip'
 
     # Check if nircmd.exe already exists
     current_dir = Path(__file__).parent
@@ -50,23 +51,48 @@ def _get_nircmd_path():
     zip_path.unlink()
 
     if not nircmd_path.is_file():
-        raise Exception(f"nircmd.exe not found after extraction in {nircmd_dir}")
+        raise Exception(f'nircmd.exe not found after extraction in {nircmd_dir}')
     return nircmd_path
 
 
-def _screenshot_with_nircmd():
+def _screenshot_with_nircmd(bbox=None, include_layered_windows=False, all_screens=False, xdisplay=None, window=None):
+    unsupported = []
+    if include_layered_windows:
+        unsupported.append('include_layered_windows')
+    if xdisplay:
+        unsupported.append('xdisplay')
+    if window:
+        unsupported.append('window')
+    if unsupported:
+        s = 's' if len(unsupported) > 1 else ''
+        unsupported_str = ', '.join(f'`{arg}`' for arg in unsupported)
+        raise TypeError(f'Unsupported argument{s}: {unsupported_str}')
+
+    if bbox:
+        if all_screens:
+            raise ArgumentError('Cannot use both `bbox` and `all_screens`')
+        left, upper, right, lower = bbox
+        bbox = [
+            str(coord)
+            for coord in [left, upper, right - left, lower - upper]
+        ]
+    else:
+        bbox = []
+
+    subcommand = 'savescreenshotfull' if all_screens else 'savescreenshot'
+
     nircmd_path = _get_nircmd_path()
 
     try:
         fd, temp_file = tempfile.mkstemp(suffix='.png')
         os.close(fd)
     except Exception as x:
-        raise Exception(f"Cannot make a tempfile: {x}")
+        raise Exception(f'Cannot make a tempfile: {x}')
 
     temp_path = Path(temp_file)
 
     try:
-        cmd = [str(nircmd_path), 'savescreenshot', str(temp_path)]
+        cmd = [str(nircmd_path), subcommand, str(temp_path), *bbox]
         subprocess.run(
             cmd, 
             capture_output=True, 
@@ -76,7 +102,7 @@ def _screenshot_with_nircmd():
         )
 
         if not temp_path.exists():
-            raise Exception("Screenshot file was not created by nircmd")
+            raise Exception('Screenshot file was not created by nircmd')
 
         image = Image.open(temp_path)
         image.load()
@@ -84,11 +110,11 @@ def _screenshot_with_nircmd():
         return image
 
     except subprocess.TimeoutExpired:
-        raise Exception("nircmd.exe timed out after 30 seconds")
+        raise Exception('nircmd.exe timed out after 30 seconds')
     except subprocess.CalledProcessError as x:
-        raise Exception(f"nircmd.exe failed with return code {x.returncode}: {x.stderr}")
+        raise Exception(f'nircmd.exe failed with return code {x.returncode}: {x.stderr}')
     except Exception as x:
-        raise Exception(f"Failed to process screenshot: {x}")
+        raise Exception(f'Failed to process screenshot: {x}')
     finally:
         try:
             if temp_path.exists():
@@ -96,7 +122,11 @@ def _screenshot_with_nircmd():
         except OSError:
             pass
 
+
+# (left, upper, right, lower)
 if _is_wsl():
+    import subprocess
     screenshot = _screenshot_with_nircmd
 else:
+    from PIL import ImageGrab, Image
     screenshot = _screenshot_with_pil

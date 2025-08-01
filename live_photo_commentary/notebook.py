@@ -60,11 +60,20 @@ def segment_to_data_url(segment, sample_rate):
 
 
 class UI:
-    def __init__(self, describer, synthesizer, logdir=None):
+    def __init__(
+            self,
+            describer, synthesizer,
+            extra_delay=0, logdir=None,
+            screenshot_kwargs=None, crop=None,
+        ):
         self.instance_id = str(uuid.uuid4()).replace('-', '')
         self.describer = describer
         self.synthesizer = synthesizer
+        self.extra_delay = extra_delay
         self.log_path = logdir and Path(logdir)
+        self.screenshot_kwargs = screenshot_kwargs or {}
+        self.crop = crop
+
         self.audio_id = f'audio_{self.instance_id}'
         self.img_id = f'img_{self.instance_id}'
         self.looping = False
@@ -193,7 +202,10 @@ class UI:
                     self.textbox.clear_output()
                     prev_screenshot = curr_screenshot
                     before = datetime.now()
-                    curr_screenshot = screenshot()
+                    curr_screenshot = screenshot(**self.screenshot_kwargs)
+                    if self.crop:
+                        curr_screenshot = curr_screenshot.crop(self.crop)
+
                     if logfile:
                         elapsed_seconds = (datetime.now() - before).total_seconds()
                         logfile.write(f"[screenshot {elapsed_seconds}]\n")
@@ -232,13 +244,13 @@ class UI:
 
                         duration = len(segment) / sample_rate
                         now = datetime.now()
-                        segment_end = now + timedelta(seconds=duration)
+                        countdown_end = now + timedelta(seconds=duration + self.extra_delay)
                         if animation_end is None:
                             animation_end = now
                         animation_end += animation_switch_time
                         while True:
                             if not self.looping:
-                                js = """
+                                js = f"""
                                     window.{self.audio_id}.pause()
                                 """
                                 self.run_js(js)
@@ -254,7 +266,7 @@ class UI:
                                 self.fade_to_image(next_image)
                                 animation_end = now
 
-                            remaining_seconds = (segment_end - now).total_seconds()
+                            remaining_seconds = (countdown_end - now).total_seconds()
                             if remaining_seconds <= 0:
                                 break
 
