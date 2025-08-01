@@ -177,3 +177,5 @@ cython_debug/
 .identifier
 *.Identifier
 /logs
+
+/live_photo_commentary/nircmd*
