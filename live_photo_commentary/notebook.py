@@ -17,8 +17,7 @@ from IPython.display import display, HTML, Javascript, Image
 from live_photo_commentary.screenshot import screenshot
 
 
-thinking_label = '[Thinking]'
-timer_format = '[{:.1f}]'
+timer_format = '{:.1f}'
 screenshot_height = 265
 screenshot_margin = 10
 waiting_image = 'gifs/waiting_bg.gif'
@@ -117,7 +116,7 @@ class UI:
         self.btn_wait = widgets.Button(description="Wait", layout=button_layout, style=button_style)
         self.timer = widgets.Label(
             value='', 
-            layout=widgets.Layout(align_self='center', display='flex', justify_content='center', width='100px'),
+            layout=widgets.Layout(align_self='center', display='flex', justify_content='center', width='200px'),
             style=dict(font_size='16px', font_weight='bold'),
         )
         self.output_image = widgets.Output(layout={'height': '550px'})
@@ -236,23 +235,6 @@ class UI:
 
 
     def run(self):
-        now = datetime.now()
-        countdown_end = now + timedelta(seconds=self.extra_delay)
-        while True:
-            if not self.looping:
-                self.timer.value = ''
-                return
-
-            now = datetime.now()
-            remaining_seconds = (countdown_end - now).total_seconds()
-            if remaining_seconds <= 0:
-                break
-
-            time.sleep(0.1)
-            self.timer.value = timer_format.format(remaining_seconds)
-
-        self.timer.value = ''
-
         sample_rate = self.synthesizer.sample_rate()
         time_string = datetime.now().strftime("%Y-%m-%d_%H-%M")
         if self.log_path:
@@ -264,6 +246,25 @@ class UI:
         prev_screenshot = None
         with log_context as logfile:
             while self.looping:
+                # count-in
+                now = datetime.now()
+                countdown_end = now + timedelta(seconds=self.extra_delay)
+                while True:
+                    if not self.looping:
+                        self.timer.value = ''
+                        return
+
+                    now = datetime.now()
+                    remaining_seconds = (countdown_end - now).total_seconds()
+                    if remaining_seconds <= 0:
+                        break
+
+                    time.sleep(0.1)
+                    self.timer.value = f'[Waiting: {timer_format}]'.format(remaining_seconds)
+
+                self.timer.value = '[Taking screenshot]'
+
+                # screenshot
                 prev_screenshot = curr_screenshot
                 before = datetime.now()
                 curr_screenshot = screenshot(**self.screenshot_kwargs)
@@ -272,9 +273,10 @@ class UI:
 
                 if logfile:
                     elapsed_seconds = (datetime.now() - before).total_seconds()
-                    logfile.write(f"[screenshot {elapsed_seconds}]\n")
+                    logfile.write(f'[screenshot {elapsed_seconds}]\n')
                     logfile.flush()
 
+                # image processing and display
                 self.curr_screenshot.outputs = ()
                 curr_image = pil_to_image(pil_resize_to_height(curr_screenshot, screenshot_height))
                 self.curr_screenshot.append_display_data(curr_image)
@@ -283,7 +285,8 @@ class UI:
                     prev_image = pil_to_image(pil_resize_to_height(prev_screenshot, screenshot_height))
                     self.prev_screenshot.append_display_data(prev_image)
 
-                self.timer.value = thinking_label
+                # description
+                self.timer.value = '[Describing]'
                 before = datetime.now()
                 text = self.describer(curr_screenshot, prev_screenshot)
                 if logfile:
@@ -291,11 +294,14 @@ class UI:
                     logfile.write(f"[describer {elapsed_seconds}]\n")
                     logfile.flush()
 
+                # synthesis
                 generator = self.synthesizer(text)
                 gs_list = []
                 while True:
+                    # get segment from TTS
                     try:
                         before = datetime.now()
+                        self.timer.value = '[Synthesizing]'
                         gs, _, segment = next(generator)
                     except StopIteration:
                         break
@@ -316,16 +322,16 @@ class UI:
                     """
                     self.run_js(js)
 
+                    # wait till synthesized clip is finished playing
                     duration = len(segment) / sample_rate
                     now = datetime.now()
-                    countdown_end = now + timedelta(seconds=duration + self.extra_delay)
+                    countdown_end = now + timedelta(seconds=duration)
                     while True:
                         if not self.looping:
                             js = f"""
                                 window.{self.audio_id}.pause()
                             """
                             self.run_js(js)
-                            self.timer.value = ''
                             break
 
                         now = datetime.now()
@@ -334,9 +340,10 @@ class UI:
                             break
 
                         time.sleep(0.1)
-                        self.timer.value = timer_format.format(remaining_seconds)
+                        self.timer.value = f'[Speaking: {timer_format}]'.format(remaining_seconds)
 
                     self.timer.value = ''
+                self.timer.value = ''
 
 
     def run_images(self):
