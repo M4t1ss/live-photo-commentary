@@ -21,6 +21,16 @@ thinking_label = '[Thinking]'
 timer_format = '[{:.1f}]'
 screenshot_height = 265
 screenshot_margin = 10
+waiting_image = 'gifs/waiting_bg.gif'
+animation_length = 9.0
+
+
+
+def shift(l, default=None):
+    try:
+        return l.pop(0)
+    except IndexError:
+        return default
 
 
 def decide_gif(text):
@@ -93,6 +103,9 @@ class UI:
         self.audio_id = f'audio_{self.instance_id}'
         self.img_id = f'img_{self.instance_id}'
         self.looping = False
+        self.images = None
+        self.thread = None
+        self.images_thread = None
 
         button_style = dict(button_color='white', font_weight='bold', font_size='16px')
         button_layout = widgets.Layout(width='80px', height='35px')
@@ -178,18 +191,27 @@ class UI:
         if self.looping:
             return
         self.btn_start.disabled = True
+
         self.looping = True
         self.thread = threading.Thread(target=self.run)
         self.thread.start()
+        self.images = None
+        self.image_thread = threading.Thread(target=self.run_images)
+        self.image_thread.start()
+
         self.btn_stop.disabled = False
 
     def stop_loop(self, _):
         if not self.looping:
             return
         self.btn_stop.disabled = True
+
         self.looping = False
+        if self.images_thread:
+            self.images_thread.join()
         if self.thread:
             self.thread.join()
+
         self.btn_start.disabled = False
 
     def dance(self, _):
@@ -214,19 +236,32 @@ class UI:
 
 
     def run(self):
+        now = datetime.now()
+        countdown_end = now + timedelta(seconds=self.extra_delay)
+        while True:
+            if not self.looping:
+                self.timer.value = ''
+                return
+
+            now = datetime.now()
+            remaining_seconds = (countdown_end - now).total_seconds()
+            if remaining_seconds <= 0:
+                break
+
+            time.sleep(0.1)
+            self.timer.value = timer_format.format(remaining_seconds)
+
+        self.timer.value = ''
+
         sample_rate = self.synthesizer.sample_rate()
-        self.fade_to_image('gifs/waving_bg.gif')
         time_string = datetime.now().strftime("%Y-%m-%d_%H-%M")
         if self.log_path:
             logfile_path = self.log_path / (time_string + ".log.txt")
             log_context = logfile_path.open('wt')
         else:
             log_context = nullcontext()
-        self.looping = True
         curr_screenshot = None
         prev_screenshot = None
-        animation_switch_time = timedelta(seconds=10)
-        animation_end = None
         with log_context as logfile:
             while self.looping:
                 prev_screenshot = curr_screenshot
@@ -273,7 +308,7 @@ class UI:
                         logfile.write(text.replace("\n", "") + "\n")
                         logfile.flush()
 
-                    images = decide_gif(gs)
+                    self.images = decide_gif(gs)
                     audio_url = segment_to_data_url(segment, sample_rate)
                     js = f"""
                         window.{self.audio_id}.src = {json.dumps(audio_url)}
@@ -284,9 +319,6 @@ class UI:
                     duration = len(segment) / sample_rate
                     now = datetime.now()
                     countdown_end = now + timedelta(seconds=duration + self.extra_delay)
-                    if animation_end is None:
-                        animation_end = now
-                    animation_end += animation_switch_time
                     while True:
                         if not self.looping:
                             js = f"""
@@ -297,14 +329,6 @@ class UI:
                             break
 
                         now = datetime.now()
-                        if animation_end and now > animation_end:
-                            animation_end = now + animation_switch_time
-                            animation_end = None
-                        if animation_end is None and images:
-                            next_image = images.pop(0)
-                            self.fade_to_image(next_image)
-                            animation_end = now
-
                         remaining_seconds = (countdown_end - now).total_seconds()
                         if remaining_seconds <= 0:
                             break
@@ -313,3 +337,15 @@ class UI:
                         self.timer.value = timer_format.format(remaining_seconds)
 
                     self.timer.value = ''
+
+
+    def run_images(self):
+        self.fade_to_image(waiting_image)
+        images = []
+        while self.looping:
+            if self.images:
+                images, self.images = self.images, None
+
+            new_image = shift(images, waiting_image)
+            self.fade_to_image(new_image)
+            time.sleep(animation_length)
