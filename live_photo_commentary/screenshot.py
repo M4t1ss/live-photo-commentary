@@ -84,7 +84,8 @@ def _screenshot_with_nircmd(bbox=None, include_layered_windows=False, all_screen
     nircmd_path = _get_nircmd_path()
 
     try:
-        fd, temp_file = tempfile.mkstemp(suffix='.png')
+        cwd = os.getcwd()
+        fd, temp_file = tempfile.mkstemp(suffix='.png', dir=cwd)
         os.close(fd)
     except Exception as x:
         raise Exception(f'Cannot make a tempfile: {x}')
@@ -92,7 +93,7 @@ def _screenshot_with_nircmd(bbox=None, include_layered_windows=False, all_screen
     temp_path = Path(temp_file)
 
     try:
-        cmd = [str(nircmd_path), subcommand, str(temp_path), *bbox]
+        cmd = [str(nircmd_path), subcommand, str(temp_path.relative_to(cwd)), *bbox]
         subprocess.run(
             cmd, 
             capture_output=True, 
@@ -125,6 +126,7 @@ def _screenshot_with_nircmd(bbox=None, include_layered_windows=False, all_screen
 
 # (left, upper, right, lower)
 if _is_wsl():
+    from PIL import Image
     import subprocess
     screenshot = _screenshot_with_nircmd
 else:
