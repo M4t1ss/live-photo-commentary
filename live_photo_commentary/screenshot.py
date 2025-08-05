@@ -143,6 +143,8 @@ def difference(image1, image2, measure='mse', *args, **kwargs):
         return ssim_difference(image1, image2, *args, **kwargs)
     if measure in _imagehash_measures:
         return imagehash_difference(image1, image2, measure, *args, **kwargs)
+    if callable(measure):
+        return measure(image1, image2, *args, **kwargs)
     raise ValueError('Unsupported similarity measure: {measure}')
     
 
@@ -170,7 +172,7 @@ def _get_channel_axis(mode):
         raise ValueError(f"Unsupported image mode: {mode}")
 
 
-# needs scikit-image
+# needs `pip install scikit-image`
 def ssim_difference(image1, image2, mode='RGB', *args, **kwargs):
     from skimage.metrics import structural_similarity as ssim
 
@@ -190,7 +192,7 @@ def ssim_difference(image1, image2, mode='RGB', *args, **kwargs):
     return (1 - sim_score) / 2
 
 
-# needs imagehash
+# needs `pip install imagehash`
 def imagehash_difference(image1, image2, measure, *args, **kwargs):
     import imagehash
 
