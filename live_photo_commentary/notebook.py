@@ -115,9 +115,9 @@ class UI:
         self.btn_dance = widgets.Button(description="Dance", layout=button_layout, style=button_style)
         self.btn_wait = widgets.Button(description="Wait", layout=button_layout, style=button_style)
         self.timer = widgets.Label(
-            value='', 
-            layout=widgets.Layout(align_self='center', display='flex', justify_content='center', width='200px'),
-            style=dict(font_size='16px', font_weight='bold'),
+            value='[📎]', 
+            layout=widgets.Layout(align_self='center', display='flex', justify_content='flex-start', font_size='26px !important', width='200px'),
+            style=dict(font_size='26px', font_weight='bold'),
         )
         self.output_image = widgets.Output(layout={'height': '550px'})
         self.textbox = widgets.HTML()
@@ -260,9 +260,9 @@ class UI:
                         break
 
                     time.sleep(0.1)
-                    self.timer.value = f'[Waiting: {timer_format}]'.format(remaining_seconds)
+                    self.timer.value = f'[⏳: {timer_format}]'.format(remaining_seconds)
 
-                self.timer.value = '[Taking screenshot]'
+                self.timer.value = '[🖼️]'
 
                 # screenshot
                 prev_screenshot = curr_screenshot
@@ -286,7 +286,7 @@ class UI:
                     self.prev_screenshot.append_display_data(prev_image)
 
                 # description
-                self.timer.value = '[Describing]'
+                self.timer.value = '[📝]'
                 before = datetime.now()
                 text = self.describer(curr_screenshot, prev_screenshot)
                 if logfile:
@@ -301,7 +301,7 @@ class UI:
                     # get segment from TTS
                     try:
                         before = datetime.now()
-                        self.timer.value = '[Synthesizing]'
+                        self.timer.value = '[🎙️]'
                         gs, _, segment = next(generator)
                     except StopIteration:
                         break
@@ -340,7 +340,7 @@ class UI:
                             break
 
                         time.sleep(0.1)
-                        self.timer.value = f'[Speaking: {timer_format}]'.format(remaining_seconds)
+                        self.timer.value = f'[🔊: {timer_format}]'.format(remaining_seconds)
 
                     self.timer.value = ''
                 self.timer.value = ''

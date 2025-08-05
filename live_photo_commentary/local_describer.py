@@ -69,9 +69,11 @@ class LocalDescriber(Describer):
 
         self.device = next(self.model.parameters()).device
 
-    def prompt_model(self, user_prompt, images=None) -> str | None:
-        if not images:
-            images = []
+    def prompt_model(self, user_prompt, images=None, placeholder=None) -> str | None:
+        if images is not None:
+        #     images = []
+        # else:
+            user_prompt = placeholder +  user_prompt.replace("<|image_1|>","first image").replace("<|image_2|>","second image")
 
         messages = [
             { "role": "system", "content": self.system_prompt },
