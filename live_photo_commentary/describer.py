@@ -69,10 +69,13 @@ class Describer(ABC):
 
     def __call__(self, current_image, previous_image=None):
         images = []
+        placeholder = ""
 
         images.append(current_image)
+        placeholder += f"<|image_1|>\n"
         if previous_image:
             images.append(previous_image)
+            placeholder += f"<|image_2|>\n"
             if self.max_history_size:
                 if len(self.history) >= self.max_history_size:
                     self.compact_history()
@@ -87,7 +90,7 @@ class Describer(ABC):
         else:
             user_prompt = self.first_prompt
 
-        response_text = self.prompt_model(user_prompt, images)
+        response_text = self.prompt_model(user_prompt, images, placeholder)
         self.history.append(response_text)
         return response_text
 
