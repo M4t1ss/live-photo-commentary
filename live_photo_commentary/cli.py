@@ -23,10 +23,9 @@ def loop(describer, synthesizer):
             print(gs)
             sd.play(segment, sample_rate)
             duration = len(segment) / sample_rate
-            segment_end = datetime.now() + timedelta(seconds=duration)
+            playback_end = time.perf_counter() + duration
             while True:
-                remaining = segment_end - datetime.now()
-                remaining_seconds = remaining.total_seconds()
+                remaining_seconds = playback_end - time.perf_counter()
                 if remaining_seconds <= 0:
                     print("\r   \r", end="")
                     break

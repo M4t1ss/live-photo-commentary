@@ -247,15 +247,13 @@ class UI:
         with log_context as logfile:
             while self.looping:
                 # count-in
-                now = datetime.now()
-                countdown_end = now + timedelta(seconds=self.extra_delay)
+                countdown_end = time.perf_counter() + self.extra_delay
                 while True:
                     if not self.looping:
                         self.timer.value = ''
                         return
 
-                    now = datetime.now()
-                    remaining_seconds = (countdown_end - now).total_seconds()
+                    remaining_seconds = countdown_end - time.perf_counter()
                     if remaining_seconds <= 0:
                         break
 
@@ -266,13 +264,13 @@ class UI:
 
                 # screenshot
                 prev_screenshot = curr_screenshot
-                before = datetime.now()
+                before = time.perf_counter()
                 curr_screenshot = screenshot(**self.screenshot_kwargs)
                 if self.crop:
                     curr_screenshot = curr_screenshot.crop(self.crop)
 
                 if logfile:
-                    elapsed_seconds = (datetime.now() - before).total_seconds()
+                    elapsed_seconds = time.perf_counter() - before
                     logfile.write(f'[screenshot {elapsed_seconds}]\n')
                     logfile.flush()
 
@@ -287,10 +285,10 @@ class UI:
 
                 # description
                 self.timer.value = '[📝]'
-                before = datetime.now()
+                before = time.perf_counter()
                 text = self.describer(curr_screenshot, prev_screenshot)
                 if logfile:
-                    elapsed_seconds = (datetime.now() - before).total_seconds()
+                    elapsed_seconds = time.perf_counter() - before
                     logfile.write(f"[describer {elapsed_seconds}]\n")
                     logfile.flush()
 
@@ -300,7 +298,7 @@ class UI:
                 while True:
                     # get segment from TTS
                     try:
-                        before = datetime.now()
+                        before = time.perf_counter()
                         self.timer.value = '[🎙️]'
                         gs, _, segment = next(generator)
                     except StopIteration:
@@ -309,7 +307,7 @@ class UI:
                     self.set_text(gs_list)
 
                     if logfile:
-                        elapsed_seconds = (datetime.now() - before).total_seconds()
+                        elapsed_seconds = time.perf_counter() - before
                         logfile.write(f"[synthesizer {elapsed_seconds}]\n")
                         logfile.write(text.replace("\n", "") + "\n")
                         logfile.flush()
@@ -324,8 +322,7 @@ class UI:
 
                     # wait till synthesized clip is finished playing
                     duration = len(segment) / sample_rate
-                    now = datetime.now()
-                    countdown_end = now + timedelta(seconds=duration)
+                    playback_end = time.perf_counter() + duration
                     while True:
                         if not self.looping:
                             js = f"""
@@ -334,8 +331,7 @@ class UI:
                             self.run_js(js)
                             break
 
-                        now = datetime.now()
-                        remaining_seconds = (countdown_end - now).total_seconds()
+                        remaining_seconds = playback_end - time.perf_counter()
                         if remaining_seconds <= 0:
                             break
 
