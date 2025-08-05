@@ -268,7 +268,7 @@ class UI:
 
                 # screenshot
                 before = time.perf_counter()
-                new_screenshot = screenshot()
+                new_screenshot = screenshot(**self.screenshot_kwargs)
                 if curr_screenshot and self.difference_threshold:
                     diff = difference(curr_screenshot, new_screenshot, measure=self.difference_measure, **self.difference_kwargs)
                     if logfile:
@@ -278,7 +278,7 @@ class UI:
                         continue
 
                 prev_screenshot = curr_screenshot
-                curr_screenshot = screenshot(**self.screenshot_kwargs)
+                curr_screenshot = new_screenshot
                 if self.crop:
                     curr_screenshot = curr_screenshot.crop(self.crop)
 
