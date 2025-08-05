@@ -14,7 +14,7 @@ import ipywidgets as widgets
 from IPython import get_ipython  # type: ignore[import]
 from IPython.display import display, HTML, Javascript, Image
 
-from live_photo_commentary.screenshot import screenshot
+from live_photo_commentary.screenshot import screenshot, difference
 
 
 timer_format = '{:.1f}'
@@ -90,6 +90,7 @@ class UI:
             describer, synthesizer,
             extra_delay=0, logdir=None,
             screenshot_kwargs=None, crop=None,
+            difference_threshold=None, difference_measure='mse', difference_kwargs=None
         ):
         self.instance_id = str(uuid.uuid4()).replace('-', '')
         self.describer = describer
@@ -98,6 +99,9 @@ class UI:
         self.log_path = logdir and Path(logdir)
         self.screenshot_kwargs = screenshot_kwargs or {}
         self.crop = crop
+        self.difference_threshold = difference_threshold
+        self.difference_measure = difference_measure
+        self.difference_kwargs = difference_kwargs or {}
 
         self.audio_id = f'audio_{self.instance_id}'
         self.img_id = f'img_{self.instance_id}'
@@ -263,8 +267,17 @@ class UI:
                 self.timer.value = '[🖼️]'
 
                 # screenshot
-                prev_screenshot = curr_screenshot
                 before = time.perf_counter()
+                new_screenshot = screenshot()
+                if curr_screenshot and self.difference_threshold:
+                    diff = difference(curr_screenshot, new_screenshot, measure=self.difference_measure, **self.difference_kwargs)
+                    if logfile:
+                        logfile.write(f'[screenshot diff ({self.difference_measure} threshold {self.difference_threshold}): {diff}]\n')
+                        logfile.flush()
+                    if diff < self.difference_threshold:
+                        continue
+
+                prev_screenshot = curr_screenshot
                 curr_screenshot = screenshot(**self.screenshot_kwargs)
                 if self.crop:
                     curr_screenshot = curr_screenshot.crop(self.crop)
