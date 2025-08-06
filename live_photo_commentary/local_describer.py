@@ -37,7 +37,7 @@ class LocalDescriber(Describer):
         )
 
         model_id = "microsoft/Phi-3.5-vision-instruct" 
-        quantization_config = BitsAndBytesConfig(load_in_4bit=True)
+        quantization_config = BitsAndBytesConfig(load_in_4bit=True) if importlib.util.find_spec('bitsandbytes') else None
 
         attn_implementation = 'flash_attention_2' if importlib.util.find_spec('flash_attn') else 'eager'
         cuda_available = torch.cuda.is_available()
@@ -71,8 +71,6 @@ class LocalDescriber(Describer):
 
     def prompt_model(self, user_prompt, images=None, placeholder=None) -> str | None:
         if images is not None:
-        #     images = []
-        # else:
             user_prompt = placeholder +  user_prompt.replace("<|image_1|>","first image").replace("<|image_2|>","second image")
 
         messages = [
@@ -87,6 +85,9 @@ class LocalDescriber(Describer):
         )
 
         inputs = self.processor(prompt, images, return_tensors="pt").to(self.device)
+
+        # Avoid Phi bug on MPS
+        inputs['image_sizes'] = inputs['image_sizes'].tolist()
 
         generate_ids = self.model.generate(**inputs, 
           eos_token_id=self.processor.tokenizer.eos_token_id, 
