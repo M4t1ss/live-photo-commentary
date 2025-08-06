@@ -25,6 +25,7 @@ class LocalDescriber(Describer):
              history_prompt=DEFAULT_HISTORY_PROMPT,
              compact_prompt=DEFAULT_COMPACT_PROMPT,
              max_history_size=False,
+             model_id="microsoft/Phi-3.5-vision-instruct",
     ):
         super().__init__(
              system_prompt=system_prompt,
@@ -36,7 +37,6 @@ class LocalDescriber(Describer):
              max_history_size=max_history_size,
         )
 
-        model_id = "microsoft/Phi-3.5-vision-instruct" 
         quantization_config = BitsAndBytesConfig(load_in_4bit=True) if importlib.util.find_spec('bitsandbytes') else None
 
         attn_implementation = 'flash_attention_2' if importlib.util.find_spec('flash_attn') else 'eager'

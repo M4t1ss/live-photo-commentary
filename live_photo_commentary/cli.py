@@ -39,6 +39,7 @@ def parse_args(args):
     parser.add_argument('-g', '--gemini_api_key', required=False)
     parser.add_argument('-m', '--max_history_size', type=int, required=False)
     parser.add_argument('-l', '--local', action='store_true')
+    parser.add_argument('-M', '--model', required=False)
 
     args = parser.parse_args(args)
     return args
@@ -53,6 +54,8 @@ def main(args):
 
     if args.local:
         from live_photo_commentary.local_describer import LocalDescriber
+        if args.model:
+            params["model_id"] = args.model
         describer = LocalDescriber(**params)
     else:
         from live_photo_commentary.gemini_describer import GeminiDescriber
