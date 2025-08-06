@@ -49,7 +49,6 @@ def main(args):
 
     params = {
         "max_history_size": args.max_history_size,
-        "gemini_api_key": args.gemini_api_key,
     }
 
     if args.local:
@@ -57,7 +56,8 @@ def main(args):
         describer = LocalDescriber(**params)
     else:
         from live_photo_commentary.gemini_describer import GeminiDescriber
-        describer = GeminiDescriber(**params)
+        gemini_api_key = args.gemini_api_key
+        describer = GeminiDescriber(gemini_api_key=gemini_api_key, **params)
 
     from live_photo_commentary.synthesizer import Synthesizer
     synthesizer = Synthesizer()
