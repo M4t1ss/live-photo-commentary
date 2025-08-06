@@ -91,7 +91,8 @@ class LocalDescriber(Describer):
         inputs = self.processor(prompt, images, return_tensors="pt").to(self.device)
 
         # Avoid Phi bug on MPS
-        inputs['image_sizes'] = inputs['image_sizes'].tolist()
+        if 'image_sizes' in inputs:
+            inputs['image_sizes'] = inputs['image_sizes'].tolist()
 
         generate_ids = self.model.generate(**inputs, 
           eos_token_id=self.processor.tokenizer.eos_token_id, 
