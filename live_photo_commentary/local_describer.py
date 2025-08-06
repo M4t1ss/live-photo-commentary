@@ -53,7 +53,11 @@ class LocalDescriber(Describer):
 
         if not cuda_available:
             device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-            self.model = self.model.to(device)
+            # Fallback dtype
+            try:
+                self.model = self.model.to(device)
+            except TypeError:
+                self.model = self.model.to(device, dtype=torch.float16)
 
         # for best performance, use num_crops=4 for multi-frame, num_crops=16 for single-frame.
         self.processor = AutoProcessor.from_pretrained(model_id, 
