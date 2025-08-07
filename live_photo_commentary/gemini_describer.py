@@ -27,6 +27,7 @@ class GeminiDescriber(Describer):
              history_prompt=DEFAULT_HISTORY_PROMPT,
              compact_prompt=DEFAULT_COMPACT_PROMPT,
              max_history_size=False,
+             model_id="gemini-2.0-flash",
     ):
         super().__init__(
              system_prompt=system_prompt,
@@ -38,6 +39,7 @@ class GeminiDescriber(Describer):
              max_history_size=max_history_size,
         )
 
+        self.model_id = model_id
         if not gemini_api_key:
             gemini_api_key = os.environ["GEMINI_API_KEY"]
 
@@ -56,7 +58,7 @@ class GeminiDescriber(Describer):
         contents.insert(0, user_prompt)
 
         response = self.client.models.generate_content(
-            model="gemini-2.0-flash",
+            model=self.model_id,
             config=genai_types.GenerateContentConfig(system_instruction = self.system_prompt),
             contents=contents,
         )
