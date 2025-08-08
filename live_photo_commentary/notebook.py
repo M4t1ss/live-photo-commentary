@@ -105,6 +105,7 @@ class UI:
 
         self.audio_id = f'audio_{self.instance_id}'
         self.img_id = f'img_{self.instance_id}'
+        self.timer_class = f'timer_{self.instance_id}'
         self.looping = False
         self.images = None
         self.thread = None
@@ -123,6 +124,7 @@ class UI:
             layout=widgets.Layout(align_self='center', display='flex', justify_content='flex-start', font_size='26px !important', width='200px'),
             style=dict(font_size='26px', font_weight='bold'),
         )
+        self.timer.add_class(self.timer_class)
         self.output_image = widgets.Output(layout={'height': '550px'})
         self.textbox = widgets.HTML()
         self.javscr = widgets.Output()
@@ -146,6 +148,11 @@ class UI:
 
         # Show the initial image
         html = f"""
+            <style>
+              .{self.timer_class}.countUp {{
+                color: red;
+              }}
+            </style>
             <div>
               <img id="{self.img_id}" src="{initial_uri}" style="transition: opacity 1s ease-in-out; opacity: 1; max-width: 100%;">
             </div>
@@ -162,6 +169,34 @@ class UI:
                         img.style.opacity = 1;
                     }, 50);
                 }
+            }
+
+            window.startCountUp = function startCountUp(instanceId) {
+                const timerId = `timer_${instanceId}`;
+                const el = document.querySelector(`.${timerId}`);
+
+                const content = el.textContent;
+                const start = content.substring(0, content.length - 1);
+                const end = content.substring(content.length - 1);
+                const beginning = new Date();
+
+                function countUpLoop() {
+                    const ts = ((new Date() - beginning) / 1000).toFixed(1);
+                    el.textContent = start + ': ' + ts + end;
+                    window[timerId] = setTimeout(countUpLoop, 100);
+                }
+
+                el.classList.add('countUp');
+                countUpLoop()
+            }
+
+            window.stopCountUp = function stop(instanceId) {
+                const timerId = `timer_${instanceId}`;
+                const el = document.querySelector(`.${timerId}`);
+
+                clearTimeout(window[timerId]);
+                el.classList.remove('countUp');
+                el.textContent = '';
             }
         """ + f"""
             window.{self.audio_id} = new Audio();
@@ -297,13 +332,24 @@ class UI:
                     self.prev_screenshot.append_display_data(prev_image)
 
                 # description
-                self.timer.value = '[📝]'
-                before = time.perf_counter()
-                text = self.describer(curr_screenshot, prev_screenshot)
-                if logfile:
-                    elapsed_seconds = time.perf_counter() - before
-                    logfile.write(f"[describer {elapsed_seconds}]\n")
-                    logfile.flush()
+                try:
+                    self.timer.value = '[📝]'
+                    js = f"""
+                        window.startCountUp({json.dumps(self.instance_id)})
+                    """
+                    self.run_js(js)
+
+                    before = time.perf_counter()
+                    text = self.describer(curr_screenshot, prev_screenshot)
+                    if logfile:
+                        elapsed_seconds = time.perf_counter() - before
+                        logfile.write(f"[describer {elapsed_seconds}]\n")
+                        logfile.flush()
+                finally:
+                    js = f"""
+                        window.stopCountUp({json.dumps(self.instance_id)})
+                    """
+                    self.run_js(js)
 
                 # synthesis
                 generator = self.synthesizer(text)
@@ -311,11 +357,23 @@ class UI:
                 while True:
                     # get segment from TTS
                     try:
-                        before = time.perf_counter()
                         self.timer.value = '[🎙️]'
-                        gs, _, segment = next(generator)
-                    except StopIteration:
-                        break
+                        js = f"""
+                            window.startCountUp({json.dumps(self.instance_id)})
+                        """
+                        self.run_js(js)
+
+                        try:
+                            before = time.perf_counter()
+                            gs, _, segment = next(generator)
+                        except StopIteration:
+                            break
+                    finally:
+                        js = f"""
+                            window.stopCountUp({json.dumps(self.instance_id)})
+                        """
+                        self.run_js(js)
+
                     gs_list.append(gs)
                     self.set_text(gs_list)
 
