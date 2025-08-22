@@ -1,7 +1,7 @@
 import importlib.util
 
 import torch
-from transformers import AutoModelForCausalLM, AutoProcessor
+from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 from transformers.utils.quantization_config import BitsAndBytesConfig
 
 from .describer import (
@@ -25,6 +25,7 @@ class LocalDescriber(Describer):
              history_prompt=DEFAULT_HISTORY_PROMPT,
              compact_prompt=DEFAULT_COMPACT_PROMPT,
              max_history_size=False,
+             min_history_size=False,
              model_id="microsoft/Phi-3.5-vision-instruct",
     ):
         super().__init__(
@@ -35,6 +36,7 @@ class LocalDescriber(Describer):
              history_prompt=history_prompt,
              compact_prompt=compact_prompt,
              max_history_size=max_history_size,
+             min_history_size=min_history_size,
         )
 
         quantization_config = BitsAndBytesConfig(load_in_4bit=True) if importlib.util.find_spec('bitsandbytes') else None
@@ -43,7 +45,7 @@ class LocalDescriber(Describer):
         cuda_available = torch.cuda.is_available()
 
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_id, 
+            model_id,
             device_map="cuda" if cuda_available else None, 
             trust_remote_code=True, 
             quantization_config=quantization_config,
@@ -60,10 +62,18 @@ class LocalDescriber(Describer):
                 self.model = self.model.to(device, dtype=torch.float16)
 
         # for best performance, use num_crops=4 for multi-frame, num_crops=16 for single-frame.
-        self.processor = AutoProcessor.from_pretrained(model_id, 
+        self.processor = AutoProcessor.from_pretrained(
+            model_id, 
             trust_remote_code=True, 
             num_crops=4
         )
+        try:
+            self.tokenizer = self.processor.tokenizer
+        except KeyError:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_id,
+                trust_remote_code=True,
+            )
 
         self.generation_args = { 
             "max_new_tokens": 200, 
@@ -82,7 +92,7 @@ class LocalDescriber(Describer):
             { "role": "user", "content": user_prompt },
         ]
 
-        prompt = self.processor.tokenizer.apply_chat_template(
+        prompt = self.tokenizer.apply_chat_template(
           messages, 
           tokenize=False, 
           add_generation_prompt=True
@@ -95,7 +105,7 @@ class LocalDescriber(Describer):
             inputs['image_sizes'] = inputs['image_sizes'].tolist()
 
         generate_ids = self.model.generate(**inputs, 
-          eos_token_id=self.processor.tokenizer.eos_token_id, 
+          eos_token_id=self.tokenizer.eos_token_id, 
           **self.generation_args
         )
 

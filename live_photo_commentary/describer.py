@@ -12,15 +12,22 @@ DEFAULT_ENDING = (
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a friendly chatty commentator who likes to casually describe work done by a computer user " 
-    "in various details, even by pondering the implications on work, or leisure, being performed, etc. Write your " 
-    "response in a very personal way using personal pronouns and explaining what you see, perhaps also adding how it makes you feel. " 
-    "Do your best to not be repetitive in your choice of words and keep the response length down to a few sentences. You MUST NOT mention "
-    "any specific layout elements or tools that may be visible on the screen, such as gridlines or sliders. "
+    "in various details, even by pondering the implications on work, or leisure, being performed, etc. "
+    "Write your response in a very personal way using personal pronouns and explaining what you see, "
+    "perhaps also adding how it makes you feel. " 
+    "Do your best to not be repetitive in your choice of words and keep the response length down to a few sentences. "
+    "You MUST NOT mention any specific layout elements or tools that may be visible on the screen, such as gridlines or sliders. "
 ) # + DEFAULT_ENDING
 
 DEFAULT_PROMPT = (
     "Summarize what is visible in the current screenshot, <|image_1|>. " 
-    "How is it different from the previous screenshot, <|image_2|>? There may be some subtle differences as well. Do not describe the previous screenshot; assume you have described it already. It is only there for context, so you can notice the new things in the current screenshot. Do not mention screenshots explicitly; use words like 'I can see...' or 'The user is now...' and similar."
+    "How is it different from the previous screenshot, <|image_2|>? "
+    "There may be some subtle differences as well. "
+    "Do not describe the previous screenshot; assume you have described it already. "
+    "It is only there for context, so you can notice the new things in the current screenshot. "
+    "Do not mention screenshots explicitly; use words like 'I can see...' or 'The user is now...' and similar. "
+    "Use the comment history for context and continuity, but the utmost priority should be on "
+    "describing the current activity, as reflected in the current screenshot. "
 ) + DEFAULT_ENDING
 
 DEFAULT_FIRST_PROMPT = (
@@ -28,12 +35,13 @@ DEFAULT_FIRST_PROMPT = (
 ) + DEFAULT_ENDING
 
 DEFAULT_HISTORY_PROMPT = (
-    "This is what you (the assistant) commented before, for context:"
+    "This is what you (the assistant) commented before: "
 )
 
 DEFAULT_COMPACT_PROMPT = (
     "Summarize in one short paragraph your (the assistant's) comments so far on the current activity; "
-    "i.e. compact it into a single comment, that encapsulates the essence of the current activity's past. "
+    "i.e. compact it into a single comment of comparable size to one individual original comment, "
+    "that encapsulates the essence of the current activity's past. "
     "If some older comments pertain to a different activity, you can ignore them; focus only on the current activity. "
     "This is what you (the assistant) commented before:"
 )
@@ -55,6 +63,7 @@ class Describer(ABC):
              history_prompt=DEFAULT_HISTORY_PROMPT,
              compact_prompt=DEFAULT_COMPACT_PROMPT,
              max_history_size=False,
+             min_history_size=False,
     ):
         self.ending = ending
         self.system_prompt = system_prompt
@@ -63,6 +72,7 @@ class Describer(ABC):
         self.history_prompt = history_prompt
         self.compact_prompt = compact_prompt
         self.max_history_size = max_history_size
+        self.min_history_size = min_history_size
 
         self.history = []
 
@@ -96,14 +106,17 @@ class Describer(ABC):
 
 
     def compact_history(self):
+        num_uncompacted = self.min_history_size or 0
+        to_compact = self.history[:-num_uncompacted]
+        to_preserve = self.history[-num_uncompacted:]
         user_prompt = '\n'.join([
             self.compact_prompt,
-            *self.history[:-1],
+            *to_compact,
         ])
         response_text = self.prompt_model(user_prompt)
         self.history = [
             response_text,
-            self.history[-1],
+            *to_preserve,
         ]
 
 

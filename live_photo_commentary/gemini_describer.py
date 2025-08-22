@@ -27,6 +27,7 @@ class GeminiDescriber(Describer):
              history_prompt=DEFAULT_HISTORY_PROMPT,
              compact_prompt=DEFAULT_COMPACT_PROMPT,
              max_history_size=False,
+             min_history_size=False,
              model_id="gemini-2.0-flash",
     ):
         super().__init__(
@@ -37,6 +38,7 @@ class GeminiDescriber(Describer):
              history_prompt=history_prompt,
              compact_prompt=compact_prompt,
              max_history_size=max_history_size,
+             min_history_size=min_history_size,
         )
 
         self.model_id = model_id
