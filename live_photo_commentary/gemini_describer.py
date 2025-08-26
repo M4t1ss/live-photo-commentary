@@ -1,3 +1,4 @@
+from logging import PlaceHolder
 import os
 
 from google import genai
@@ -27,6 +28,8 @@ class GeminiDescriber(Describer):
              history_prompt=DEFAULT_HISTORY_PROMPT,
              compact_prompt=DEFAULT_COMPACT_PROMPT,
              max_history_size=False,
+             min_history_size=False,
+             model_id="gemini-2.0-flash",
     ):
         super().__init__(
              system_prompt=system_prompt,
@@ -36,15 +39,17 @@ class GeminiDescriber(Describer):
              history_prompt=history_prompt,
              compact_prompt=compact_prompt,
              max_history_size=max_history_size,
+             min_history_size=min_history_size,
         )
 
+        self.model_id = model_id
         if not gemini_api_key:
             gemini_api_key = os.environ["GEMINI_API_KEY"]
 
         self.client = genai.Client(api_key=gemini_api_key)
 
 
-    def prompt_model(self, user_prompt, images=None, placeholder=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None) -> str | None:
         if not images:
             images = []
 
@@ -56,7 +61,7 @@ class GeminiDescriber(Describer):
         contents.insert(0, user_prompt)
 
         response = self.client.models.generate_content(
-            model="gemini-2.0-flash",
+            model=self.model_id,
             config=genai_types.GenerateContentConfig(system_instruction = self.system_prompt),
             contents=contents,
         )
