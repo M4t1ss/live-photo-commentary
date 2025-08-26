@@ -60,14 +60,25 @@ class LocalDescriber(Describer):
         attn_implementation = 'flash_attention_2' if importlib.util.find_spec('flash_attn') else 'eager'
         cuda_available = torch.cuda.is_available()
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            device_map="cuda" if cuda_available and not device else None,
-            trust_remote_code=True,
-            quantization_config=quantization_config,
-            torch_dtype="auto",
-            _attn_implementation=attn_implementation
-        )
+        if model_id == "Qwen/Qwen2.5-VL-3B-Instruct":
+            from transformers import Qwen2_5_VLForConditionalGeneration
+
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                model_id,
+                device_map="cuda" if cuda_available and not device else None,
+                trust_remote_code=True,
+                quantization_config=quantization_config,
+                torch_dtype="auto",
+            )
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                device_map="cuda" if cuda_available and not device else None,
+                trust_remote_code=True,
+                quantization_config=quantization_config,
+                torch_dtype="auto",
+                _attn_implementation=attn_implementation
+            )
 
         if not cuda_available:
             device = torch.device(device or ("mps" if torch.backends.mps.is_available() else "cpu"))
@@ -106,6 +117,11 @@ class LocalDescriber(Describer):
             return self.prompt_model_gemma3(user_prompt, images)
         elif model_type == "Phi3VForCausalLM":
             return self.prompt_model_phi3V(user_prompt, images)
+        elif model_type == "Phi4MMForCausalLM":
+            return self.prompt_model_phi4MM(user_prompt, images)
+        elif model_type == "Qwen2_5_VLForConditionalGeneration":
+            # no changes from Gemma 3 API
+            return self.prompt_model_gemma3(user_prompt, images)
         else:
             raise NotImplementedError("Unsupported model")
 
@@ -141,6 +157,43 @@ class LocalDescriber(Describer):
 
         generate_ids = self.model.generate(**inputs,
             eos_token_id=self.tokenizer.eos_token_id,
+            **self.generation_args
+        )
+
+        # remove input tokens
+        generate_ids = generate_ids[:, input_len:]
+        response_text = self.processor.batch_decode(
+            generate_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+
+        return response_text
+
+    def prompt_model_phi4MM(self, user_prompt, images=None):
+        if not images:
+            images = []
+        placeholder = ''.join(f"<|image_{ix + 1}|>\n" for ix, _ in enumerate(images))
+        user_prompt = placeholder + user_prompt.replace("<|image_1|>", "first image").replace("<|image_2|>", "second image")
+        prompt = (
+            f"<|system|>{self.system_prompt}<|end|>"
+            f"<|user|>{user_prompt}<|end|><|assistant|>"
+        )
+
+        inputs = self.processor(text=prompt, images=images, return_tensors="pt").to(self.device)
+        input_len = inputs["input_ids"].shape[-1]
+
+        # Avoid Phi bug on MPS
+        if 'image_sizes' in inputs:
+            inputs['image_sizes'] = inputs['image_sizes'].tolist()
+
+        # XXX: Need this?
+        # generation_config = GenerationConfig.from_pretrained(model_path)
+        generate_ids = self.model.generate(**inputs,
+            eos_token_id=self.tokenizer.eos_token_id,
+            num_logits_to_keep=1,
+            # XXX: Need this?
+            # generation_config=generation_config,
             **self.generation_args
         )
 
@@ -191,7 +244,7 @@ class LocalDescriber(Describer):
             add_generation_prompt=True,
             return_dict=True,
             return_tensors="pt",
-        ) # .to(self.device)
+        ).to(self.device)
         input_len = inputs["input_ids"].shape[-1]
 
         with torch.inference_mode():
