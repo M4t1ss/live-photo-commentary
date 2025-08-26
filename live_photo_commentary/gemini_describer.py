@@ -1,3 +1,4 @@
+from logging import PlaceHolder
 import os
 
 from google import genai
@@ -48,7 +49,7 @@ class GeminiDescriber(Describer):
         self.client = genai.Client(api_key=gemini_api_key)
 
 
-    def prompt_model(self, user_prompt, images=None, placeholder=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None) -> str | None:
         if not images:
             images = []
 
