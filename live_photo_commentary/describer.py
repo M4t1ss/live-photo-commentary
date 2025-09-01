@@ -20,14 +20,14 @@ DEFAULT_SYSTEM_PROMPT = (
 ) # + DEFAULT_ENDING
 
 DEFAULT_PROMPT = (
-    "Summarize what is visible in the current screenshot, <|image_1|>. " 
-    "How is it different from the previous screenshot, <|image_2|>? "
+    "Summarize what is visible in the current photo, <|image_1|>. " 
+    "How is it different from the previous photo, <|image_2|>? "
     "There may be some subtle differences as well. "
-    "Do not describe the previous screenshot; assume you have described it already. "
-    "It is only there for context, so you can notice the new things in the current screenshot. "
-    "Do not mention screenshots explicitly; use words like 'I can see...' or 'The user is now...' and similar. "
+    "Do not describe the previous photo; assume you have described it already. "
+    "It is only there for context, so you can notice the new things in the current photo. "
+    "Do not mention photos explicitly; use words like 'I can see...' or 'The user is now...' and similar. "
     "Use the comment history for context and continuity, but the utmost priority should be on "
-    "describing the current activity, as reflected in the current screenshot. "
+    "describing the current activity, as reflected in the current photo. "
 ) + DEFAULT_ENDING
 
 DEFAULT_FIRST_PROMPT = (
