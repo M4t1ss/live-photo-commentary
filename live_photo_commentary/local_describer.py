@@ -41,7 +41,10 @@ class LocalDescriber(Describer):
             return super().__new__(cls)
         
         # Factory logic for LocalDescriber instantiation with lazy imports
-        if "Qwen" in model_id or "gemma" in model_id.lower():
+        if "FastVLM" in model_id:
+            from .local_describers.fastvlm import FastVLMLocalDescriber
+            return FastVLMLocalDescriber(model_id=model_id, **kwargs)
+        elif "Qwen" in model_id or "gemma" in model_id.lower():
             from .local_describers.gemma3 import Gemma3LocalDescriber
             return Gemma3LocalDescriber(model_id=model_id, **kwargs)
         elif "Phi-4" in model_id:
@@ -53,7 +56,7 @@ class LocalDescriber(Describer):
         else:
             raise ValueError(
                 f"Unsupported model: {model_id}. "
-                f"Supported models: Phi-3.x, Phi-4.x, Gemma, Qwen"
+                f"Supported models: FastVLM, Phi-3.x, Phi-4.x, Gemma, Qwen"
             )
 
     def __init__(self,
@@ -117,7 +120,9 @@ class LocalDescriber(Describer):
             "do_sample": True,
         }
         
-        self.device = next(self.model.parameters()).device
+        model_params = next(self.model.parameters())
+        self.device = model_params.device
+        self.dtype = model_params.dtype
     
     def _create_model(self, quantization_config, attn_implementation, cuda_available):
         """Create the model. Subclasses can override this for model-specific logic."""
