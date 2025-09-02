@@ -116,6 +116,9 @@ class Describer(ABC):
             *to_preserve,
         ]
 
+    def reset(self):
+        """Reset the describer to its initial state."""
+        self.history = []
 
     @abstractmethod
     def prompt_model(self, user_prompt, images=None) -> str | None:
