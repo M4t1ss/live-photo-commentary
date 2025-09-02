@@ -16,7 +16,7 @@ class Phi4MMLocalDescriber(LocalDescriber):
             f"<|user|>{user_prompt}<|end|><|assistant|>"
         )
 
-        inputs = self.processor(text=prompt, images=images, return_tensors="pt").to(self.device)
+        inputs = self.processor(text=prompt, images=images or None, return_tensors="pt").to(self.device)
         input_len = inputs["input_ids"].shape[-1]
 
         # Avoid Phi bug on MPS

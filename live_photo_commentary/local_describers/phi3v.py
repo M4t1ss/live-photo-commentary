@@ -29,7 +29,7 @@ class Phi3VLocalDescriber(LocalDescriber):
             add_generation_prompt=True,
         )
 
-        inputs = self.processor(prompt, images, return_tensors="pt").to(self.device)
+        inputs = self.processor(prompt, images or None, return_tensors="pt").to(self.device)
         input_len = inputs["input_ids"].shape[-1]
 
         # Avoid Phi bug on MPS
