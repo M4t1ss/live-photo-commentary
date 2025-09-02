@@ -33,6 +33,8 @@ def image_to_data_uri(image):
 
 class LocalDescriber(Describer):
     """Abstract base class for local vision models with factory pattern."""
+
+    uses_processor = True
     
     def __new__(cls, model_id="microsoft/Phi-3.5-vision-instruct", **kwargs):
         """Factory method that returns the appropriate subclass based on model_id."""
@@ -43,21 +45,23 @@ class LocalDescriber(Describer):
         # Factory logic for LocalDescriber instantiation with lazy imports
         if "FastVLM" in model_id:
             from .local_describers.fastvlm import FastVLMLocalDescriber
-            return FastVLMLocalDescriber(model_id=model_id, **kwargs)
+            instance = super(LocalDescriber, FastVLMLocalDescriber).__new__(FastVLMLocalDescriber)
         elif "Qwen" in model_id or "gemma" in model_id.lower():
             from .local_describers.gemma3 import Gemma3LocalDescriber
-            return Gemma3LocalDescriber(model_id=model_id, **kwargs)
+            instance = super(LocalDescriber, Gemma3LocalDescriber).__new__(Gemma3LocalDescriber)
         elif "Phi-4" in model_id:
             from .local_describers.phi4mm import Phi4MMLocalDescriber
-            return Phi4MMLocalDescriber(model_id=model_id, **kwargs)
+            instance = super(LocalDescriber, Phi4MMLocalDescriber).__new__(Phi4MMLocalDescriber)
         elif "Phi-3" in model_id:
             from .local_describers.phi3v import Phi3VLocalDescriber
-            return Phi3VLocalDescriber(model_id=model_id, **kwargs)
+            instance = super(LocalDescriber, Phi3VLocalDescriber).__new__(Phi3VLocalDescriber)
         else:
             raise ValueError(
                 f"Unsupported model: {model_id}. "
                 f"Supported models: FastVLM, Phi-3.x, Phi-4.x, Gemma, Qwen"
             )
+        
+        return instance
 
     def __init__(self,
                  system_prompt=DEFAULT_SYSTEM_PROMPT,
@@ -101,11 +105,13 @@ class LocalDescriber(Describer):
             except TypeError:
                 self.model = self.model.to(device, dtype=torch.float16)
         
-        self.processor = AutoProcessor.from_pretrained(
-            self.model_id,
-            trust_remote_code=True,
-            num_crops=4
-        )
+        if self.uses_processor:
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_id,
+                trust_remote_code=True,
+                num_crops=4
+            )
+
         try:
             self.tokenizer = self.processor.tokenizer
         except AttributeError:

@@ -10,6 +10,7 @@ from ..local_describer import LocalDescriber
 class FastVLMLocalDescriber(LocalDescriber):
     """LocalDescriber for Apple's FastVLM models."""
     
+    uses_processor = False
     IMAGE_TOKEN_INDEX = -200  # Special token index for FastVLM
     
     def _create_model(self, quantization_config, attn_implementation, cuda_available):
@@ -20,47 +21,8 @@ class FastVLMLocalDescriber(LocalDescriber):
             trust_remote_code=True,
             quantization_config=quantization_config,
             torch_dtype=torch.float16 if cuda_available else torch.float32,
+            attn_implementation=attn_implementation,
         )
-    
-    def _setup_model(self):
-        """Override setup to use AutoTokenizer directly for FastVLM."""
-        quantization_config = None
-        if hasattr(torch.backends, 'cuda') and torch.cuda.is_available():
-            try:
-                import bitsandbytes
-                from transformers.utils.quantization_config import BitsAndBytesConfig
-                quantization_config = BitsAndBytesConfig(load_in_4bit=True)
-            except ImportError:
-                pass
-        
-        cuda_available = torch.cuda.is_available()
-        
-        self.model = self._create_model(quantization_config, None, cuda_available)
-        
-        if not cuda_available:
-            device = torch.device(self.device_param or ("mps" if torch.backends.mps.is_available() else "cpu"))
-            try:
-                self.model = self.model.to(device)
-            except TypeError:
-                self.model = self.model.to(device, dtype=torch.float16)
-        
-        # FastVLM uses AutoTokenizer directly
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_id,
-            trust_remote_code=True,
-            use_fast=False
-        )
-        
-        # No separate processor needed for FastVLM
-        self.processor = None
-        
-        self.generation_args = {
-            "max_new_tokens": 200,
-            "temperature": 0.2,
-            "do_sample": True,
-        }
-        
-        self.device = next(self.model.parameters()).device
     
     def prompt_model(self, user_prompt, images=None) -> str | None:
         if not images:
@@ -116,6 +78,7 @@ class FastVLMLocalDescriber(LocalDescriber):
                 "images": images_tensor,
                 "attention_mask": attention_mask,
                 "eos_token_id": self.tokenizer.eos_token_id,
+                "pad_token_id": self.tokenizer.eos_token_id,  # Suppress pad_token_id warning
                 **self.generation_args
             }
             
