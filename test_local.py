@@ -59,6 +59,14 @@ elif "Phi-3.5" in model_id:
 elif "Phi-4" in model_id:
     model = "Phi-4"
     size = "5.6B"
+elif "gemma" in model_id:
+    model = "Gemma"
+    if "4b" in model_id:
+        size = "4B"
+    elif "12b" in model_id:
+        size = "12B"
+    elif "27b" in model_id:
+        size = "27B"
 elif "Qwen2.5-VL" in model_id:
     model = "Qwen2.5-VL"
     if "3B" in model_id:
