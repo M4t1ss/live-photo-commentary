@@ -29,7 +29,7 @@ pick_and_concat() {
   printf '%s\n' "${chosen[*]}"
 }
 
-conda activate phi4
+pyenv activate phi4
 
 models=("google/gemma-3-4b-it" "Qwen/Qwen2.5-VL-3B-Instruct" "microsoft/Phi-4-multimodal-instruct")
 
@@ -43,7 +43,7 @@ for model in "${models[@]}"; do
     python test_local.py $model $concatenated >> output.tsv
 done
 
-conda activate phi3
+pyenv activate phi3
 
 models=("microsoft/Phi-3.5-vision-instruct" "microsoft/Phi-3.5-vision-instruct" "microsoft/Phi-3.5-vision-instruct")
 
@@ -57,14 +57,14 @@ for model in "${models[@]}"; do
     python test_local.py $model $concatenated >> output.tsv
 done
 
-conda activate appl
+pyenv activate appl
 
 models=("apple/FastVLM-0.5B" "apple/FastVLM-1.5B" "apple/FastVLM-7B")
 
 shopt -s nullglob nocaseglob
 images=( "tests"/*.{jpg,jpeg} )
 shopt -u nocaseglob
-sadasd
+
 for model in "${models[@]}"; do
     concatenated="$(pick_and_concat ' ' "${images[@]}")"
     echo "python test_local.py "$model" "$concatenated" 2>/dev/null >> output.tsv"
