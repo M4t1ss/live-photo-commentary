@@ -28,8 +28,23 @@ pick_and_concat() {
   local IFS="$sep"
   printf '%s\n' "${chosen[*]}"
 }
+source /home/matt/.pyenv/versions/phi4/bin/activate
 
 models=("apple/FastVLM-0.5B" "apple/FastVLM-1.5B" "google/gemma-3-4b-it" "Qwen/Qwen2.5-VL-3B-Instruct" "microsoft/Phi-4-multimodal-instruct")
+
+shopt -s nullglob nocaseglob
+images=( "tests"/*.{jpg,jpeg} )
+shopt -u nocaseglob
+
+for model in "${models[@]}"; do
+    concatenated="$(pick_and_concat ' ' "${images[@]}")"
+    echo "python test_local.py "$model" "$concatenated" 2>/dev/null >> output.tsv"
+    python test_local.py $model $concatenated >> output.tsv
+done
+
+source /home/matt/.pyenv/versions/phi3/bin/activate
+
+models=("microsoft/Phi-3.5-vision-instruct" "microsoft/Phi-3.5-vision-instruct" "microsoft/Phi-3.5-vision-instruct")
 
 shopt -s nullglob nocaseglob
 images=( "tests"/*.{jpg,jpeg} )
