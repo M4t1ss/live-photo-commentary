@@ -1,10 +1,26 @@
 from PIL import Image
-import sys
 import time
 import soundfile as sf
 import os
 import torch
 import platform
+from transformers import set_seed
+import argparse
+import numpy as np
+import random
+
+def set_all_seed(seed=347155):
+    set_seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+parser=argparse.ArgumentParser()
+parser.add_argument("--seed", help="Random seed")
+parser.add_argument("--model", help="Model to evaluate")
+parser.add_argument("--history", help="Maximum history size")
+
+args=parser.parse_args()
 
 if torch.cuda.is_available():
     log_device = torch.cuda.get_device_name(0).replace("NVIDIA GeForce ", "").replace(" GPU", "")
@@ -15,11 +31,15 @@ else:
 from live_photo_commentary.local_describer import LocalDescriber
 from live_photo_commentary.synthesizer import Synthesizer
 
-model_id = sys.argv[1]
-if len(sys.argv) > 2:
-    max_history = sys.argv[2]
+model_id = args.model
+if args.history != None:
+    max_history = int(args.history)
 else:
     max_history = 5
+if args.seed != None:
+    set_all_seed(args.seed)
+else:
+    set_all_seed(347155)
 
 images = []
 tests_dir = "tests"
@@ -44,6 +64,9 @@ prev_file = ""
 log_images = ""
 history = -1
 for jpg_file in images:
+    rand_num = random.randint(0, 999999)
+    set_all_seed(rand_num)
+
     image = Image.open(jpg_file)
     image.load()
     start = time.perf_counter()
@@ -102,4 +125,4 @@ for jpg_file in images:
             size = "72B"
 
     print(log_device + "\t" + model + "\t" + size + "\t" + str(text_time) + "\t" + str(speech_time) + "\t" + log_images.replace("tests/","") 
-    + "\t" + str(history) + "\t" + str(max_history) + "\t" + describer_output.replace("\n", " "))
+    + "\t" + str(history) + "\t" + str(max_history) + "\t" + str(rand_num) + "\t" + describer_output.replace("\n", " "))
