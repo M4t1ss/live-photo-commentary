@@ -74,6 +74,10 @@ class LocalDescriber(Describer):
                  min_history_size=False,
                  model_id="microsoft/Phi-3.5-vision-instruct",
                  device=None,
+                 processor_kwargs=None,
+                 tokenizer_kwargs=None,
+                 model_kwargs=None,
+                 generation_kwargs=None,
     ):
         super().__init__(
             system_prompt=system_prompt,
@@ -88,6 +92,10 @@ class LocalDescriber(Describer):
         
         self.model_id = model_id
         self.device_param = device
+        self.processor_kwargs = processor_kwargs or {}
+        self.tokenizer_kwargs = tokenizer_kwargs or {}
+        self.model_kwargs = model_kwargs or {}
+        self.generation_kwargs = generation_kwargs or {}
         self._setup_model()
         
     def _setup_model(self):
@@ -106,25 +114,30 @@ class LocalDescriber(Describer):
                 self.model = self.model.to(device, dtype=torch.float16)
         
         if self.uses_processor:
+            processor_kwargs = {
+                "trust_remote_code": True,
+                "num_crops": 4
+            } | self.processor_kwargs
             self.processor = AutoProcessor.from_pretrained(
                 self.model_id,
-                trust_remote_code=True,
-                num_crops=4
+                **processor_kwargs
             )
-
         try:
             self.tokenizer = self.processor.tokenizer
         except AttributeError:
+            tokenizer_kwargs = {
+                "trust_remote_code": True,
+            } | self.tokenizer_kwargs
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.model_id,
-                trust_remote_code=True,
+                **tokenizer_kwargs
             )
         
         self.generation_args = {
             "max_new_tokens": 200,
             "temperature": 0.2,
             "do_sample": True,
-        }
+        } | self.generation_kwargs
         
         model_params = next(self.model.parameters())
         self.device = model_params.device
@@ -132,13 +145,16 @@ class LocalDescriber(Describer):
     
     def _create_model(self, quantization_config, attn_implementation, cuda_available):
         """Create the model. Subclasses can override this for model-specific logic."""
+        model_kwargs = {
+            "device_map": "cuda" if cuda_available and not self.device_param else None,
+            "trust_remote_code": True,
+            "quantization_config": quantization_config,
+            "torch_dtype": "auto",
+            "_attn_implementation": attn_implementation
+        } | self.model_kwargs
         return AutoModelForCausalLM.from_pretrained(
             self.model_id,
-            device_map="cuda" if cuda_available and not self.device_param else None,
-            trust_remote_code=True,
-            quantization_config=quantization_config,
-            torch_dtype="auto",
-            _attn_implementation=attn_implementation
+            **model_kwargs
         )
     
     @abstractmethod

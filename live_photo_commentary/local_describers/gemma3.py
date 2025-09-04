@@ -12,12 +12,15 @@ class Gemma3LocalDescriber(LocalDescriber):
         """Create the model with Qwen-specific handling."""
         if self.model_id == "Qwen/Qwen2.5-VL-3B-Instruct":
             from transformers import Qwen2_5_VLForConditionalGeneration
+            model_kwargs = {
+                "device_map": "cuda" if cuda_available and not self.device_param else None,
+                "trust_remote_code": True,
+                "quantization_config": quantization_config,
+                "torch_dtype": "auto",
+            } | self.model_kwargs
             return Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 self.model_id,
-                device_map="cuda" if cuda_available and not self.device_param else None,
-                trust_remote_code=True,
-                quantization_config=quantization_config,
-                torch_dtype="auto",
+                **model_kwargs
             )
         else:
             return super()._create_model(quantization_config, attn_implementation, cuda_available)
