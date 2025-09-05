@@ -34,26 +34,26 @@ pyenv activate phi4
 models=("google/gemma-3-4b-it" "Qwen/Qwen2.5-VL-3B-Instruct" "microsoft/Phi-4-multimodal-instruct")
 
 shopt -s nullglob nocaseglob
-images=( "tests"/*.{jpg,jpeg} )
+images=( "tests"/*.png )
 shopt -u nocaseglob
 
 for model in "${models[@]}"; do
     concatenated="$(pick_and_concat ' ' "${images[@]}")"
-    echo "python test_local.py "$model" "$concatenated" 2>/dev/null >> output.tsv"
+    echo "python test_local.py "$model" "$concatenated" >> output.tsv"
     python test_local.py $model $concatenated >> output.tsv
 done
 
 pyenv activate phi3
 
-models=("microsoft/Phi-3.5-vision-instruct" "microsoft/Phi-3.5-vision-instruct" "microsoft/Phi-3.5-vision-instruct")
+models=("microsoft/Phi-3.5-vision-instruct")
 
 shopt -s nullglob nocaseglob
-images=( "tests"/*.{jpg,jpeg} )
+images=( "tests"/*.png )
 shopt -u nocaseglob
 
 for model in "${models[@]}"; do
     concatenated="$(pick_and_concat ' ' "${images[@]}")"
-    echo "python test_local.py "$model" "$concatenated" 2>/dev/null >> output.tsv"
+    echo "python test_local.py "$model" "$concatenated" >> output.tsv"
     python test_local.py $model $concatenated >> output.tsv
 done
 
@@ -62,11 +62,11 @@ pyenv activate appl
 models=("apple/FastVLM-0.5B" "apple/FastVLM-1.5B" "apple/FastVLM-7B")
 
 shopt -s nullglob nocaseglob
-images=( "tests"/*.{jpg,jpeg} )
+images=( "tests"/*.png )
 shopt -u nocaseglob
 
 for model in "${models[@]}"; do
     concatenated="$(pick_and_concat ' ' "${images[@]}")"
-    echo "python test_local.py "$model" "$concatenated" 2>/dev/null >> output.tsv"
+    echo "python test_local.py "$model" "$concatenated" >> output.tsv"
     python test_local.py $model $concatenated >> output.tsv
 done

@@ -10,8 +10,11 @@ IPython
 scipy
 numpy
 gradio
-# bitsandbytes
-# flash-attn
+bitsandbytes
+#flash-attn
 google-genai
 notebook
 ipywidgets
+timm
+accelerate
+

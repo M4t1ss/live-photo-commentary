@@ -100,7 +100,7 @@ class LocalDescriber(Describer):
         
     def _setup_model(self):
         """Common model setup logic."""
-        quantization_config = BitsAndBytesConfig(load_in_4bit=True) if importlib.util.find_spec('bitsandbytes') else None
+        quantization_config = BitsAndBytesConfig(load_in_4bit=True) if "Phi-4" not in self.model_id and importlib.util.find_spec('bitsandbytes') else None
         attn_implementation = 'flash_attention_2' if importlib.util.find_spec('flash_attn') else 'eager'
         cuda_available = torch.cuda.is_available()
         

@@ -9,8 +9,11 @@ import argparse
 import numpy as np
 import random
 
-from live_photo_commentary.local_describer import LocalDescriber
+from live_photo_commentary.remote_describer import RemoteDescriber
 from live_photo_commentary.synthesizer import Synthesizer
+
+gemini_api_key = os.environ["GEMINI_API_KEY"]
+openai_api_key = os.environ["OPENAI_API_KEY"]
 
 def set_all_seed(seed=347155):
     set_seed(seed)
@@ -20,7 +23,7 @@ def set_all_seed(seed=347155):
 
 parser=argparse.ArgumentParser()
 parser.add_argument("--seed", help="Random seed")
-parser.add_argument("--model", help="Model to evaluate")
+parser.add_argument("--system", help="Model to evaluate")
 parser.add_argument("--history", help="Maximum history size")
 
 args=parser.parse_args()
@@ -30,9 +33,7 @@ if torch.cuda.is_available():
 else:
     log_device = platform.processor()
 
-
-
-model_id = args.model
+system = args.system
 if args.history != None:
     max_history = int(args.history)
 else:
@@ -51,12 +52,11 @@ for filename in os.listdir(tests_dir):
 kwargs = {
     "max_history_size": max_history,
 }
-if model_id == "microsoft/Phi-4-multimodal-instruct":
-    kwargs["load_in_4bit"] = False
-else:
-    kwargs["load_in_4bit"] = True
  
-describer = LocalDescriber(model_id=model_id, **kwargs)
+if system == "Gemini":
+    describer = RemoteDescriber(provider="gemini", model_id="gemini-2.5-flash-lite", api_key=gemini_api_key)
+elif system == "GPT":
+    describer = RemoteDescriber(provider="openai", model_id="gpt-4o-mini", api_key=openai_api_key)
 synthesizer = Synthesizer()
 sample_rate = synthesizer.sample_rate()
 
@@ -92,38 +92,12 @@ for jpg_file in images:
     speech_time = time.perf_counter() - start
 
     model = size = ""
-    if "FastVLM" in model_id:
-        model = "FastVLM"
-        if "7B" in model_id:
-            size = "7B"
-        elif "1.5B" in model_id:
-            size = "1.5B"
-        elif "0.5B" in model_id:
-            size = "0.5B"
-    elif "Phi-3.5" in model_id:
-        model = "Phi-3.5"
-        size = "4.2B"
-    elif "Phi-4" in model_id:
-        model = "Phi-4"
-        size = "5.6B"
-    elif "gemma" in model_id:
-        model = "Gemma"
-        if "4b" in model_id:
-            size = "4B"
-        elif "12b" in model_id:
-            size = "12B"
-        elif "27b" in model_id:
-            size = "27B"
-    elif "Qwen2.5-VL" in model_id:
-        model = "Qwen2.5-VL"
-        if "3B" in model_id:
-            size = "3B"
-        elif "7B" in model_id:
-            size = "7B"
-        elif "32B" in model_id:
-            size = "32B"
-        elif "72B" in model_id:
-            size = "72B"
+    if "Gemini" in system:
+        model = "Gemini"
+        size = "2.5-flash-lite"
+    elif "GPT" in system:
+        model = "GPT"
+        size = "4o-mini"
 
     print(log_device + "\t" + model + "\t" + size + "\t" + str(text_time) + "\t" + str(speech_time) + "\t" + log_images.replace("tests/","") 
     + "\t" + str(history) + "\t" + str(max_history) + "\t" + str(rand_num) + "\t" + describer_output.replace("\n", " "))

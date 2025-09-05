@@ -2,9 +2,24 @@ from PIL import Image
 import sys
 import time
 import soundfile as sf
+import torch
+import platform
+import argparse
+import random
+from transformers import set_seed
+import numpy as np
 
 from live_photo_commentary.local_describer import LocalDescriber
 from live_photo_commentary.synthesizer import Synthesizer
+
+def set_all_seed(seed=347155):
+    set_seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+rand_num = random.randint(0, 999999)
+set_all_seed(rand_num)
 
 model_id = sys.argv[1]
 image_file = sys.argv[2]
@@ -14,8 +29,13 @@ else:
     image_file_2 = False
 
 kwargs = {
-    "max_history_size": 5,
+    "max_history_size": 0,
 }
+
+if torch.cuda.is_available():
+    log_device = torch.cuda.get_device_name(0).replace("NVIDIA GeForce ", "").replace(" GPU", "")
+else:
+    log_device = platform.processor()
  
 describer = LocalDescriber(model_id=model_id, **kwargs)
 synthesizer = Synthesizer()
@@ -78,4 +98,4 @@ elif "Qwen2.5-VL" in model_id:
     elif "72B" in model_id:
         size = "72B"
 
-print(model + "\t" + size + "\t" + str(text_time) + "\t" + str(speech_time) + "\t" + image_file.replace("tests/","") + "\t" + describer_output.replace("\n", " "))
+print(log_device + "\t" + model + "\t" + size + "\t" + str(text_time) + "\t" + str(speech_time) + "\t" + image_file.replace("tests/","") + "\t" + describer_output.replace("\n", " "))
