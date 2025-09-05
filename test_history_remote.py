@@ -46,7 +46,7 @@ else:
 images = []
 tests_dir = "tests"
 for filename in os.listdir(tests_dir):
-    if filename.lower().endswith(".jpg"):
+    if filename.lower().endswith(".png"):
         images.append(os.path.join(tests_dir, filename))
 
 kwargs = {
@@ -64,20 +64,20 @@ prev_image = None
 prev_file = ""
 log_images = ""
 history = -1
-for jpg_file in images:
+for png_file in images:
     rand_num = random.randint(0, 999999)
     set_all_seed(rand_num)
 
-    image = Image.open(jpg_file)
+    image = Image.open(png_file)
     image.load()
     start = time.perf_counter()
     if prev_image:
         describer_output = describer(image, prev_image)
     else:
         describer_output = describer(image)
-    log_images = jpg_file + " " + prev_file
+    log_images = png_file + " " + prev_file
     prev_image = image
-    prev_file = jpg_file
+    prev_file = png_file
     text_time = time.perf_counter() - start
     history += 1
 
