@@ -2,7 +2,7 @@
 
 pyenv activate phi4
 
-models=("google/gemma-3-4b-it" "Qwen/Qwen2.5-VL-3B-Instruct" "microsoft/Phi-4-multimodal-instruct")
+models=("google/gemma-3-4b-it" "google/gemma-3-12b-it" "Qwen/Qwen2.5-VL-3B-Instruct" "Qwen/Qwen2.5-VL-7B-Instruct" "microsoft/Phi-4-multimodal-instruct")
 
 for model in "${models[@]}"; do
     echo "python test_history_local.py --model"$model" >> output.tsv"
