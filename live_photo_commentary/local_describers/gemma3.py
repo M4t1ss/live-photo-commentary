@@ -10,7 +10,7 @@ class Gemma3LocalDescriber(LocalDescriber):
     
     def _create_model(self, quantization_config, attn_implementation, cuda_available):
         """Create the model with Qwen-specific handling."""
-        if self.model_id == "Qwen/Qwen2.5-VL-3B-Instruct":
+        if "Qwen/Qwen2.5-VL-" in self.model_id:
             from transformers import Qwen2_5_VLForConditionalGeneration
             model_kwargs = {
                 "device_map": "cuda" if cuda_available and not self.device_param else None,
