@@ -104,8 +104,9 @@ class Describer(ABC):
 
     def compact_history(self):
         num_uncompacted = self.min_history_size or 0
-        to_compact = self.history[:-num_uncompacted]
-        to_preserve = self.history[-num_uncompacted:]
+        uncompacted = len(self.history) - num_uncompacted
+        to_compact = self.history[:uncompacted]
+        to_preserve = self.history[uncompacted:]
         user_prompt = '\n'.join([
             self.compact_prompt,
             *to_compact,
