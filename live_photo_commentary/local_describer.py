@@ -78,6 +78,7 @@ class LocalDescriber(Describer):
                  tokenizer_kwargs=None,
                  model_kwargs=None,
                  generation_kwargs=None,
+                 **kwargs
     ):
         super().__init__(
             system_prompt=system_prompt,

@@ -55,6 +55,20 @@ def image_to_bytes(image):
 
 
 class Describer(ABC):
+    def __new__(cls, **kwargs):
+        """Factory method that returns the appropriate subclass based on local parameter."""
+        local = kwargs.pop('local', False)
+        if cls is not Describer:
+            # Direct instantiation of subclass
+            return super().__new__(cls)
+        
+        if local:
+            from .local_describer import LocalDescriber
+            return LocalDescriber(**kwargs)
+        else:
+            from .remote_describer import RemoteDescriber
+            return RemoteDescriber(**kwargs)
+
     def __init__(self,
              system_prompt=DEFAULT_SYSTEM_PROMPT,
              ending=DEFAULT_ENDING,
