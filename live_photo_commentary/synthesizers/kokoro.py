@@ -11,7 +11,10 @@ class KokoroSynthesizer(Synthesizer):
         super().__init__(**kwargs)
         
         if voice:
-            self.voice = voice
+            if isinstance(voice, str):
+                self.voice = torch.load(voice, weights_only=True)
+            else:
+                self.voice = voice
         else:
             voice_tensor1 = torch.load('voices/af_nicole.pt', weights_only=True)
             voice_tensor2 = torch.load('voices/jf_alpha.pt', weights_only=True)
