@@ -65,7 +65,7 @@ Initial example without an animated avatar.
 The following table shows results in total seconds from testing the description generation on several selected consumer devices. The cases with a `-` denote unsuccesful runs for the specific device and model configuration.
 
 | Model           	| Phi-3.5 	|  Phi-4  	|  Gemma 	|        	| Qwen2.5-VL 	|       	|       	| FastVLM 	|       	|
-|-----------------	|:-------:	|:-------:	|:------:	|:------:	|:----------:	|:-----:	|:-----:	|:-------:	|:-----:	|
+|-----------------	|--------:	|--------:	|-------:	|-------:	|-----------:	|------:	|------:	|--------:	|------:	|
 | Size            	|    4.2B 	|    5.6B 	|     4B 	|    12B 	|         3B 	|    7B 	|  0.5B 	|    1.5B 	|    7B 	|
 | RTX 3090        	|    9.77 	|   14.19 	|  25.93 	|  31.37 	|       9.91 	| 10.24 	|  9.06 	|   11.35 	| 12.11 	|
 | GTX 1650 Laptop 	|  110.97 	|       - 	| 548.28 	|      - 	|     247.21 	|     - 	| 13.68 	|       - 	|     - 	|
@@ -93,7 +93,7 @@ The different models also tend to generate outputs in different lengths
 There is also considerable overlap sometimes between the last outputs, especially for smaller models when using history.
 
 |            	|                	| History 0 	|        	| History 1 	|        	| History 5 	|        	|
-|------------	|----------------	|:---------:	|:------:	|:---------:	|:------:	|:---------:	|:------:	|
+|------------	|---------------:	|----------:	|-------:	|----------:	|-------:	|----------:	|-------:	|
 | Model      	|           Size 	|    tok    	|   chr  	|    tok    	|   chr  	|    tok    	|   chr  	|
 | Phi-3.5    	|           4.2B 	|   58.22%  	|  8.77% 	|   90.93%  	| 63.01% 	|   89.47%  	| 43.23% 	|
 | Phi-4      	|           5.6B 	|   57.29%  	|  7.08% 	|   96.10%  	| 85.32% 	|   96.10%  	| 54.88% 	|
