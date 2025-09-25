@@ -55,6 +55,20 @@ def image_to_bytes(image):
 
 
 class Describer(ABC):
+    def __new__(cls, **kwargs):
+        """Factory method that returns the appropriate subclass based on local parameter."""
+        local = kwargs.pop('local', False)
+        if cls is not Describer:
+            # Direct instantiation of subclass
+            return super().__new__(cls)
+        
+        if local:
+            from .local_describer import LocalDescriber
+            return LocalDescriber(**kwargs)
+        else:
+            from .remote_describer import RemoteDescriber
+            return RemoteDescriber(**kwargs)
+
     def __init__(self,
              system_prompt=DEFAULT_SYSTEM_PROMPT,
              ending=DEFAULT_ENDING,
@@ -97,15 +111,16 @@ class Describer(ABC):
         else:
             user_prompt = self.first_prompt
 
-        response_text = self.prompt_model(user_prompt, images)
+        response_text = self.prompt_model(user_prompt, images, self.system_prompt)
         self.history.append(response_text)
         return response_text
 
 
     def compact_history(self):
         num_uncompacted = self.min_history_size or 0
-        to_compact = self.history[:-num_uncompacted]
-        to_preserve = self.history[-num_uncompacted:]
+        uncompacted = len(self.history) - num_uncompacted
+        to_compact = self.history[:uncompacted]
+        to_preserve = self.history[uncompacted:]
         user_prompt = '\n'.join([
             self.compact_prompt,
             *to_compact,
@@ -121,5 +136,5 @@ class Describer(ABC):
         self.history = []
 
     @abstractmethod
-    def prompt_model(self, user_prompt, images=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         ...

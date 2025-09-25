@@ -49,6 +49,7 @@ class RemoteDescriber(Describer):
                  min_history_size=False,
                  model_id=None,
                  provider="gemini",
+                 **kwargs
     ):
         super().__init__(
             system_prompt=system_prompt,

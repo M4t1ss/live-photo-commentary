@@ -78,6 +78,7 @@ class LocalDescriber(Describer):
                  tokenizer_kwargs=None,
                  model_kwargs=None,
                  generation_kwargs=None,
+                 **kwargs
     ):
         super().__init__(
             system_prompt=system_prompt,
@@ -158,6 +159,6 @@ class LocalDescriber(Describer):
         )
     
     @abstractmethod
-    def prompt_model(self, user_prompt, images=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         """Abstract method to be implemented by subclasses."""
         pass

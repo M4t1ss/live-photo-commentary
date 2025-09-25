@@ -24,15 +24,18 @@ class FastVLMLocalDescriber(LocalDescriber):
             attn_implementation=attn_implementation,
         )
     
-    def prompt_model(self, user_prompt, images=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         if not images:
             images = []
         
         user_prompt = re.sub(r'<\|image_\d+\|>', '<image>', user_prompt)
         
-        messages = [
-            {"role": "user", "content": user_prompt}
-        ]
+        messages = []
+        
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        
+        messages.append({"role": "user", "content": user_prompt})
         
         rendered = self.tokenizer.apply_chat_template(
             messages,

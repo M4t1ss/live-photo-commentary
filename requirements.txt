@@ -17,4 +17,4 @@ notebook
 ipywidgets
 timm
 accelerate
-
+semantic_text_splitter
