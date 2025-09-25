@@ -26,7 +26,7 @@ class OpenAIDescriber(RemoteDescriber):
         """Setup the OpenAI API client."""
         self.client = OpenAI(api_key=self.api_key)
     
-    def prompt_model(self, user_prompt, images=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         if not images:
             images = []
 
@@ -49,16 +49,21 @@ class OpenAIDescriber(RemoteDescriber):
             })
 
         # Build messages array
-        messages = [
-            {
-                "role": "system",
-                "content": self.system_prompt
-            },
+        if system_prompt:
+            messages = [
+                {
+                    "role": "system",
+                    "content": self.system_prompt
+                },
+            ]
+        else:
+            messages = []
+        messages.append(
             {
                 "role": "user",
                 "content": content
             }
-        ]
+        )
 
         response = self.client.chat.completions.create(
             model=self.model_id,
