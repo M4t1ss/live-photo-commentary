@@ -6,13 +6,14 @@ from ..local_describer import LocalDescriber
 class Phi4MMLocalDescriber(LocalDescriber):
     """LocalDescriber for Phi-4MM models."""
     
-    def prompt_model(self, user_prompt, images=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         if not images:
             images = []
         placeholder = ''.join(f"<|image_{ix + 1}|>\n" for ix, _ in enumerate(images))
         user_prompt = placeholder + user_prompt.replace("<|image_1|>", "first image").replace("<|image_2|>", "second image")
+        system_prompt_fragment = f"<|system|>{system_prompt}<|end|>" if system_prompt else ""
         prompt = (
-            f"<|system|>{self.system_prompt}<|end|>"
+            system_prompt_fragment +
             f"<|user|>{user_prompt}<|end|><|assistant|>"
         )
 

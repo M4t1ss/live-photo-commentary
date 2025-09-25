@@ -6,22 +6,26 @@ from ..local_describer import LocalDescriber
 class Phi3VLocalDescriber(LocalDescriber):
     """LocalDescriber for Phi-3V models."""
 
-    def prompt_model(self, user_prompt, images=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         if not images:
             images = []
         placeholder = ''.join(f"<|image_{ix + 1}|>\n" for ix, _ in enumerate(images))
         user_prompt = placeholder + user_prompt.replace("<|image_1|>", "first image").replace("<|image_2|>", "second image")
 
-        messages = [
-            {
+        messages = []
+        
+        if system_prompt:
+            messages.append({
                 "role": "system",
-                "content": self.system_prompt,
-            },
+                "content": system_prompt,
+            })
+        
+        messages.append(
             {
                 "role": "user",
                 "content": user_prompt,
-            },
-        ]
+            }
+        )
 
         prompt = self.tokenizer.apply_chat_template(
             messages,

@@ -111,7 +111,7 @@ class Describer(ABC):
         else:
             user_prompt = self.first_prompt
 
-        response_text = self.prompt_model(user_prompt, images)
+        response_text = self.prompt_model(user_prompt, images, self.system_prompt)
         self.history.append(response_text)
         return response_text
 
@@ -136,5 +136,5 @@ class Describer(ABC):
         self.history = []
 
     @abstractmethod
-    def prompt_model(self, user_prompt, images=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         ...
