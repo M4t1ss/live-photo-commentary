@@ -25,19 +25,23 @@ class Gemma3LocalDescriber(LocalDescriber):
         else:
             return super()._create_model(quantization_config, attn_implementation, cuda_available)
     
-    def prompt_model(self, user_prompt, images=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         user_prompt = user_prompt.replace("<|image_1|>", "first image").replace("<|image_2|>", "second image")
 
-        messages = [
-            {
+        messages = []        
+        
+        if system_prompt:
+            messages.append({
                 "role": "system",
                 "content": [
                     {
                         "type": "text",
-                        "text": self.system_prompt,
+                        "text": system_prompt,
                     },
                 ],
-            },
+            })
+        
+        messages.append(
             {
                 "role": "user",
                 "content": [
@@ -53,8 +57,8 @@ class Gemma3LocalDescriber(LocalDescriber):
                         "text": user_prompt,
                     },
                 ],
-            },
-        ]
+            }
+        )
 
         inputs = self.processor.apply_chat_template(
             messages,

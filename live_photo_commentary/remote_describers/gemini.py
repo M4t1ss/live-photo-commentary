@@ -18,20 +18,26 @@ class GeminiDescriber(RemoteDescriber):
         """Setup the Gemini API client."""
         self.client = genai.Client(api_key=self.api_key)
     
-    def prompt_model(self, user_prompt, images=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         if not images:
             images = []
 
         # Create the prompt with text and multiple images
         contents: genai_types.ContentListUnion = [
-            genai_types.Part.from_bytes(data=image_to_bytes(image), mime_type='image/png')
-            for image in images
+            user_prompt,
+            *[
+                genai_types.Part.from_bytes(data=image_to_bytes(image), mime_type='image/png')
+                for image in images
+            ]
         ]
-        contents.insert(0, user_prompt)
+
+        config = genai_types.GenerateContentConfig()
+        if system_prompt:
+            config.system_instruction = system_prompt
 
         response = self.client.models.generate_content(
             model=self.model_id,
-            config=genai_types.GenerateContentConfig(system_instruction=self.system_prompt),
+            config=config,
             contents=contents,
         )
         return response.text

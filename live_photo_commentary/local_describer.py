@@ -159,6 +159,6 @@ class LocalDescriber(Describer):
         )
     
     @abstractmethod
-    def prompt_model(self, user_prompt, images=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         """Abstract method to be implemented by subclasses."""
         pass
