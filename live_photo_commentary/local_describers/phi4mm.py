@@ -5,8 +5,12 @@ from ..local_describer import LocalDescriber
 
 class Phi4MMLocalDescriber(LocalDescriber):
     """LocalDescriber for Phi-4MM models."""
-    
-    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
+
+    def build_messages(self, user_prompt, images=None, system_prompt=None):
+        """Build prompt string for Phi-4MM models."""
+
+        # NOTE: Phi-4MM uses a custom prompt format rather than chat messages,
+        # but we maintain the same method signature for consistency.
         if not images:
             images = []
         placeholder = ''.join(f"<|image_{ix + 1}|>\n" for ix, _ in enumerate(images))
@@ -16,6 +20,12 @@ class Phi4MMLocalDescriber(LocalDescriber):
             system_prompt_fragment +
             f"<|user|>{user_prompt}<|end|><|assistant|>"
         )
+        return prompt
+
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
+        if not images:
+            images = []
+        prompt = self.build_messages(user_prompt, images, system_prompt)
 
         inputs = self.processor(text=prompt, images=images or None, return_tensors="pt").to(self.device)
         input_len = inputs["input_ids"].shape[-1]
@@ -24,13 +34,9 @@ class Phi4MMLocalDescriber(LocalDescriber):
         if 'image_sizes' in inputs:
             inputs['image_sizes'] = inputs['image_sizes'].tolist()
 
-        # XXX: Need this?
-        # generation_config = GenerationConfig.from_pretrained(model_path)
         generate_ids = self.model.generate(**inputs,
             eos_token_id=self.tokenizer.eos_token_id,
             num_logits_to_keep=1,
-            # XXX: Need this?
-            # generation_config=generation_config,
             **self.generation_args
         )
 
