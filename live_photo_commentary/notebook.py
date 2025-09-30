@@ -385,6 +385,23 @@ class UI:
 
                     self.images = decide_gif(gs)
                     audio_url = segment_to_data_url(segment, sample_rate)
+
+                    # Calculate duration
+                    duration = len(segment) / sample_rate
+
+                    # Save audio clip for debugging
+                    clips_dir = Path('clips')
+                    clips_dir.mkdir(exist_ok=True)
+                    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                    clip_filename = f"{timestamp}-{duration:.3f}.wav"
+                    clip_path = clips_dir / clip_filename
+                    audio_tensor = segment.cpu().unsqueeze(0)
+                    torchaudio.save(str(clip_path), audio_tensor, sample_rate)
+
+                    if logfile:
+                        logfile.write(f"[audio clip saved: {clip_filename}, {len(segment)} samples, {duration:.3f}s]\n")
+                        logfile.flush()
+
                     js = f"""
                         window.{self.audio_id}.src = {json.dumps(audio_url)}
                         window.{self.audio_id}.play()
@@ -392,7 +409,6 @@ class UI:
                     self.run_js(js)
 
                     # wait till synthesized clip is finished playing
-                    duration = len(segment) / sample_rate
                     playback_end = time.perf_counter() + duration
                     while True:
                         if not self.looping:
