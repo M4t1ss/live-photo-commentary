@@ -17,28 +17,29 @@ def image_to_base64_url(image):
 
 class OpenAIDescriber(RemoteDescriber):
     """Describer for OpenAI API."""
-    
+
     def get_default_model(self):
         """Return the default model ID for OpenAI."""
         return "gpt-4o"
-    
+
     def _setup_client(self):
         """Setup the OpenAI API client."""
         self.client = OpenAI(api_key=self.api_key)
-    
-    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
+
+    def build_messages(self, user_prompt, images=None, system_prompt=None):
+        """Build messages array for OpenAI API."""
         if not images:
             images = []
 
         # Build the content array with text and images
         content = []
-        
+
         # Add text content
         content.append({
             "type": "text",
             "text": user_prompt
         })
-        
+
         # Add images
         for image in images:
             content.append({
@@ -53,7 +54,7 @@ class OpenAIDescriber(RemoteDescriber):
             messages = [
                 {
                     "role": "system",
-                    "content": self.system_prompt
+                    "content": system_prompt
                 },
             ]
         else:
@@ -64,6 +65,11 @@ class OpenAIDescriber(RemoteDescriber):
                 "content": content
             }
         )
+
+        return messages
+
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
+        messages = self.build_messages(user_prompt, images, system_prompt)
 
         response = self.client.chat.completions.create(
             model=self.model_id,

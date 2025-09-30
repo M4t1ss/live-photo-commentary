@@ -7,7 +7,7 @@ from ..local_describer import LocalDescriber, image_to_data_uri
 
 class Gemma3LocalDescriber(LocalDescriber):
     """LocalDescriber for Gemma3 and Qwen2.5 models."""
-    
+
     def _create_model(self, quantization_config, attn_implementation, cuda_available):
         """Create the model with Qwen-specific handling."""
         if self.model_id == "Qwen/Qwen2.5-VL-3B-Instruct":
@@ -24,12 +24,13 @@ class Gemma3LocalDescriber(LocalDescriber):
             )
         else:
             return super()._create_model(quantization_config, attn_implementation, cuda_available)
-    
-    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
+
+    def build_messages(self, user_prompt, images=None, system_prompt=None):
+        """Build chat messages for Gemma3 and Qwen2.5 models."""
         user_prompt = user_prompt.replace("<|image_1|>", "first image").replace("<|image_2|>", "second image")
 
-        messages = []        
-        
+        messages = []
+
         if system_prompt:
             messages.append({
                 "role": "system",
@@ -40,7 +41,7 @@ class Gemma3LocalDescriber(LocalDescriber):
                     },
                 ],
             })
-        
+
         messages.append(
             {
                 "role": "user",
@@ -59,6 +60,11 @@ class Gemma3LocalDescriber(LocalDescriber):
                 ],
             }
         )
+
+        return messages
+
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
+        messages = self.build_messages(user_prompt, images, system_prompt)
 
         inputs = self.processor.apply_chat_template(
             messages,

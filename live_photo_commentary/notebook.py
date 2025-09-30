@@ -8,7 +8,8 @@ from pathlib import Path
 from contextlib import nullcontext
 import threading
 import io
-import torchaudio
+import wave
+import numpy as np
 
 import ipywidgets as widgets
 from IPython import get_ipython  # type: ignore[import]
@@ -76,9 +77,20 @@ def pil_resize_to_height(img, height):
 
 
 def segment_to_data_url(segment, sample_rate):
-    audio_tensor = segment.cpu().unsqueeze(0)
+    # Convert tensor to numpy array and ensure it's in the right format
+    audio_np = segment.cpu().numpy()
+
+    # Convert from float32 [-1, 1] to int16 PCM
+    audio_int16 = (audio_np * 32767).astype(np.int16)
+
+    # Write to WAV using wave library
     wav_buffer = io.BytesIO()
-    torchaudio.save(wav_buffer, audio_tensor, sample_rate, format="wav")
+    with wave.open(wav_buffer, 'wb') as wav_file:
+        wav_file.setnchannels(1)  # Mono
+        wav_file.setsampwidth(2)  # 2 bytes for int16
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(audio_int16.tobytes())
+
     wav_data = wav_buffer.getvalue()
     audio_url = "data:audio/wav;base64," + base64.b64encode(wav_data).decode()
     return audio_url
