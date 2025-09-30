@@ -11,23 +11,23 @@ DEFAULT_ENDING = (
 )
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are a friendly chatty commentator who likes to casually describe work done by a computer user " 
+    "You are a friendly chatty commentator who likes to casually describe work done by a photographer " 
     "in various details, even by pondering the implications on work, or leisure, being performed, etc. "
     "Write your response in a very personal way using personal pronouns and explaining what you see, "
     "perhaps also adding how it makes you feel. " 
-    "Do your best to not be repetitive in your choice of words and keep the response length down to a few sentences. "
+    "Do your best to not be repetitive in your choice of words. You MUST keep the response length to no more than three sentences. "
     "You MUST NOT mention any specific layout elements or tools that may be visible on the screen, such as gridlines or sliders. "
 ) # + DEFAULT_ENDING
 
 DEFAULT_PROMPT = (
-    "Summarize what is visible in the current screenshot, <|image_1|>. " 
-    "How is it different from the previous screenshot, <|image_2|>? "
+    "Summarize what is visible in the current photo, <|image_1|>. " 
+    "How is it different from the previous photo, <|image_2|>? "
     "There may be some subtle differences as well. "
-    "Do not describe the previous screenshot; assume you have described it already. "
-    "It is only there for context, so you can notice the new things in the current screenshot. "
-    "Do not mention screenshots explicitly; use words like 'I can see...' or 'The user is now...' and similar. "
+    "Do not describe the previous photo; assume you have described it already. "
+    "It is only there for context, so you can notice the new things in the current photo. "
+    "Do not mention photos explicitly; use words like 'I can see...' or 'The photographer is now...' and similar. "
     "Use the comment history for context and continuity, but the utmost priority should be on "
-    "describing the current activity, as reflected in the current screenshot. "
+    "describing the current activity, as reflected in the current photo. DO NOT repeat comments from the history. "
 ) + DEFAULT_ENDING
 
 DEFAULT_FIRST_PROMPT = (
@@ -55,6 +55,20 @@ def image_to_bytes(image):
 
 
 class Describer(ABC):
+    def __new__(cls, **kwargs):
+        """Factory method that returns the appropriate subclass based on local parameter."""
+        local = kwargs.pop('local', False)
+        if cls is not Describer:
+            # Direct instantiation of subclass
+            return super().__new__(cls)
+        
+        if local:
+            from .local_describer import LocalDescriber
+            return LocalDescriber(**kwargs)
+        else:
+            from .remote_describer import RemoteDescriber
+            return RemoteDescriber(**kwargs)
+
     def __init__(self,
              system_prompt=DEFAULT_SYSTEM_PROMPT,
              ending=DEFAULT_ENDING,
@@ -104,8 +118,9 @@ class Describer(ABC):
 
     def compact_history(self):
         num_uncompacted = self.min_history_size or 0
-        to_compact = self.history[:-num_uncompacted]
-        to_preserve = self.history[-num_uncompacted:]
+        uncompacted = len(self.history) - num_uncompacted
+        to_compact = self.history[:uncompacted]
+        to_preserve = self.history[uncompacted:]
         user_prompt = '\n'.join([
             self.compact_prompt,
             *to_compact,
@@ -116,7 +131,10 @@ class Describer(ABC):
             *to_preserve,
         ]
 
+    def reset(self):
+        """Reset the describer to its initial state."""
+        self.history = []
 
     @abstractmethod
-    def prompt_model(self, user_prompt, images=None) -> str | None:
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         ...

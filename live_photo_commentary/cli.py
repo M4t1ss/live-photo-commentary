@@ -36,10 +36,11 @@ def loop(describer, synthesizer):
 def parse_args(args):
     parser = ArgumentParser()
 
-    parser.add_argument('-g', '--gemini_api_key', required=False)
+    parser.add_argument('-a', '--api_key', required=False, help='API key for remote providers')
+    parser.add_argument('-p', '--provider', required=False, default='gemini', choices=['gemini', 'openai'], help='Remote API provider')
     parser.add_argument('-m', '--max_history_size', type=int, required=False)
     parser.add_argument('-l', '--local', action='store_true')
-    parser.add_argument('-M', '--model', required=False)
+    parser.add_argument('-M', '--model', required=False, help='Model to use (local models or remote model names like gpt-4o, gemini-1.5-pro)')
 
     args = parser.parse_args(args)
     return args
@@ -58,9 +59,13 @@ def main(args):
             params["model_id"] = args.model
         describer = LocalDescriber(**params)
     else:
-        from live_photo_commentary.gemini_describer import GeminiDescriber
-        gemini_api_key = args.gemini_api_key
-        describer = GeminiDescriber(gemini_api_key=gemini_api_key, **params)
+        from live_photo_commentary.remote_describer import RemoteDescriber
+        params["provider"] = args.provider
+        if args.api_key:
+            params["api_key"] = args.api_key
+        if args.model:
+            params["model_id"] = args.model
+        describer = RemoteDescriber(**params)
 
     from live_photo_commentary.synthesizer import Synthesizer
     synthesizer = Synthesizer()

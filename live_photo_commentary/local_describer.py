@@ -1,4 +1,5 @@
 import importlib.util
+from abc import abstractmethod
 from io import BytesIO
 import base64
 
@@ -17,8 +18,8 @@ from .describer import (
 )
 
 
-
 def image_to_data_uri(image):
+    """Convert PIL image to data URI."""
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     buffer.seek(0)
@@ -26,184 +27,137 @@ def image_to_data_uri(image):
     image_bytes = buffer.read()
     image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    # Return as data URL
     return f"data:image/png;base64,{image_base64}"
 
 
 class LocalDescriber(Describer):
+    """Abstract base class for local vision models with factory pattern."""
+
+    uses_processor = True
+    
+    def __new__(cls, model_id="microsoft/Phi-3.5-vision-instruct", **kwargs):
+        """Factory method that returns the appropriate subclass based on model_id."""
+        if cls is not LocalDescriber:
+            # Direct instantiation of subclass
+            return super().__new__(cls)
+        
+        # Factory logic for LocalDescriber instantiation with lazy imports
+        if "FastVLM" in model_id:
+            from .local_describers.fastvlm import FastVLMLocalDescriber
+            instance = super(LocalDescriber, FastVLMLocalDescriber).__new__(FastVLMLocalDescriber)
+        elif "Qwen" in model_id or "gemma" in model_id.lower():
+            from .local_describers.gemma3 import Gemma3LocalDescriber
+            instance = super(LocalDescriber, Gemma3LocalDescriber).__new__(Gemma3LocalDescriber)
+        elif "Phi-4" in model_id:
+            from .local_describers.phi4mm import Phi4MMLocalDescriber
+            instance = super(LocalDescriber, Phi4MMLocalDescriber).__new__(Phi4MMLocalDescriber)
+        elif "Phi-3" in model_id:
+            from .local_describers.phi3v import Phi3VLocalDescriber
+            instance = super(LocalDescriber, Phi3VLocalDescriber).__new__(Phi3VLocalDescriber)
+        else:
+            raise ValueError(
+                f"Unsupported model: {model_id}. "
+                f"Supported models: FastVLM, Phi-3.x, Phi-4.x, Gemma, Qwen"
+            )
+        
+        return instance
+
     def __init__(self,
-             system_prompt=DEFAULT_SYSTEM_PROMPT,
-             ending=DEFAULT_ENDING,
-             first_prompt=DEFAULT_FIRST_PROMPT,
-             prompt=DEFAULT_PROMPT,
-             history_prompt=DEFAULT_HISTORY_PROMPT,
-             compact_prompt=DEFAULT_COMPACT_PROMPT,
-             max_history_size=False,
-             min_history_size=False,
-             model_id="microsoft/Phi-3.5-vision-instruct",
-             device=None,
+                 system_prompt=DEFAULT_SYSTEM_PROMPT,
+                 ending=DEFAULT_ENDING,
+                 first_prompt=DEFAULT_FIRST_PROMPT,
+                 prompt=DEFAULT_PROMPT,
+                 history_prompt=DEFAULT_HISTORY_PROMPT,
+                 compact_prompt=DEFAULT_COMPACT_PROMPT,
+                 max_history_size=False,
+                 min_history_size=False,
+                 model_id="microsoft/Phi-3.5-vision-instruct",
+                 device=None,
+                 processor_kwargs=None,
+                 tokenizer_kwargs=None,
+                 model_kwargs=None,
+                 generation_kwargs=None,
+                 **kwargs
     ):
         super().__init__(
-             system_prompt=system_prompt,
-             ending=ending,
-             first_prompt=first_prompt,
-             prompt=prompt,
-             history_prompt=history_prompt,
-             compact_prompt=compact_prompt,
-             max_history_size=max_history_size,
-             min_history_size=min_history_size,
+            system_prompt=system_prompt,
+            ending=ending,
+            first_prompt=first_prompt,
+            prompt=prompt,
+            history_prompt=history_prompt,
+            compact_prompt=compact_prompt,
+            max_history_size=max_history_size,
+            min_history_size=min_history_size,
         )
-
+        
+        self.model_id = model_id
+        self.device_param = device
+        self.processor_kwargs = processor_kwargs or {}
+        self.tokenizer_kwargs = tokenizer_kwargs or {}
+        self.model_kwargs = model_kwargs or {}
+        self.generation_kwargs = generation_kwargs or {}
+        self._setup_model()
+        
+    def _setup_model(self):
+        """Common model setup logic."""
         quantization_config = BitsAndBytesConfig(load_in_4bit=True) if importlib.util.find_spec('bitsandbytes') else None
-
         attn_implementation = 'flash_attention_2' if importlib.util.find_spec('flash_attn') else 'eager'
         cuda_available = torch.cuda.is_available()
-
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            device_map="cuda" if cuda_available and not device else None,
-            trust_remote_code=True,
-            quantization_config=quantization_config,
-            torch_dtype="auto",
-            _attn_implementation=attn_implementation
-        )
-
+        
+        self.model = self._create_model(quantization_config, attn_implementation, cuda_available)
+        
         if not cuda_available:
-            device = torch.device(device or ("mps" if torch.backends.mps.is_available() else "cpu"))
-            # Fallback dtype
+            device = torch.device(self.device_param or ("mps" if torch.backends.mps.is_available() else "cpu"))
             try:
                 self.model = self.model.to(device)
             except TypeError:
                 self.model = self.model.to(device, dtype=torch.float16)
-
-        # for best performance, use num_crops=4 for multi-frame, num_crops=16 for single-frame.
-        self.processor = AutoProcessor.from_pretrained(
-            model_id,
-            trust_remote_code=True,
-            num_crops=4
-        )
+        
+        if self.uses_processor:
+            processor_kwargs = {
+                "trust_remote_code": True,
+                "num_crops": 4
+            } | self.processor_kwargs
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_id,
+                **processor_kwargs
+            )
         try:
             self.tokenizer = self.processor.tokenizer
         except AttributeError:
+            tokenizer_kwargs = {
+                "trust_remote_code": True,
+            } | self.tokenizer_kwargs
             self.tokenizer = AutoTokenizer.from_pretrained(
-                model_id,
-                trust_remote_code=True,
+                self.model_id,
+                **tokenizer_kwargs
             )
-
+        
         self.generation_args = {
             "max_new_tokens": 200,
             "temperature": 0.2,
             "do_sample": True,
-        }
-
-        self.device = next(self.model.parameters()).device
-
-    def prompt_model(self, user_prompt, images=None) -> str | None:
-
-        model_type = self.model.__class__.__name__
-        if model_type == "Gemma3ForConditionalGeneration":
-            return self.prompt_model_gemma3(user_prompt, images)
-        elif model_type == "Phi3VForCausalLM":
-            return self.prompt_model_phi3V(user_prompt, images)
-        else:
-            raise NotImplementedError("Unsupported model")
-
-    def prompt_model_phi3V(self, user_prompt, images=None):
-        if not images:
-            images = []
-        placeholder = ''.join(f"<|image_{ix + 1}|>\n" for ix, _ in enumerate(images))
-        user_prompt = placeholder + user_prompt.replace("<|image_1|>", "first image").replace("<|image_2|>", "second image")
-
-        messages = [
-            {
-                "role": "system",
-                "content": self.system_prompt,
-            },
-            {
-                "role": "user",
-                "content": user_prompt,
-            },
-        ]
-
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
+        } | self.generation_kwargs
+        
+        model_params = next(self.model.parameters())
+        self.device = model_params.device
+        self.dtype = model_params.dtype
+    
+    def _create_model(self, quantization_config, attn_implementation, cuda_available):
+        """Create the model. Subclasses can override this for model-specific logic."""
+        model_kwargs = {
+            "device_map": "cuda" if cuda_available and not self.device_param else None,
+            "trust_remote_code": True,
+            "quantization_config": quantization_config,
+            "torch_dtype": "auto",
+            "_attn_implementation": attn_implementation
+        } | self.model_kwargs
+        return AutoModelForCausalLM.from_pretrained(
+            self.model_id,
+            **model_kwargs
         )
-
-        inputs = self.processor(prompt, images, return_tensors="pt").to(self.device)
-        input_len = inputs["input_ids"].shape[-1]
-
-        # Avoid Phi bug on MPS
-        if 'image_sizes' in inputs:
-            inputs['image_sizes'] = inputs['image_sizes'].tolist()
-
-        generate_ids = self.model.generate(**inputs,
-            eos_token_id=self.tokenizer.eos_token_id,
-            **self.generation_args
-        )
-
-        # remove input tokens
-        generate_ids = generate_ids[:, input_len:]
-        response_text = self.processor.batch_decode(
-            generate_ids,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=False,
-        )[0]
-
-        return response_text
-
-    def prompt_model_gemma3(self, user_prompt, images=None):
-        user_prompt = user_prompt.replace("<|image_1|>", "first image").replace("<|image_2|>", "second image")
-
-        messages = [
-            {
-                "role": "system",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": self.system_prompt,
-                    },
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    *[
-                        {
-                            "type": "image",
-                            "url": image_to_data_uri(image),
-                        }
-                        for image in images or []
-                    ],
-                    {
-                        "type": "text",
-                        "text": user_prompt,
-                    },
-                ],
-            },
-        ]
-
-        inputs = self.processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt",
-        ) # .to(self.device)
-        input_len = inputs["input_ids"].shape[-1]
-
-        with torch.inference_mode():
-            generate_ids = self.model.generate(**inputs,
-                eos_token_id=self.tokenizer.eos_token_id,
-                **self.generation_args
-            )
-
-        generate_ids = generate_ids[:, input_len:][0]
-        response_text = self.tokenizer.decode(
-            generate_ids,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=False
-        )
-
-        return response_text
+    
+    @abstractmethod
+    def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
+        """Abstract method to be implemented by subclasses."""
+        pass

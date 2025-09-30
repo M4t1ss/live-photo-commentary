@@ -1,40 +1,63 @@
-import warnings
-
-from kokoro import KPipeline
-import torch
+from abc import ABC, abstractmethod
 
 
-class Synthesizer:
-    def __init__(self, voice=None):
-        if voice:
-            self.voice = voice
+class Synthesizer(ABC):
+    def __new__(cls, **kwargs):
+        """Factory method that returns the appropriate synthesizer implementation."""
+        engine = kwargs.pop('engine', 'kokoro')
+        if cls is not Synthesizer:
+            # Direct instantiation of subclass
+            return super().__new__(cls)
+        
+        # Factory logic for Synthesizer instantiation - delegate to specific implementations
+        if engine == 'kokoro':
+            from .synthesizers.kokoro import KokoroSynthesizer
+            return KokoroSynthesizer(**kwargs)
+        elif engine == 'vits':
+            from .synthesizers.vits import VitsSynthesizer
+            return VitsSynthesizer(**kwargs)
+        elif engine == 'speecht5':
+            from .synthesizers.speecht5 import SpeechT5Synthesizer
+            return SpeechT5Synthesizer(**kwargs)
         else:
-            voice_tensor1 = torch.load('voices/af_nicole.pt', weights_only=True)
-            voice_tensor2 = torch.load('voices/jf_alpha.pt', weights_only=True)
-            t = 0.3
-            self.voice = (1 - t) * voice_tensor1 + t * voice_tensor2
+            raise ValueError(
+                f"Unsupported engine: {engine}. "
+                f"Supported engines: kokoro, vits, speecht5"
+            )
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', 
-                category=UserWarning,
-                module='torch.nn.modules.rnn',
-            )
-            warnings.filterwarnings('ignore',
-                category=UserWarning,
-                module='torch.nn.utils.weight_norm',
-            )
-            self.pipeline = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M')
+    def __init__(self, max_chunk=None, **kwargs):
+        self.max_chunk = max_chunk
+        if max_chunk is not None:
+            from semantic_text_splitter import TextSplitter
+            self.text_splitter = TextSplitter(capacity=max_chunk)
+        else:
+            self.text_splitter = None
 
     def __call__(self, text):
-        yield from self.pipeline(text, voice=self.voice, speed=1, split_pattern=r'\n+')
+        """Synthesize text to audio. Handles text splitting if max_chunk is set."""
+        if self.text_splitter is not None:
+            # Split text into chunks and synthesize each
+            chunks = list(self.text_splitter.chunks(text))
+            for chunk in chunks:
+                yield from self.synthesize(chunk)
+        else:
+            # No splitting, synthesize the full text
+            yield from self.synthesize(text)
 
+    @abstractmethod
+    def synthesize(self, text):
+        """Synthesize text to audio. Should yield audio chunks."""
+        pass
+
+    @abstractmethod
     def sample_rate(self):
-        return 24000
+        """Return the sample rate of the synthesized audio."""
+        pass
 
 
 if __name__ == '__main__':
     import sounddevice as sd
-    synthesizer = Synthesizer()
+    synthesizer = Synthesizer(engine='kokoro')
     text = "Hello, world!"
     for gs, ps, audio in synthesizer(text):
         sd.play(audio, samplerate=synthesizer.sample_rate())

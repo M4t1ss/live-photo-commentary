@@ -16,6 +16,7 @@ gradio
 google-genai
 notebook
 ipywidgets
+semantic_text_splitter
 
 peft
 backoff
