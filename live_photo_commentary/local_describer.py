@@ -4,7 +4,6 @@ import base64
 
 import torch
 from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
-from transformers.pipelines import image_segmentation
 from transformers.utils.quantization_config import BitsAndBytesConfig
 
 from .describer import (
