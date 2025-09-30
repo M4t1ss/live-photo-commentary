@@ -5,7 +5,8 @@ sounddevice
 torch
 torchaudio
 torchvision
-transformers<4.41
+# transformers<4.41
+transformers
 IPython
 scipy
 numpy
@@ -15,3 +16,8 @@ gradio
 google-genai
 notebook
 ipywidgets
+
+peft
+backoff
+
+pytest
