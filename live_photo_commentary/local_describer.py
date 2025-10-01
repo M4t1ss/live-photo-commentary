@@ -42,7 +42,10 @@ class LocalDescriber(Describer):
             return super().__new__(cls)
         
         # Factory logic for LocalDescriber instantiation with lazy imports
-        if "FastVLM" in model_id:
+        if "dummy" in model_id.lower():
+            from .local_describers.dummy import DummyDescriber
+            instance = super(Describer, DummyDescriber).__new__(DummyDescriber)
+        elif "FastVLM" in model_id:
             from .local_describers.fastvlm import FastVLMLocalDescriber
             instance = super(LocalDescriber, FastVLMLocalDescriber).__new__(FastVLMLocalDescriber)
         elif "Qwen" in model_id or "gemma" in model_id.lower():
@@ -57,7 +60,7 @@ class LocalDescriber(Describer):
         else:
             raise ValueError(
                 f"Unsupported model: {model_id}. "
-                f"Supported models: FastVLM, Phi-3.x, Phi-4.x, Gemma, Qwen"
+                f"Supported models: dummy, FastVLM, Phi-3.x, Phi-4.x, Gemma, Qwen"
             )
         
         return instance

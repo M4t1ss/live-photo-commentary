@@ -19,3 +19,4 @@ peft
 backoff
 
 pytest
+dummy-text-generator
