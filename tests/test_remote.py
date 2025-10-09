@@ -1,4 +1,5 @@
 import pytest
+import sys
 from unittest.mock import patch, MagicMock, ANY
 from PIL import Image
 from live_photo_commentary.describer import Describer
@@ -67,6 +68,12 @@ class GeminiProvider:
 @pytest.mark.parametrize("num_images", [0, 1, 2])
 @pytest.mark.parametrize("ProviderClass", [OpenAIProvider, GeminiProvider])
 def test_prompt_model_with_system_prompt(ProviderClass, num_images):
+    # Mock the openai package if not installed, then import module to make it available for patching
+    if ProviderClass == OpenAIProvider:
+        if 'openai' not in sys.modules:
+            sys.modules['openai'] = MagicMock()
+        from live_photo_commentary.remote_describers import openai
+
     with patch(ProviderClass.patch_path) as MockClient:
         # Wire provider-specific fake response
         fake_response = ProviderClass.wire_fake_response(MockClient)
@@ -92,6 +99,12 @@ def test_prompt_model_with_system_prompt(ProviderClass, num_images):
 @pytest.mark.parametrize("num_images", [0, 1, 2])
 @pytest.mark.parametrize("ProviderClass", [OpenAIProvider, GeminiProvider])
 def test_prompt_model_without_system_prompt(ProviderClass, num_images):
+    # Mock the openai package if not installed, then import module to make it available for patching
+    if ProviderClass == OpenAIProvider:
+        if 'openai' not in sys.modules:
+            sys.modules['openai'] = MagicMock()
+        from live_photo_commentary.remote_describers import openai
+
     with patch(ProviderClass.patch_path) as MockClient:
         # Wire provider-specific fake response
         fake_response = ProviderClass.wire_fake_response(MockClient)
