@@ -111,7 +111,7 @@ class Describer(ABC):
         else:
             user_prompt = self.first_prompt
 
-        response_text = self.prompt_model(user_prompt, images)
+        response_text = self.prompt_model(user_prompt, images, system_prompt=self.system_prompt)
         self.history.append(response_text)
         return response_text
 
