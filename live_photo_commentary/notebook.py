@@ -16,12 +16,11 @@ from IPython import get_ipython  # type: ignore[import]
 from IPython.display import display, HTML, Javascript, Image
 
 from live_photo_commentary.screenshot import screenshot, difference
+from live_photo_commentary.animations import Animations
 
 
 timer_format = '{:.1f}'
-screenshot_height = 265
 screenshot_margin = 10
-waiting_image = 'gifs/waiting_bg.gif'
 animation_length = 9.0
 
 
@@ -31,36 +30,6 @@ def shift(l, default=None):
         return l.pop(0)
     except IndexError:
         return default
-
-
-def decide_gif(text):
-    text = text.lower()
-    outputs = []
-    talking = ["gtalking_bg.gif","talking_bg.gif","talking2_bg.gif","talking3_bg.gif","ctalking_bg.gif"]
-    
-    if any(i in text for i in ["hello", "greet", "waving", "waves"]):
-        outputs.append("gifs/"+"waving"+"_bg.gif")
-    if any(i in text for i in ["scar", "creep", "fright", "spook"]):
-        outputs.append("gifs/"+"scary"+"_bg.gif")
-    if any(i in text for i in ["love", "cute", "nice", "like"]):
-        outputs.append("gifs/"+"lovely"+"_bg.gif")
-    if any(i in text for i in ["interest", "think", "wonder", "thought"]):
-        outputs.append("gifs/"+"lovely"+"_bg.gif")
-    if any(i in text for i in ["happy", "cheer", "inspir", "shin"]):
-        outputs.append("gifs/"+"happy"+"_bg.gif")
-
-    outputs = list(set(outputs))
-    outputs.append("gifs/"+random.choice(talking))
-    random.shuffle(outputs)
-    return outputs
-
-
-def img_file_to_data_uri(path):
-    with open(path, "rb") as f:
-        data = f.read()
-        b64 = base64.b64encode(data).decode("utf-8")
-        ext = path.split(".")[-1]
-        return f"data:image/{ext};base64,{b64}"
 
 
 def pil_to_image(img):
@@ -102,7 +71,8 @@ class UI:
             describer, synthesizer,
             extra_delay=0, logdir=None,
             screenshot_kwargs=None, crop=None,
-            difference_threshold=None, difference_measure='mse', difference_kwargs=None
+            difference_threshold=None, difference_measure='mse', difference_kwargs=None,
+            animations='animations.yaml'
         ):
         self.instance_id = str(uuid.uuid4()).replace('-', '')
         self.describer = describer
@@ -114,6 +84,7 @@ class UI:
         self.difference_threshold = difference_threshold
         self.difference_measure = difference_measure
         self.difference_kwargs = difference_kwargs or {}
+        self.animations = Animations(animations)
 
         self.audio_id = f'audio_{self.instance_id}'
         self.img_id = f'img_{self.instance_id}'
@@ -125,26 +96,31 @@ class UI:
 
         button_style = dict(button_color='white', font_weight='bold', font_size='16px')
         button_layout = widgets.Layout(width='80px', height='35px')
-        self.btn_start = widgets.Button(description="Loop", layout=button_layout, style=button_style)
+        self.btn_start = widgets.Button(description="Start", layout=button_layout, style=button_style)
         self.btn_stop = widgets.Button(description="Stop", layout=button_layout, style=button_style)
-        self.btn_wave = widgets.Button(description="Wave", layout=button_layout, style=button_style)
-        self.btn_look = widgets.Button(description="Look", layout=button_layout, style=button_style)
-        self.btn_dance = widgets.Button(description="Dance", layout=button_layout, style=button_style)
-        self.btn_wait = widgets.Button(description="Wait", layout=button_layout, style=button_style)
+
+        # Create buttons dynamically from animations
+        animation_buttons = []
+        for animated_button in self.animations.buttons:
+            btn = widgets.Button(description=animated_button.label, layout=button_layout, style=button_style)
+            btn.on_click(lambda _, ab=animated_button: self.show_animation(ab))
+            animation_buttons.append(btn)
+
         self.timer = widgets.Label(
-            value='[📎]', 
+            value='[📎]',
             layout=widgets.Layout(align_self='center', display='flex', justify_content='flex-start', font_size='26px !important', width='200px'),
             style=dict(font_size='26px', font_weight='bold'),
         )
         self.timer.add_class(self.timer_class)
-        self.output_image = widgets.Output(layout={'height': '550px'})
+        self.output_image = widgets.Output()
         self.textbox = widgets.HTML()
         self.javscr = widgets.Output()
         button_hbox = widgets.HBox(
-            (self.btn_start, self.btn_stop, self.btn_wave, self.btn_look, self.btn_dance, self.btn_wait, self.timer),
+            (self.btn_start, self.btn_stop, *animation_buttons, self.timer),
             layout=widgets.Layout(align_items='center')
         )
-        screenshot_layout = dict(height=f'{screenshot_height}px')
+        self.screenshot_height = (self.animations.max_height - screenshot_margin) // 2
+        screenshot_layout = dict(height=f'{self.screenshot_height}px')
         self.curr_screenshot = widgets.Output(layout=screenshot_layout)
         self.prev_screenshot = widgets.Output(layout=dict(margin=f'{screenshot_margin}px 0 0 0', **screenshot_layout))
         screenshot_vbox = widgets.VBox(
@@ -153,16 +129,23 @@ class UI:
         image_hbox = widgets.HBox(
             (self.output_image, screenshot_vbox)
         )
+        self.image_hbox_class = f'image_hbox_{self.instance_id}'
+        image_hbox.add_class(self.image_hbox_class)
 
         display(button_hbox, image_hbox, self.textbox, self.javscr)
 
-        initial_uri = img_file_to_data_uri('gifs/waiting_bg.gif')
+        initial_animation = self.animations.system['waiting'].pick()
+        initial_uri = initial_animation.data_uri()
 
         # Show the initial image
         html = f"""
             <style>
               .{self.timer_class}.countUp {{
                 color: red;
+              }}
+              .{self.image_hbox_class} .widget-output,
+              .{self.image_hbox_class} .jp-RenderedHTMLCommon > *:last-child {{
+                margin: 0;
               }}
             </style>
             <div>
@@ -219,10 +202,6 @@ class UI:
 
         self.btn_start.on_click(self.start_loop)
         self.btn_stop.on_click(self.stop_loop)
-        self.btn_dance.on_click(self.dance)
-        self.btn_look.on_click(self.look)
-        self.btn_wave.on_click(self.wave)
-        self.btn_wait.on_click(self.wait)
 
 
     def set_text(self, gs_list):
@@ -264,21 +243,13 @@ class UI:
 
         self.btn_start.disabled = False
 
-    def dance(self, _):
-        self.fade_to_image("gifs/xdancing_bg.gif")
+    def show_animation(self, animated_button):
+        """Handler for animation buttons."""
+        animation = animated_button.pick()
+        self.fade_to_image(animation)
 
-    def look(self, _):
-        self.fade_to_image("gifs/looking_bg.gif")
-
-    def wave(self, _):
-        self.fade_to_image("gifs/hello_bg.gif")
-
-    def wait(self, _):
-        self.fade_to_image("gifs/waiting_bg.gif")
-
-
-    def fade_to_image(self, img_path):
-        url = img_file_to_data_uri(img_path)
+    def fade_to_image(self, animation):
+        url = animation.data_uri()
         js = f"""
             fadeToImage({json.dumps(self.img_id)}, {json.dumps(url)})
         """
@@ -336,11 +307,11 @@ class UI:
 
                 # image processing and display
                 self.curr_screenshot.outputs = ()
-                curr_image = pil_to_image(pil_resize_to_height(curr_screenshot, screenshot_height))
+                curr_image = pil_to_image(pil_resize_to_height(curr_screenshot, self.screenshot_height))
                 self.curr_screenshot.append_display_data(curr_image)
                 if prev_screenshot:
                     self.prev_screenshot.outputs = ()
-                    prev_image = pil_to_image(pil_resize_to_height(prev_screenshot, screenshot_height))
+                    prev_image = pil_to_image(pil_resize_to_height(prev_screenshot, self.screenshot_height))
                     self.prev_screenshot.append_display_data(prev_image)
 
                 # description
@@ -395,7 +366,10 @@ class UI:
                         logfile.write(text.replace("\n", "") + "\n")
                         logfile.flush()
 
-                    self.images = decide_gif(gs)
+                    # Calculate duration and find animations
+                    duration = len(segment) / sample_rate
+                    self.images = self.animations.find_animations(gs, duration)
+
                     audio_url = segment_to_data_url(segment, sample_rate)
                     js = f"""
                         window.{self.audio_id}.src = {json.dumps(audio_url)}
@@ -404,7 +378,6 @@ class UI:
                     self.run_js(js)
 
                     # wait till synthesized clip is finished playing
-                    duration = len(segment) / sample_rate
                     playback_end = time.perf_counter() + duration
                     while True:
                         if not self.looping:
@@ -426,12 +399,12 @@ class UI:
 
 
     def run_images(self):
-        self.fade_to_image(waiting_image)
         images = []
         while self.looping:
             if self.images:
                 images, self.images = self.images, None
 
+            waiting_image = self.animations.system['waiting'].pick()
             new_image = shift(images, waiting_image)
             self.fade_to_image(new_image)
             time.sleep(animation_length)
