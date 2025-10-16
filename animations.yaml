@@ -1,5 +1,7 @@
 ---
 animations:
+  blank:
+    - gifs/blank.gif
   talking:
     - gifs/gtalking_bg.gif
     - gifs/talking_bg.gif
@@ -73,6 +75,15 @@ buttons:
     animations:
       - waiting
 system:
+  blank:
+    animations:
+      - blank
   waiting:
     animations:
       - waiting
+  start:
+    animations:
+      - walk-on
+  stop:
+    animations:
+      - walk-off

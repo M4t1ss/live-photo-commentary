@@ -252,6 +252,9 @@ class Animations:
 
         return [animation for _, animation in best_combo]
 
+    def pick(self, setname):
+        return self.system[setname].pick()
+
 
                 
 
@@ -259,6 +262,7 @@ class Animations:
 if __name__ == '__main__':
     random.seed(42)
     animations = Animations('animations.yaml')
+    print(animations.pick('start'))
     text = 'Hello! I am very scared! Would you like to wave to me? Very cute! Are you happy with this?'
     text_animations = animations.find_animations(text, 25)
     print(text_animations)

@@ -21,7 +21,6 @@ from live_photo_commentary.animations import Animations
 
 timer_format = '{:.1f}'
 screenshot_margin = 10
-animation_length = 9.0
 
 
 
@@ -134,7 +133,7 @@ class UI:
 
         display(button_hbox, image_hbox, self.textbox, self.javscr)
 
-        initial_animation = self.animations.system['waiting'].pick()
+        initial_animation = self.animations.pick('waiting')
         initial_uri = initial_animation.data_uri()
 
         # Show the initial image
@@ -404,7 +403,7 @@ class UI:
             if self.images:
                 images, self.images = self.images, None
 
-            waiting_image = self.animations.system['waiting'].pick()
+            waiting_image = self.animations.pick('waiting')
             new_image = shift(images, waiting_image)
             self.fade_to_image(new_image)
-            time.sleep(animation_length)
+            time.sleep(new_image.duration)
