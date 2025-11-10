@@ -1,8 +1,7 @@
 import json
 import uuid
 import base64
-import random
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 from pathlib import Path
 from contextlib import nullcontext
@@ -12,7 +11,6 @@ import wave
 import numpy as np
 
 import ipywidgets as widgets
-from IPython import get_ipython  # type: ignore[import]
 from IPython.display import display, HTML, Javascript, Image
 
 from live_photo_commentary.screenshot import screenshot, difference
@@ -22,13 +20,6 @@ from live_photo_commentary.animations import Animations
 timer_format = '{:.1f}'
 screenshot_margin = 10
 
-
-
-def shift(l, default=None):
-    try:
-        return l.pop(0)
-    except IndexError:
-        return default
 
 
 def pil_to_image(img):
@@ -92,6 +83,8 @@ class UI:
         self.images = None
         self.thread = None
         self.images_thread = None
+        self.animation_condition = threading.Condition()
+        self.default_animation = 'blank'
 
         button_style = dict(button_color='white', font_weight='bold', font_size='16px')
         button_layout = widgets.Layout(width='80px', height='35px')
@@ -133,7 +126,7 @@ class UI:
 
         display(button_hbox, image_hbox, self.textbox, self.javscr)
 
-        initial_animation = self.animations.pick('waiting')
+        initial_animation = self.animations.pick('blank')
         initial_uri = initial_animation.data_uri()
 
         # Show the initial image
@@ -156,13 +149,7 @@ class UI:
         js = """
             window.fadeToImage = function fadeToImage(img_id, uri) {
                 const img = document.getElementById(img_id);
-                if (img) {
-                    img.style.opacity = 0;
-                    setTimeout(function() {
-                        img.src = uri;
-                        img.style.opacity = 1;
-                    }, 50);
-                }
+                img.src = uri;
             }
 
             window.startCountUp = function startCountUp(instanceId) {
@@ -221,9 +208,11 @@ class UI:
         self.btn_start.disabled = True
 
         self.looping = True
+        self.loop_stopping = False
+        self.default_animation = 'waiting'
+        self.images = [self.animations.pick('start')]
         self.thread = threading.Thread(target=self.run)
         self.thread.start()
-        self.images = None
         self.image_thread = threading.Thread(target=self.run_images)
         self.image_thread.start()
 
@@ -234,11 +223,24 @@ class UI:
             return
         self.btn_stop.disabled = True
 
-        self.looping = False
+        self.loop_stopping = True
+        self.default_animation = 'blank'
+        self.images = [self.animations.pick('stop')]
+        with self.animation_condition:
+            self.animation_condition.notify_all()
+
+        self.describer.reset()
+        self.curr_screenshot.clear_output()
+        self.curr_screenshot.outputs = []
+        self.prev_screenshot.clear_output()
+        self.prev_screenshot.outputs = []
+
+        self.console_log("JOINING")
         if self.images_thread:
             self.images_thread.join()
         if self.thread:
             self.thread.join()
+        self.console_log("JOINED")
 
         self.btn_start.disabled = False
 
@@ -248,6 +250,7 @@ class UI:
         self.fade_to_image(animation)
 
     def fade_to_image(self, animation):
+        self.console_log(f"ANIMATING {animation=}")
         url = animation.data_uri()
         js = f"""
             fadeToImage({json.dumps(self.img_id)}, {json.dumps(url)})
@@ -266,7 +269,7 @@ class UI:
         curr_screenshot = None
         prev_screenshot = None
         with log_context as logfile:
-            while self.looping:
+            while self.looping and not self.loop_stopping:
                 # count-in
                 countdown_end = time.perf_counter() + self.extra_delay
                 while True:
@@ -282,6 +285,9 @@ class UI:
                     self.timer.value = f'[⏳: {timer_format}]'.format(remaining_seconds)
 
                 self.timer.value = '[🖼️]'
+
+                if self.loop_stopping or not self.looping:
+                    break
 
                 # screenshot
                 before = time.perf_counter()
@@ -304,6 +310,9 @@ class UI:
                     logfile.write(f'[screenshot {elapsed_seconds}]\n')
                     logfile.flush()
 
+                if self.loop_stopping or not self.looping:
+                    break
+
                 # image processing and display
                 self.curr_screenshot.outputs = ()
                 curr_image = pil_to_image(pil_resize_to_height(curr_screenshot, self.screenshot_height))
@@ -312,6 +321,9 @@ class UI:
                     self.prev_screenshot.outputs = ()
                     prev_image = pil_to_image(pil_resize_to_height(prev_screenshot, self.screenshot_height))
                     self.prev_screenshot.append_display_data(prev_image)
+
+                if self.loop_stopping or not self.looping:
+                    break
 
                 # description
                 try:
@@ -332,6 +344,9 @@ class UI:
                         window.stopCountUp({json.dumps(self.instance_id)})
                     """
                     self.run_js(js)
+
+                if self.loop_stopping or not self.looping:
+                    break
 
                 # synthesis
                 generator = self.synthesizer(text)
@@ -365,9 +380,15 @@ class UI:
                         logfile.write(text.replace("\n", "") + "\n")
                         logfile.flush()
 
+                    if self.loop_stopping or not self.looping:
+                        break
+
                     # Calculate duration and find animations
                     duration = len(segment) / sample_rate
                     self.images = self.animations.find_animations(gs, duration)
+                    # Interrupt the current animation
+                    with self.animation_condition:
+                        self.animation_condition.notify_all()
 
                     audio_url = segment_to_data_url(segment, sample_rate)
                     js = f"""
@@ -379,7 +400,7 @@ class UI:
                     # wait till synthesized clip is finished playing
                     playback_end = time.perf_counter() + duration
                     while True:
-                        if not self.looping:
+                        if self.loop_stopping or not self.looping:
                             js = f"""
                                 window.{self.audio_id}.pause()
                             """
@@ -396,14 +417,28 @@ class UI:
                     self.timer.value = ''
                 self.timer.value = ''
 
-
     def run_images(self):
         images = []
         while self.looping:
             if self.images:
                 images, self.images = self.images, None
 
-            waiting_image = self.animations.pick('waiting')
-            new_image = shift(images, waiting_image)
+            if images:
+                new_image = images.pop(0)
+            elif self.loop_stopping:
+                self.looping = False
+                self.loop_stopping = False
+                break
+            else:
+                new_image = self.animations.pick(self.default_animation)
+
+            start = datetime.now()
             self.fade_to_image(new_image)
-            time.sleep(new_image.duration)
+            with self.animation_condition:
+                self.animation_condition.wait(new_image.duration / 1000)
+            elapsed = datetime.now() - start
+            self.console_log(f"{elapsed=}")
+
+    def console_log(self, text):
+        js = f"console.log({json.dumps(text)})"
+        self.run_js(js)
