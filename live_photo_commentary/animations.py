@@ -188,7 +188,7 @@ class Animations:
 
     def _prune_to_top(self, found_animations, scores, n=prune_size):
         """Prune to top N animations by score."""
-        top_ixs = sorted(ix for _, ix in sorted(scores, reverse=True)[:n])
+        top_ixs = sorted(ix for _, ix in sorted(scores)[:n])
         return [found_animations[ix] for ix in top_ixs]
 
     def _calculate_streaks(self, combo):
