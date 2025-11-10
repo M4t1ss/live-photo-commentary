@@ -42,7 +42,10 @@ class LocalDescriber(Describer):
             return super().__new__(cls)
         
         # Factory logic for LocalDescriber instantiation with lazy imports
-        if "dummy" in model_id.lower():
+        if "debug" in model_id.lower():
+            from .local_describers.debug import DebugDescriber
+            instance = super(Describer, DebugDescriber).__new__(DebugDescriber)
+        elif "dummy" in model_id.lower():
             from .local_describers.dummy import DummyDescriber
             instance = super(Describer, DummyDescriber).__new__(DummyDescriber)
         elif "FastVLM" in model_id:
