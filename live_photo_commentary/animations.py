@@ -12,8 +12,6 @@ from PIL import Image
 
 NEG_INF = float('-inf')
 POS_INF = float('inf')
-safe_distance = 30
-prune_size = 10
 
 class Animation:
     def __init__(self, filename, setname=None):
@@ -66,7 +64,10 @@ class AnimatedButton(AnimatedThing):
 
 
 class Animations:
-    def __init__(self, source):
+    def __init__(self, source, safe_distance=30, prune_size=10):
+        self.safe_distance = safe_distance
+        self.prune_size = prune_size
+
         if isinstance(source, dict):
             data = source
         elif isinstance(source, str):
@@ -134,6 +135,26 @@ class Animations:
             for match in trigger.regex.finditer(text)
         ])
 
+    def _pad_with_talking(self, found_animations, text):
+        """Add talking animations to reach prune_size if needed."""
+        if len(found_animations) >= self.prune_size:
+            return found_animations
+
+        num_to_add = self.prune_size - len(found_animations)
+
+        text_length = len(text)
+        if num_to_add == 1:
+            positions = [text_length // 2]
+        else:
+            positions = [int(i * text_length / (num_to_add - 1)) for i in range(num_to_add)]
+
+        talking_additions = [
+            (pos, random.choice(self.animation_sets['talking']))
+            for pos in positions
+        ]
+
+        return sorted(found_animations + talking_additions)
+
     def _calculate_total_duration(self, combo):
         """Calculate total duration of animations in milliseconds."""
         return sum(animation.duration for _, animation in combo)
@@ -174,7 +195,7 @@ class Animations:
             streak_score = file_streaks[i]
             set_count_score = set_counts[animation.setname]
             set_streak_score = set_streaks[i]
-            proximity_score = 1.0 if i == 0 else 1.0 - min(start - prev_start, safe_distance) / safe_distance
+            proximity_score = 1.0 if i == 0 else 1.0 - min(start - prev_start, self.safe_distance) / self.safe_distance
             score = self._score(repeat_score, streak_score, set_count_score, set_streak_score, proximity_score)
             scores.append(score)
             prev_start = start
@@ -186,8 +207,10 @@ class Animations:
         scores = self._score_animations(found_animations, include_streaks=False)
         return [(score, ix) for ix, score in enumerate(scores)]
 
-    def _prune_to_top(self, found_animations, scores, n=prune_size):
+    def _prune_to_top(self, found_animations, scores, n=None):
         """Prune to top N animations by score."""
+        if n is None:
+            n = self.prune_size
         top_ixs = sorted(ix for _, ix in sorted(scores)[:n])
         return [found_animations[ix] for ix in top_ixs]
 
@@ -236,8 +259,9 @@ class Animations:
 
         # Find all matches
         found_animations = self._find_all_matches(text)
-        if not found_animations:
-            return []
+
+        # Pad with talking animations if needed
+        found_animations = self._pad_with_talking(found_animations, text)
 
         # Check if we need to reduce the list
         if not self._needs_pruning(found_animations, duration):
