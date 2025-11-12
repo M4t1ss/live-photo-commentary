@@ -74,7 +74,10 @@ class UI:
         self.difference_threshold = difference_threshold
         self.difference_measure = difference_measure
         self.difference_kwargs = difference_kwargs or {}
-        self.animations = Animations(animations)
+        if isinstance(animations, Animations):
+            self.animations = animations
+        else:
+            self.animations = Animations(animations)
 
         self.audio_id = f'audio_{self.instance_id}'
         self.img_id = f'img_{self.instance_id}'
