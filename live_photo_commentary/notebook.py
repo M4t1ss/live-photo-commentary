@@ -12,6 +12,7 @@ import numpy as np
 
 import ipywidgets as widgets
 from IPython.display import display, HTML, Javascript, Image
+from PIL import Image as PILImage
 
 from live_photo_commentary.screenshot import screenshot, difference
 from live_photo_commentary.animations import Animations
@@ -126,6 +127,16 @@ class UI:
         )
         self.image_hbox_class = f'image_hbox_{self.instance_id}'
         image_hbox.add_class(self.image_hbox_class)
+
+        # Pre-populate screenshot widgets with transparent placeholder
+        initial_screenshot = screenshot(**self.screenshot_kwargs)
+        if self.crop:
+            initial_screenshot = initial_screenshot.crop(self.crop)
+        width, height = initial_screenshot.size
+        transparent_placeholder = PILImage.new('RGBA', (width, height), (0, 0, 0, 0))
+        placeholder_image = pil_to_image(pil_resize_to_height(transparent_placeholder, self.screenshot_height))
+        self.curr_screenshot.append_display_data(placeholder_image)
+        self.prev_screenshot.append_display_data(placeholder_image)
 
         display(button_hbox, image_hbox, self.textbox, self.javscr)
 
