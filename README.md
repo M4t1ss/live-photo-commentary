@@ -50,6 +50,30 @@ prompt = DEFAULT_PROMPT.replace('photographer', 'artist').replace('photo', 'artw
 describer = LocalDescriber(model_id="microsoft/Phi-3.5-vision-instruct", prompt=prompt, system_prompt=DEFAULT_SYSTEM_PROMPT, ending=DEFAULT_ENDING, first_prompt=DEFAULT_FIRST_PROMPT,history_prompt=DEFAULT_HISTORY_PROMPT, compact_prompt=DEFAULT_COMPACT_PROMPT)
 ```
 
+
+Publications
+---------
+
+If you use this tool in your work, please cite the following paper:
+
+Matīss Rikters, Goran Topić (2025). "[Real-time Commentator Assistant for Photo Editing Live Streaming.](https://aclanthology.org/2025.ijcnlp-demo.3/)" In Proceedings of The 14th International Joint Conference on Natural Language Processing and The 4th Conference of the Asia-Pacific Chapter of the Association for Computational Linguistics: System Demonstrations, pages 17–24, Mumbai, India. Association for Computational Linguistics (2025).
+
+```bibtex
+@inproceedings{rikters-topic-2025-real,
+    title = "Real-time Commentator Assistant for Photo Editing Live Streaming",
+    author = "Rikters, Mat{\={i}}ss and Topi{\'c}, Goran",
+    editor = "Liu, Xuebo and Purwarianti, Ayu",
+    booktitle = "Proceedings of The 14th International Joint Conference on Natural Language Processing and The 4th Conference of the Asia-Pacific Chapter of the Association for Computational Linguistics: System Demonstrations",
+    month = dec,
+    year = "2025",
+    address = "Mumbai, India",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2025.ijcnlp-demo.3/",
+    pages = "17--24",
+    ISBN = "979-8-89176-301-2",
+}
+```
+
 ## Example Videos
 
 Recent example with an animated avatar.
