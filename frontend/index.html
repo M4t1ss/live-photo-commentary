@@ -7,9 +7,9 @@
   </head>
   <body>
     <h1>Live Photo Commentary</h1>
-    <p id="status">Loading…</p>
-    <script>
-      document.getElementById("status").textContent = "Tauri shell running.";
-    </script>
+    <p>Backend: <span id="backend-status">fetching port…</span></p>
+    <p>WebSocket: <span id="ws-status">—</span></p>
+    <p>Echo: <span id="echo">—</span></p>
+    <script src="app.js"></script>
   </body>
 </html>
