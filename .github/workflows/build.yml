@@ -90,7 +90,7 @@ jobs:
         with:
           projectPath: .
           tauriScript: cargo tauri
-          args: --config tauri.bundle.conf.json
+          args: --config src-tauri/tauri.bundle.conf.json
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
