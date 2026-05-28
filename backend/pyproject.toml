@@ -1,0 +1,17 @@
+[project]
+name = "live-photo-commentary-backend"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "websockets",
+  "pillow",
+  "mss",
+  "httpx",
+  "pydantic-settings",
+]
+
+[dependency-groups]
+cloud = ["openai", "google-generativeai", "elevenlabs"]
+local = ["torch", "transformers"]

@@ -1,1 +1,0 @@
-"""Remote describer implementations."""
