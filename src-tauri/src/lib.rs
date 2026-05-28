@@ -20,6 +20,21 @@ impl Drop for BackendProcess {
     fn drop(&mut self) {
         if let Ok(mut guard) = self.inner.lock() {
             if let Some(mut child) = guard.take() {
+                // On Windows, `uv run` spawns Python as a child of uv.
+                // Killing only uv leaves the Python/uvicorn process running,
+                // which keeps .venv files locked. `taskkill /F /T` kills the
+                // entire process tree before we wait on the direct child.
+                #[cfg(target_os = "windows")]
+                {
+                    // Kill the whole process tree (uv + its Python child).
+                    use std::os::windows::process::CommandExt;
+                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                    let _ = Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &child.id().to_string()])
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .status();
+                }
+                #[cfg(not(target_os = "windows"))]
                 let _ = child.kill();
                 let _ = child.wait();
             }
@@ -204,12 +219,26 @@ pub fn run() {
             let backend_dir = setup_backend(app.handle(), &uv);
 
             let port_str = port.to_string();
-            let child = Command::new(&uv)
-                .args(["run", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port"])
+            let mut cmd = Command::new(&uv);
+            cmd.args(["run", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port"])
                 .arg(&port_str)
                 .current_dir(&backend_dir)
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
+                // In debug, inherit so uvicorn output appears in the terminal.
+                // In release, suppress — the GUI app has no console, and we
+                // don't want a stray terminal window popping up on Windows.
+                .stdout(if cfg!(debug_assertions) { Stdio::inherit() } else { Stdio::null() })
+                .stderr(if cfg!(debug_assertions) { Stdio::inherit() } else { Stdio::null() });
+
+            // On Windows release builds, set CREATE_NO_WINDOW so the OS
+            // doesn't open a console window for the child process.
+            #[cfg(target_os = "windows")]
+            if !cfg!(debug_assertions) {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+
+            let child = cmd
                 .spawn()
                 .expect("failed to spawn backend — is `uv` in PATH?");
 
