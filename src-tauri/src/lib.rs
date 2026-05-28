@@ -139,46 +139,92 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 /// Prepares the backend directory and returns its path.
 ///
 /// In release builds:
-///   1. If `<app_data_dir>/backend/` doesn't exist yet, copies the bundled
-///      source from `<resource_dir>/resources/backend/` (read-only) to the
-///      writable app data location.
-///   2. Runs `uv sync` if `.venv` is absent (first launch or fresh copy).
+///   1. Compares the `.app_version` marker in the backend directory against
+///      the current app version (from `CARGO_PKG_VERSION`). If missing or
+///      different — first launch, upgrade, or interrupted copy — copies the
+///      bundled source from `<resource_dir>/resources/backend/` to the
+///      writable app data location, then writes the new version marker and
+///      removes `pyvenv.cfg` to force a venv rebuild with the new `uv.lock`.
+///   2. Runs `uv sync` if `.venv` is absent or incomplete.
 ///
 /// Blocks until complete — the window will be delayed on first launch.
 /// TODO: Show a "Setting up…" progress window during this step.
 fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::PathBuf {
+    const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
     let backend_dir = get_backend_dir(app);
 
-    if !cfg!(debug_assertions) && !backend_dir.exists() {
-        let resource_backend = app
-            .path()
-            .resource_dir()
-            .expect("resource dir unavailable")
-            .join("resources")
-            .join("backend");
+    if !cfg!(debug_assertions) {
+        // Re-copy whenever the stored version doesn't match the running app.
+        // This handles: first launch (.app_version absent), version upgrades,
+        // and interrupted copies (directory created but files missing).
+        // AppData persists across reinstalls and uninstalls on Windows, so we
+        // cannot rely on directory existence alone.
+        let stored_version = std::fs::read_to_string(backend_dir.join(".app_version"))
+            .unwrap_or_default();
+        let needs_copy = stored_version.trim() != APP_VERSION;
 
-        if resource_backend.exists() {
-            log::info!(
-                "First launch: copying backend source to {} …",
-                backend_dir.display()
-            );
-            if let Err(e) = copy_dir_recursive(&resource_backend, &backend_dir) {
-                log::error!("Failed to copy backend source: {e}");
+        if needs_copy {
+            let resource_backend = app
+                .path()
+                .resource_dir()
+                .expect("resource dir unavailable")
+                .join("resources")
+                .join("backend");
+
+            if resource_backend.exists() {
+                log::info!(
+                    "Copying backend source ({APP_VERSION}) to {} …",
+                    backend_dir.display()
+                );
+                if let Err(e) = copy_dir_recursive(&resource_backend, &backend_dir) {
+                    log::error!("Failed to copy backend source: {e}");
+                    return backend_dir;
+                }
+                // Mark the version so we skip the copy on the next launch.
+                let _ = std::fs::write(backend_dir.join(".app_version"), APP_VERSION);
+                // uv.lock may have changed — force a venv rebuild.
+                let _ = std::fs::remove_file(
+                    backend_dir.join(".venv").join("pyvenv.cfg"),
+                );
+            } else {
+                log::error!(
+                    "Bundled backend not found at {} — backend will not start",
+                    resource_backend.display()
+                );
                 return backend_dir;
             }
-        } else {
-            log::error!(
-                "Bundled backend not found at {} — backend will not start",
-                resource_backend.display()
-            );
-            return backend_dir;
         }
     }
 
-    // Run `uv sync` if the venv doesn't exist yet.
-    if !backend_dir.join(".venv").exists() {
+    // Run `uv sync` if the venv is absent or incomplete.
+    // Checking pyvenv.cfg (not just the .venv dir) catches partial installs
+    // where the directory was created but uv sync didn't finish.
+    if !backend_dir.join(".venv").join("pyvenv.cfg").exists() {
         log::info!("Running `uv sync` in {} …", backend_dir.display());
-        match Command::new(uv).arg("sync").current_dir(&backend_dir).status() {
+
+        let mut sync_cmd = Command::new(uv);
+        sync_cmd.arg("sync").current_dir(&backend_dir);
+
+        // In release: suppress console window on Windows, redirect output to a
+        // log file so failures are diagnosable without attaching a debugger.
+        #[cfg(target_os = "windows")]
+        if !cfg!(debug_assertions) {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            sync_cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        if !cfg!(debug_assertions) {
+            if let Ok(log_file) = std::fs::File::create(backend_dir.join("uv-sync.log")) {
+                if let Ok(log_clone) = log_file.try_clone() {
+                    sync_cmd
+                        .stdout(Stdio::from(log_file))
+                        .stderr(Stdio::from(log_clone));
+                }
+            }
+        }
+
+        match sync_cmd.status() {
             Ok(s) if s.success() => log::info!("Python environment ready."),
             Ok(s) => log::error!("`uv sync` failed (exit code {:?})", s.code()),
             Err(e) => log::error!("Failed to run `uv sync`: {e}"),
@@ -242,12 +288,27 @@ pub fn run() {
                 c.args(["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port"]);
                 c
             };
+            // In release, redirect stdout+stderr to a log file in backend_dir
+            // so crashes are diagnosable. Falls back to null if the file can't
+            // be created (e.g. backend_dir doesn't exist yet).
+            let log_file = if !cfg!(debug_assertions) {
+                std::fs::File::create(backend_dir.join("backend.log")).ok()
+            } else {
+                None
+            };
+
             cmd.arg(&port_str)
                 .current_dir(&backend_dir)
-                // In debug, inherit so uvicorn output appears in the terminal.
-                // In release, suppress — the GUI app has no console.
-                .stdout(if cfg!(debug_assertions) { Stdio::inherit() } else { Stdio::null() })
-                .stderr(if cfg!(debug_assertions) { Stdio::inherit() } else { Stdio::null() });
+                .stdout(if cfg!(debug_assertions) {
+                    Stdio::inherit()
+                } else {
+                    log_file.as_ref().and_then(|f| f.try_clone().ok()).map(Stdio::from).unwrap_or_else(Stdio::null)
+                })
+                .stderr(if cfg!(debug_assertions) {
+                    Stdio::inherit()
+                } else {
+                    log_file.map(Stdio::from).unwrap_or_else(Stdio::null)
+                });
 
             // On Windows release builds, set CREATE_NO_WINDOW so the OS
             // doesn't open a console window for the child process.
@@ -258,9 +319,16 @@ pub fn run() {
                 cmd.creation_flags(CREATE_NO_WINDOW);
             }
 
-            let child = cmd
-                .spawn()
-                .expect("failed to spawn backend");
+            let child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("Failed to spawn backend process: {e}");
+                    // Emit the crash event so the frontend shows an error
+                    // rather than spinning on a health check that never resolves.
+                    let _ = app.handle().emit("backend_crashed", -1i32);
+                    return Ok(());
+                }
+            };
 
             let inner = Arc::new(Mutex::new(Some(child)));
 
