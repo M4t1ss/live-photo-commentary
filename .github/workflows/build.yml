@@ -95,10 +95,8 @@ jobs:
       # --config injects the resources array only for production builds;
       # the base tauri.conf.json has an empty resources list so dev builds
       # don't require the binary to be present.
-      # No tagName/releaseName/releaseId → build-only mode (no release upload).
-      # Add those inputs later when wiring up GitHub Releases.
       - name: Build Tauri application
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0
         with:
           tauriScript: cargo tauri
           args: --config src-tauri/tauri.bundle.conf.json
