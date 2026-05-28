@@ -6,27 +6,25 @@ use tauri::{Emitter, Manager, State};
 
 struct BackendState {
     port: u16,
-    #[allow(dead_code)] // held for Drop, which kills the child process on exit
     process: BackendProcess,
 }
 
-/// Wraps the child process handle so we can share it between the Drop impl
-/// (which kills on normal shutdown) and the monitor thread (which detects crashes).
+/// Wraps the child process handle so we can share it between the shutdown handler
+/// (which kills on normal exit), the Drop impl (safety net), and the monitor
+/// thread (which detects crashes).
 struct BackendProcess {
     inner: Arc<Mutex<Option<Child>>>,
 }
 
-impl Drop for BackendProcess {
-    fn drop(&mut self) {
+impl BackendProcess {
+    /// Kills the backend process (and its children on Windows).
+    /// Safe to call multiple times — the Option is taken on first call;
+    /// subsequent calls find None and return immediately.
+    fn kill(&self) {
         if let Ok(mut guard) = self.inner.lock() {
             if let Some(mut child) = guard.take() {
-                // On Windows, `uv run` spawns Python as a child of uv.
-                // Killing only uv leaves the Python/uvicorn process running,
-                // which keeps .venv files locked. `taskkill /F /T` kills the
-                // entire process tree before we wait on the direct child.
                 #[cfg(target_os = "windows")]
                 {
-                    // Kill the whole process tree (uv + its Python child).
                     use std::os::windows::process::CommandExt;
                     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
                     let _ = Command::new("taskkill")
@@ -38,8 +36,14 @@ impl Drop for BackendProcess {
                 let _ = child.kill();
                 let _ = child.wait();
             }
-            // If guard holds None, the monitor thread already cleaned up (crash path).
+            // None → already killed (by RunEvent::Exit handler or monitor thread)
         }
+    }
+}
+
+impl Drop for BackendProcess {
+    fn drop(&mut self) {
+        self.kill(); // safety net — primary kill happens in RunEvent::Exit
     }
 }
 
@@ -219,13 +223,29 @@ pub fn run() {
             let backend_dir = setup_backend(app.handle(), &uv);
 
             let port_str = port.to_string();
-            let mut cmd = Command::new(&uv);
-            cmd.args(["run", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port"])
-                .arg(&port_str)
+
+            // In debug: use `uv run` so the dev venv is auto-managed.
+            // In release: call the venv Python directly — uv sync has already
+            // set it up, and bypassing `uv run` avoids a console flash on
+            // Windows caused by uv spawning its own subprocess internally.
+            let mut cmd = if cfg!(debug_assertions) {
+                let mut c = Command::new(&uv);
+                c.args(["run", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port"]);
+                c
+            } else {
+                let python = if cfg!(target_os = "windows") {
+                    backend_dir.join(".venv").join("Scripts").join("python.exe")
+                } else {
+                    backend_dir.join(".venv").join("bin").join("python")
+                };
+                let mut c = Command::new(python);
+                c.args(["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port"]);
+                c
+            };
+            cmd.arg(&port_str)
                 .current_dir(&backend_dir)
                 // In debug, inherit so uvicorn output appears in the terminal.
-                // In release, suppress — the GUI app has no console, and we
-                // don't want a stray terminal window popping up on Windows.
+                // In release, suppress — the GUI app has no console.
                 .stdout(if cfg!(debug_assertions) { Stdio::inherit() } else { Stdio::null() })
                 .stderr(if cfg!(debug_assertions) { Stdio::inherit() } else { Stdio::null() });
 
@@ -240,22 +260,22 @@ pub fn run() {
 
             let child = cmd
                 .spawn()
-                .expect("failed to spawn backend — is `uv` in PATH?");
+                .expect("failed to spawn backend");
 
             let inner = Arc::new(Mutex::new(Some(child)));
 
             // ── Crash monitor ────────────────────────────────────────────────
             // Polls the child every 500 ms. If the process exits without being
-            // killed by Drop (i.e. it crashed), emits `backend_crashed` to the
+            // killed by us (i.e. it crashed), emits `backend_crashed` to the
             // frontend so it can show an error instead of retrying forever.
             //
-            // Race-free: Drop and this thread share the same Mutex<Option<Child>>.
-            // Whichever locks first takes the Option:
-            //  • Drop takes it → kills + waits, sets to None.
+            // Race-free: RunEvent::Exit / Drop and this thread share the same
+            // Mutex<Option<Child>>. Whichever locks first takes the Option:
+            //  • RunEvent::Exit calls kill() → takes child, sets None.
             //    Monitor's next iteration finds None → exits silently.
             //  • Monitor finds try_wait() returned Some (crashed) → takes it,
             //    sets to None, emits event.
-            //    Drop later finds None → does nothing.
+            //    kill() later finds None → does nothing.
             let monitor_inner = Arc::clone(&inner);
             let monitor_handle = app.handle().clone();
             std::thread::spawn(move || loop {
@@ -296,6 +316,17 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![get_backend_port])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Kill the backend here rather than relying solely on Drop.
+                // The monitor thread holds an AppHandle clone, which keeps
+                // BackendState (and its Drop) alive until the thread exits —
+                // but the thread only exits when it sees None in the mutex,
+                // which Drop sets... creating a cycle. RunEvent::Exit fires
+                // before that cycle becomes a problem.
+                app_handle.state::<BackendState>().process.kill();
+            }
+        });
 }
