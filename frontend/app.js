@@ -1,4 +1,5 @@
 const { invoke } = window.__TAURI__.core;
+const { listen }  = window.__TAURI__.event;
 
 const backendStatusEl = document.getElementById("backend-status");
 const wsStatusEl      = document.getElementById("ws-status");
@@ -33,6 +34,12 @@ async function main() {
   port = await invoke("get_backend_port");
   backendStatusEl.textContent = `port ${port}`;
   connectWebSocket();
+
+  // If the backend process exits unexpectedly, stop retrying and show an error.
+  await listen("backend_crashed", (event) => {
+    backendStatusEl.textContent = `crashed (exit code ${event.payload})`;
+    wsStatusEl.textContent = "unavailable";
+  });
 }
 
 main();
