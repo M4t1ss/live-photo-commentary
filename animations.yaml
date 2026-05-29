@@ -16,6 +16,8 @@ animations:
     - gifs/surprised_bg.gif
   lovely:
     - gifs/lovely_bg.gif
+  angry:
+    - gifs/angry_bg.gif
   happy:
     - gifs/happy_bg.gif
     - gifs/happy2_bg.gif
@@ -23,11 +25,15 @@ animations:
     - gifs/hello_bg.gif
   interesting:
     - gifs/interesting_bg.gif
+    - gifs/interesting2_bg.gif
     - gifs/cool_bg.gif
   looking:
     - gifs/looking_bg.gif
+    - gifs/leaning_bg.gif
   pointing:
     - gifs/pointing_bg.gif
+  saluting:
+    - gifs/salute_bg.gif
   dancing:
     - gifs/xdancing_bg.gif
     - gifs/dancing2_bg.gif
@@ -36,6 +42,7 @@ animations:
     - gifs/jump_bg.gif
   waiting:
     - gifs/waiting_bg.gif
+    - gifs/waiting2_bg.gif
   walk-on:
     - gifs/walk-on.gif
   walk-off:
@@ -48,6 +55,9 @@ triggers:
   - regex: '\b(?:point|that)\b'
     animations:
       - pointing
+  - regex: '\b(?:agree\w*|salut\w*)\b'
+    animations:
+      - saluting
   - regex: '\b(?:scar\w+|creep\w*|fright\w*|spook\w*)\b'
     animations:
       - scary
@@ -61,6 +71,9 @@ triggers:
   - regex: '\b(?:happy|cheer\w*|inspir\w*)\b'
     animations:
       - happy
+  - regex: '\b(?:angry|disagree\w*|anger)\b'
+    animations:
+      - angry
 buttons:
   - label: Wave
     animations:
