@@ -10,7 +10,7 @@ from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
 import numpy as np
 import onnxruntime
 
-from synthesizer import Synthesizer
+from ..synthesizer import Synthesizer
 
 
 

@@ -276,7 +276,7 @@ pub fn run() {
             // Windows caused by uv spawning its own subprocess internally.
             let mut cmd = if cfg!(debug_assertions) {
                 let mut c = Command::new(&uv);
-                c.args(["run", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port"]);
+                c.args(["run", "uvicorn", "live_photo_commentary.main:app", "--host", "127.0.0.1", "--port"]);
                 c
             } else {
                 let python = if cfg!(target_os = "windows") {
@@ -285,7 +285,7 @@ pub fn run() {
                     backend_dir.join(".venv").join("bin").join("python")
                 };
                 let mut c = Command::new(python);
-                c.args(["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port"]);
+                c.args(["-m", "uvicorn", "live_photo_commentary.main:app", "--host", "127.0.0.1", "--port"]);
                 c
             };
             // In release, redirect stdout+stderr to a log file in backend_dir
