@@ -80,6 +80,7 @@ jobs:
         run: |
           mkdir -p src-tauri/resources/backend
           cp -r backend/app src-tauri/resources/backend/
+          cp -r backend/live_photo_commentary src-tauri/resources/backend/
           cp backend/pyproject.toml backend/uv.lock src-tauri/resources/backend/
 
       - name: Build screenshot.exe (Linux cross-compile)
