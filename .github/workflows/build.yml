@@ -38,7 +38,8 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            gcc-mingw-w64-x86-64
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -46,7 +47,9 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: |
+            src-tauri -> target
+            src-screenshot -> target
 
       # Download the uv binary for this platform and place it in
       # src-tauri/resources/ so it can be bundled via --config below.
@@ -78,6 +81,20 @@ jobs:
           mkdir -p src-tauri/resources/backend
           cp -r backend/app src-tauri/resources/backend/
           cp backend/pyproject.toml backend/uv.lock src-tauri/resources/backend/
+
+      - name: Build screenshot.exe (Linux cross-compile)
+        if: runner.os == 'Linux'
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          cargo build --release --target x86_64-pc-windows-gnu --manifest-path src-screenshot/Cargo.toml
+          cp src-screenshot/target/x86_64-pc-windows-gnu/release/screenshot.exe src-tauri/resources/screenshot.exe
+
+      - name: Upload screenshot.exe artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-exe
+          path: src-tauri/resources/screenshot.exe
 
       # Cache the cargo-tauri binary so it is only compiled on first run.
       - name: Cache Tauri CLI
