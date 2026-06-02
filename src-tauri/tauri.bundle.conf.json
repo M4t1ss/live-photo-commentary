@@ -2,8 +2,7 @@
   "bundle": {
     "resources": [
       "resources/uv-*",
-      "resources/backend/**/*",
-      "resources/screenshot*.exe"
+      "resources/backend/**/*"
     ]
   }
 }
