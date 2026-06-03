@@ -27,9 +27,12 @@ animations:
     - gifs/cute.gif
   angry:
     - gifs/angry_bg.gif
+  shocked:
+    - gifs/shocked_bg.gif
   bored:
     - gifs/bored_bg.gif
   happy:
+    - gifs/happy.gif
     - gifs/happy_bg.gif
     - gifs/clapping.gif
   hello:
@@ -58,6 +61,9 @@ animations:
     - gifs/jump_bg.gif
     - gifs/ddance.gif
     - gifs/fdance.gif
+    - gifs/dance-finger.gif
+    - gifs/dance-other.gif
+    - gifs/dance-cool.gif
   waiting:
     - gifs/waiting_bg.gif
     - gifs/waiting2_bg.gif
@@ -107,6 +113,9 @@ triggers:
   - regex: '\b(?:confus\w*|what\?)\b'
     animations:
       - confused
+  - regex: '\b(?:shock\w*)\b'
+    animations:
+      - shocked
   - regex: '\b(?:boring|bored)\b'
     animations:
       - bored
