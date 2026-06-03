@@ -10,6 +10,8 @@ animations:
     - gifs/ctalking_bg.gif
   waving:
     - gifs/waving_bg.gif
+  airkiss:
+    - gifs/airkiss_bg.gif
   scary:
     - gifs/scary_bg.gif
   surprised:
@@ -25,6 +27,8 @@ animations:
     - gifs/cute.gif
   angry:
     - gifs/angry_bg.gif
+  bored:
+    - gifs/bored_bg.gif
   happy:
     - gifs/happy_bg.gif
     - gifs/clapping.gif
@@ -103,6 +107,12 @@ triggers:
   - regex: '\b(?:confus\w*|what\?)\b'
     animations:
       - confused
+  - regex: '\b(?:boring|bored)\b'
+    animations:
+      - bored
+  - regex: '\b(?:\w*kiss\w*|smirk\w*)\b'
+    animations:
+      - airkiss
 buttons:
   - label: Wave
     animations:
