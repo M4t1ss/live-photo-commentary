@@ -14,19 +14,31 @@ animations:
     - gifs/scary_bg.gif
   surprised:
     - gifs/surprised_bg.gif
+  confused:
+    - gifs/confused.gif
+  explain:
+    - gifs/explain.gif
+  stop:
+    - gifs/stop.gif
   lovely:
     - gifs/lovely_bg.gif
+    - gifs/cute.gif
   angry:
     - gifs/angry_bg.gif
   happy:
     - gifs/happy_bg.gif
-    - gifs/happy2_bg.gif
+    - gifs/clapping.gif
   hello:
     - gifs/hello_bg.gif
+  cool:
+    - gifs/cool_bg.gif
+    - gifs/thumbsup.gif
+  disagree:
+    - gifs/thumbsdown.gif
   interesting:
     - gifs/interesting_bg.gif
     - gifs/interesting2_bg.gif
-    - gifs/cool_bg.gif
+    - gifs/interesting3.gif
   looking:
     - gifs/looking_bg.gif
     - gifs/leaning_bg.gif
@@ -40,6 +52,8 @@ animations:
     - gifs/dancing_bg.gif
     - gifs/singing_bg.gif
     - gifs/jump_bg.gif
+    - gifs/ddance.gif
+    - gifs/fdance.gif
   waiting:
     - gifs/waiting_bg.gif
     - gifs/waiting2_bg.gif
@@ -55,9 +69,18 @@ triggers:
   - regex: '\b(?:point|that)\b'
     animations:
       - pointing
+  - regex: '\b(?:explain\w*)\b'
+    animations:
+      - explain
+  - regex: '\b(?:cool|awesome|support\w*)\b'
+    animations:
+      - cool
   - regex: '\b(?:agree\w*|salut\w*)\b'
     animations:
       - saluting
+  - regex: '\b(?:disagree\w*|dislik\w*)\b'
+    animations:
+      - disagree
   - regex: '\b(?:scar\w+|creep\w*|fright\w*|spook\w*)\b'
     animations:
       - scary
@@ -65,15 +88,21 @@ triggers:
   - regex: '\b(?:love|cute|nice|like)\b'
     animations:
       - lovely
+  - regex: '\b(?:stop|enough)\b'
+    animations:
+      - stop
   - regex: '\b(?:interest\w*|think|thought|wonder\w*)\b'
     animations:
       - interesting
   - regex: '\b(?:happy|cheer\w*|inspir\w*)\b'
     animations:
       - happy
-  - regex: '\b(?:angry|disagree\w*|anger)\b'
+  - regex: '\b(?:angry|upset\w*|anger)\b'
     animations:
       - angry
+  - regex: '\b(?:confus\w*|what\?)\b'
+    animations:
+      - confused
 buttons:
   - label: Wave
     animations:
