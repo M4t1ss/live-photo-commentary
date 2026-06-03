@@ -10,7 +10,7 @@ from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
 import numpy as np
 import onnxruntime
 
-from synthesizer import Synthesizer
+from .synthesizer import Synthesizer
 
 
 
@@ -31,8 +31,10 @@ class KokoroSynthesizer(Synthesizer):
         "p": "pt-br",
     }
     _EXTRA_RE = re.compile(r"^(?P<dep>[^;\s]+)\s*;\s*extra\s*==\s*'(?P<extra>[^']+)'$")
+    _MISAKI_LANGS = ['ja', 'zh']
     _PHONEME_CAPACITY = 512 - 2
     _SPLITTER_CACHE_SIZE = 10000
+    _EXTRACT_MARKS_RE = re.compile(r'\{([^}]*)\}')
 
     _g2p = None
 
@@ -77,6 +79,12 @@ class KokoroSynthesizer(Synthesizer):
             if lang is None:
                 self.lang = self.VOICE_LANGS[next(iter(voice_ratios))[0]]
 
+        if self.lang.startswith('ja'):
+            from unidic import download
+            dicdir = Path(download.__file__).parent / 'dicdir'
+            if not dicdir.is_dir():
+                download.download_version()
+
         self.g2p = self.g2p_for(self.lang)
 
         model_path = hf_hub_download(
@@ -90,8 +98,26 @@ class KokoroSynthesizer(Synthesizer):
         phonemes, _ = self.g2p(text)
         return len(phonemes)
 
+    @classmethod
+    def _extract_marks(cls, text):
+        marks = []
+        def extract(match):
+            marks.append(match.group(1))
+            return "{}"
+        new_text = cls._EXTRACT_MARKS_RE.sub(extract, text)
+        return new_text, marks
+
+    # XXX: unneeded?
+    @classmethod
+    def _restore_marks(cls, text, marks):
+        def restore(_):
+            return "{" + marks.pop(0) + "}"
+        return cls._EXTRACT_MARKS_RE.sub(restore, text)
+
     def synthesize(self, text):
-        phonemes, tokens = self.g2p(text) 
+        markless_text, marks = self._extract_marks(text)
+        braceless_text = self._EXTRACT_MARKS_RE.sub('', markless_text)
+        phonemes, tokens = self.g2p(markless_text) 
         input_ids = []
         restore = []
         for ix, phoneme in enumerate(phonemes):
@@ -125,7 +151,14 @@ class KokoroSynthesizer(Synthesizer):
 
         audio = np.asarray(audio)[0].astype(np.float32)
         phoneme_timings = list(zip(phonemes, timings))
-        return audio, text, phoneme_timings
+        mark_timings = list(zip(marks, [
+            timing for phoneme, timing in phoneme_timings if phoneme == '{'
+        ]))
+        phoneme_timings = [
+            (phoneme, timing) for phoneme, timing in phoneme_timings
+            if phoneme not in '{}'
+        ]
+        return audio, braceless_text, phoneme_timings, mark_timings
 
     def sample_rate(self):
         return 24000
@@ -191,16 +224,15 @@ class KokoroSynthesizer(Synthesizer):
         )
 
         langs = set(voice.language for voice in EspeakWrapper().available_voices())
-        cls._g2p = {}
-        for lang in langs:
-            extra_name = lang[:2]
-            # if extra_name in misaki_extras:
-            #    if extra_name in misaki_installed_extras:
-            #         cls._g2p[lang] = True
-            if extra_name in misaki_installed_extras:
-                cls._g2p[lang] = extra_name != 'en' # en.G2P doesn't work with unknown words
-            else:
-                cls._g2p[lang] = False
+        to_delete = set()
+        cls._g2p = { lang: False for lang in [*langs, "en-us", "en-gb"] }
+        for lang in cls._MISAKI_LANGS:
+            if lang in misaki_installed_extras:
+                cls._g2p[lang] = True
+            elif lang in cls._g2p:
+                to_delete.update(l for l in langs if l.startswith(lang))
+        for lang in to_delete:
+            del cls._g2p[lang]
 
     def g2p_for(self, lang):
         uses_extra = self._g2p.get(lang)
@@ -209,6 +241,7 @@ class KokoroSynthesizer(Synthesizer):
         if uses_extra:
             extra, *params = lang.split('-', 1)
             module_name = f"misaki.{extra}"
+            # We are not using `en.G2P`, but just in case...
             if extra == 'en':
                 cls_name = "G2P"
                 british = params and params[0] != 'us'
@@ -246,7 +279,7 @@ if __name__ == '__main__':
     def synth_and_play(voice, title, text, lang=None):
         print(title)
         synthesizer = KokoroSynthesizer(voice=voice, lang=lang)
-        for audio, fragment, phoneme_timings in synthesizer(text):
+        for audio, fragment, phoneme_timings, mark_timings in synthesizer(text):
             print(fragment)
             play(audio, phoneme_timings)
 
@@ -254,6 +287,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "-v",
         "--voice",
+        required=True,
         help="""Select voice. per https://huggingface.co/hexgrad/Kokoro-82M/blob\
                 /main/VOICES.md""",
     )
@@ -300,28 +334,3 @@ if __name__ == '__main__':
         voice = ast.literal_eval(voice)
 
     synth_and_play(voice, title, args.text, args.lang)
-
-    # title = "english with hint of japanese"
-    # text = "Be yourself; everyone else is already taken."
-    # synth_and_play({"af_nicole": 0.7, "jf_alpha": 0.3}, title, text)
-
-    # title = "french"
-    # text = "Plus l'offenseur m'est cher, plus je ressens l'injure."
-    # synth_and_play("ff_siwis", title, text)
-
-    # title = "japanese"
-    # text = "井の中の蛙、大海を知らず"
-    # synth_and_play("jf_nezumi", title, text)
-
-    # title = "japanese-voiced english"
-    # text = "The trouble with having an open mind, of course, is that people will insist on coming along and trying to put things in it."
-    # synth_and_play("jf_alpha", title, text, lang="en-gb")
-
-    # title = "english-voiced japanese"
-    # text = "ashita wa ashita no kaze ga fuku"
-    # synth_and_play({"af_heart": 1.5, "jf_alpha": -0.5}, title, text)
-
-    # title = "weird croatian because there's no voice for it"
-    # text = "Tko pod drugim jamu kopa, sam u nju pada."
-    # synth_and_play("ef_dora", title, text, lang="hr")
-

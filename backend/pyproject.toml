@@ -14,6 +14,7 @@ dependencies = [
   "huggingface-hub>=1.17.0",
   "misaki[en,ja]>=0.9.4",
   "onnxruntime>=1.26.0",
+  "semantic-text-splitter>=0.30.1",
 ]
 
 [dependency-groups]

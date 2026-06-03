@@ -4,7 +4,8 @@ from typing import Generator
 import numpy as np
 
 
-type SynthResult = tuple[np.ndarray, str, list[tuple[str, float]]]
+type Timings = list[tuple[str, float]]
+type SynthResult = tuple[np.ndarray, str, Timings, Timings]
 
 class Synthesizer(ABC):
 
@@ -43,7 +44,7 @@ class Synthesizer(ABC):
             yield self.synthesize(text)
 
     @abstractmethod
-    def synthesize(self, text) -> tuple[np.ndarray, list[tuple[str, float]]]:
+    def synthesize(self, text) -> SynthResult:
         """Synthesize text to audio. Should yield audio chunks."""
         pass
 
