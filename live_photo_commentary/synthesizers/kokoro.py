@@ -33,6 +33,9 @@ class KokoroSynthesizer(Synthesizer):
             self.pipeline = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M')
 
     def synthesize(self, text):
+        # Add this guard clause
+        if text is None or not text.strip():
+            return
         yield from self.pipeline(text, voice=self.voice, speed=1, split_pattern=r'\n+')
 
     def sample_rate(self):

@@ -28,6 +28,11 @@ class Animation:
             except EOFError:
                 break
 
+    def __lt__(self, other):
+        if not isinstance(other, Animation):
+            return NotImplemented
+        return self.filename < other.filename
+
     @staticmethod
     @lru_cache(maxsize=None)
     def load(filename, setname):
@@ -133,7 +138,7 @@ class Animations:
             (match.start(), trigger.pick())
             for trigger in self.triggers
             for match in trigger.regex.finditer(text)
-        ])
+        ], key=lambda x: x[0]) # Add the key here
 
     def _pad_with_talking(self, found_animations, text):
         """Add talking animations to reach prune_size if needed."""
@@ -153,7 +158,7 @@ class Animations:
             for pos in positions
         ]
 
-        return sorted(found_animations + talking_additions)
+        return sorted(found_animations + talking_additions, key=lambda x: x[0]) # Add the key here
 
     def _calculate_total_duration(self, combo):
         """Calculate total duration of animations in milliseconds."""

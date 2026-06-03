@@ -97,23 +97,23 @@ class Describer(ABC):
         images.append(current_image)
         if previous_image:
             images.append(previous_image)
-            if self.max_history_size:
-                if len(self.history) >= self.max_history_size:
-                    self.compact_history()
-                user_prompt = '\n'.join([
-                    self.history_prompt,
-                    *self.history,
-                    "---",
-                    self.prompt
-                ])
-            else:
-                user_prompt = self.prompt
+            if self.max_history_size and len(self.history) >= self.max_history_size:
+                self.compact_history()
+            
+            # DEFENSIVE JOIN: Filters out None and non-string items
+            parts = [self.history_prompt, *self.history, "---", self.prompt]
+            user_prompt = '\n'.join([str(p) for p in parts if p is not None])
         else:
             user_prompt = self.first_prompt
 
         response_text = self.prompt_model(user_prompt, images, system_prompt=self.system_prompt)
-        self.history.append(response_text)
-        return response_text
+        
+        # FIX: Only append to history if we actually got a string back
+        if response_text:
+            self.history.append(response_text)
+            
+        # FIX: Return empty string instead of None to prevent the synthesizer from crashing
+        return response_text or ""
 
 
     def compact_history(self):
@@ -121,15 +121,18 @@ class Describer(ABC):
         uncompacted = len(self.history) - num_uncompacted
         to_compact = self.history[:uncompacted]
         to_preserve = self.history[uncompacted:]
-        user_prompt = '\n'.join([
-            self.compact_prompt,
-            *to_compact,
-        ])
+        
+        # DEFENSIVE JOIN
+        parts = [self.compact_prompt, *to_compact]
+        user_prompt = '\n'.join([str(p) for p in parts if p is not None])
+        
         response_text = self.prompt_model(user_prompt)
-        self.history = [
-            response_text,
-            *to_preserve,
-        ]
+        
+        # Only update history if the compaction was successful
+        if response_text:
+            self.history = [response_text, *to_preserve]
+        else:
+            self.history = to_preserve # If compaction fails, just keep the preserved part
 
     def reset(self):
         """Reset the describer to its initial state."""
