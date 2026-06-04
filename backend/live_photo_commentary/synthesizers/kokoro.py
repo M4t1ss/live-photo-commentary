@@ -171,7 +171,6 @@ class KokoroSynthesizer(Synthesizer):
                 for file_path in map(Path, files)
                 if file_path.parent == voices_path and file_path.suffix == '.bin'
             ]
-            raise Exception("foo")
         except Exception as x:
             local_path = Path(snapshot_download(cls.MODEL_REPO, local_files_only=True))
             voices = [

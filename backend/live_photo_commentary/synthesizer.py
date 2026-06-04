@@ -1,3 +1,5 @@
+import io
+import wave
 from abc import ABC, abstractmethod
 from typing import Generator
 
@@ -47,3 +49,13 @@ class Synthesizer(ABC):
     def sample_rate(self) -> int:
         """Return the sample rate of the synthesized audio."""
         pass
+
+    def to_wav_bytes(self, audio: np.ndarray) -> bytes:
+        audio_int16 = np.clip(audio * 32767, -32768, 32767).astype(np.int16)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(self.sample_rate())
+            wf.writeframes(audio_int16.tobytes())
+        return buf.getvalue()
