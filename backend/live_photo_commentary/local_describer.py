@@ -124,14 +124,17 @@ class LocalDescriber(Describer):
         self._setup_model()
 
     def _setup_model(self):
-        quantization_config = BitsAndBytesConfig(load_in_4bit=True) if importlib.util.find_spec('bitsandbytes') else None
+        cuda_available = torch.cuda.is_available()
+        mps_available = not cuda_available and torch.backends.mps.is_available()
+        device = "cuda" if cuda_available else ("mps" if mps_available else "cpu")
+
+        quantization_config = BitsAndBytesConfig(load_in_4bit=True) if (cuda_available and importlib.util.find_spec('bitsandbytes')) else None
         if importlib.util.find_spec('flash_attn'):
             attn_implementation = 'flash_attention_2'
         else:
             attn_implementation = 'sdpa'  # PyTorch built-in fused attention; much faster than eager
-        cuda_available = torch.cuda.is_available()
 
-        self._notify(f"Loading {self._display_name()} (cuda={cuda_available}, quant={quantization_config is not None}, attn={attn_implementation})")
+        self._notify(f"Loading {self._display_name()} (device={device}, quant={quantization_config is not None}, attn={attn_implementation})")
 
         # Patch tqdm in transformers so weight-loading progress reaches the frontend.
         if self._on_progress:
@@ -149,7 +152,7 @@ class LocalDescriber(Describer):
                     pass
 
         try:
-            self.model = self._create_model(quantization_config, attn_implementation, cuda_available)
+            self.model = self._create_model(quantization_config, attn_implementation, device)
         finally:
             if self._on_progress:
                 for mod, attr, orig in _patches:
@@ -157,8 +160,8 @@ class LocalDescriber(Describer):
 
         self._notify("Model loaded")
 
-        if not cuda_available:
-            device = torch.device(self.device_param or ("mps" if torch.backends.mps.is_available() else "cpu"))
+        if device != "cuda":
+            device = torch.device(self.device_param or device)
             self._notify(f"Moving model to {device}")
             try:
                 self.model = self.model.to(device)
@@ -186,9 +189,9 @@ class LocalDescriber(Describer):
         self.dtype = model_params.dtype
         self._notify(f"{self._display_name()} ready (device={self.device}, dtype={self.dtype})")
 
-    def _create_model(self, quantization_config, attn_implementation, cuda_available):
+    def _create_model(self, quantization_config, attn_implementation, device):
         model_kwargs = {
-            "device_map": "cuda" if cuda_available and not self.device_param else None,
+            "device_map": "cuda" if device == "cuda" and not self.device_param else None,
             "trust_remote_code": True,
             "quantization_config": quantization_config,
             "torch_dtype": "auto",

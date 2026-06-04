@@ -10,13 +10,13 @@ class FastVLMLocalDescriber(LocalDescriber):
     uses_processor = False
     IMAGE_TOKEN_INDEX = -200
 
-    def _create_model(self, quantization_config, attn_implementation, cuda_available):
+    def _create_model(self, quantization_config, attn_implementation, device):
         return AutoModelForCausalLM.from_pretrained(
             self.model_id,
-            device_map="cuda" if cuda_available and not self.device_param else "auto",
+            device_map="cuda" if device == "cuda" and not self.device_param else "auto",
             trust_remote_code=True,
             quantization_config=quantization_config,
-            torch_dtype=torch.float16 if cuda_available else torch.float32,
+            torch_dtype=torch.float16 if device in ("cuda", "mps") else torch.float32,
             attn_implementation=attn_implementation,
         )
 

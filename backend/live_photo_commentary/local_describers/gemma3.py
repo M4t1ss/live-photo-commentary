@@ -4,11 +4,11 @@ from ..local_describer import LocalDescriber, image_to_data_uri
 
 
 class Gemma3LocalDescriber(LocalDescriber):
-    def _create_model(self, quantization_config, attn_implementation, cuda_available):
+    def _create_model(self, quantization_config, attn_implementation, device):
         if "Qwen" in self.model_id:
             from transformers import Qwen2_5_VLForConditionalGeneration
             model_kwargs = {
-                "device_map": "cuda" if cuda_available and not self.device_param else None,
+                "device_map": "cuda" if device == "cuda" and not self.device_param else None,
                 "trust_remote_code": True,
                 "quantization_config": quantization_config,
                 "torch_dtype": "auto",
@@ -17,14 +17,14 @@ class Gemma3LocalDescriber(LocalDescriber):
         if "gemma-4" in self.model_id.lower():
             from transformers import AutoModelForImageTextToText
             model_kwargs = {
-                "device_map": "cuda" if cuda_available and not self.device_param else None,
+                "device_map": "cuda" if device == "cuda" and not self.device_param else None,
                 "trust_remote_code": True,
                 "quantization_config": quantization_config,
                 "torch_dtype": "auto",
                 "_attn_implementation": attn_implementation,
             } | self.model_kwargs
             return AutoModelForImageTextToText.from_pretrained(self.model_id, **model_kwargs)
-        return super()._create_model(quantization_config, attn_implementation, cuda_available)
+        return super()._create_model(quantization_config, attn_implementation, device)
 
     def build_messages(self, user_prompt, images=None, system_prompt=None):
         user_prompt = user_prompt.replace("<|image_1|>", "first image").replace("<|image_2|>", "second image")
