@@ -13,7 +13,7 @@
       <div id="subtitle"></div>
       <div id="player-bar">
         <div id="bar-left">
-          <button id="start-stop" title="Start" disabled>&#9654;</button>
+          <button id="start-stop" title="Start" disabled>&#9205;</button>
           <button id="bar-mute" title="Mute">&#128266;</button>
           <input type="range" id="bar-volume" min="0" max="1" step="0.05" />
         </div>
@@ -24,12 +24,12 @@
       </div>
     </div>
     <div id="right-panel">
+      <img id="current-frame" alt="Current frame" />
+      <img id="prev-frame" class="hidden" alt="Previous frame" />
       <div id="status-bar">
         <span id="status-phase">Idle</span>
         <span id="status-timer"></span>
       </div>
-      <img id="current-frame" alt="Current frame" />
-      <img id="prev-frame" class="hidden" alt="Previous frame" />
     </div>
   </div>
 

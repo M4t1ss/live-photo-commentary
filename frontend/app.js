@@ -58,11 +58,11 @@ function checkReady() {
 function setRunning(value) {
   running = value;
   if (running) {
-    startStopBtn.innerHTML = "&#9646;&#9646;";
+    startStopBtn.innerHTML = "&#9208;";
     startStopBtn.title = "Stop";
     startStopBtn.classList.add("running");
   } else {
-    startStopBtn.innerHTML = "&#9654;";
+    startStopBtn.innerHTML = "&#9205;";
     startStopBtn.title = "Start";
     startStopBtn.classList.remove("running");
   }
