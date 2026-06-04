@@ -2,9 +2,9 @@ name: Build
 
 on:
   push:
-    branches: [tauri, main]
+    branches: [tauri, main, packaging-test]
   pull_request:
-    branches: [tauri, main]
+    branches: [tauri, main, packaging-test]
 
 jobs:
   build:
