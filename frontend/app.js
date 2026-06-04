@@ -436,9 +436,13 @@ cudaDismissBtn.addEventListener("click", () => {
 
 // --- Init ---
 async function main() {
-  setPhase("Idle", "none");
+  setPhase("Starting up…", "up");
   port = await invoke("get_backend_port");
   connectWebSocket();
+
+  await listen("setup_progress", ({ payload }) => {
+    setPhase(payload, "up");
+  });
 
   await listen("cuda_upgrade_available", ({ payload }) => {
     pendingCuIndex = payload;

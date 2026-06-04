@@ -161,7 +161,7 @@ async fn install_cuda_torch(
 
     let cu = cu_index.clone();
     let status = tokio::task::spawn_blocking(move || {
-        let mut cmd = Command::new(&uv);
+        let mut cmd = uv_command(&uv);
         cmd.args([
             "sync",
             "--reinstall-package", "torch",
@@ -191,6 +191,25 @@ async fn install_cuda_torch(
         let _ = app.emit("cuda_install_failed", &msg);
         Err(msg)
     }
+}
+
+// ── uv helpers ───────────────────────────────────────────────────────────────
+
+/// Returns a `Command` for the given uv binary with environment variables set
+/// to avoid OneDrive-related reparse-point errors on Windows.
+///
+/// On Windows, `AppData\Roaming` is often redirected by OneDrive's Known Folder
+/// Move, which creates reparse points that Windows refuses to traverse (error
+/// 448). uv defaults to installing managed Pythons under `AppData\Roaming\uv`,
+/// so we redirect it to `AppData\Local\uv` which OneDrive does not touch.
+fn uv_command(uv: &std::path::Path) -> Command {
+    let mut cmd = Command::new(uv);
+    #[cfg(target_os = "windows")]
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let python_dir = std::path::Path::new(&local).join("uv").join("python");
+        cmd.env("UV_PYTHON_INSTALL_DIR", python_dir);
+    }
+    cmd
 }
 
 // ── uv binary location ────────────────────────────────────────────────────────
@@ -309,6 +328,7 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
                     "Copying backend source ({APP_VERSION}) to {} …",
                     backend_dir.display()
                 );
+                let _ = app.emit("setup_progress", "Updating backend…");
                 if let Err(e) = copy_dir_recursive(&resource_backend, &backend_dir) {
                     log::error!("Failed to copy backend source: {e}");
                     return backend_dir;
@@ -334,8 +354,9 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
     // where the directory was created but uv sync didn't finish.
     if !backend_dir.join(".venv").join("pyvenv.cfg").exists() {
         log::info!("Running `uv sync` in {} …", backend_dir.display());
+        let _ = app.emit("setup_progress", "Setting up Python environment…");
 
-        let mut sync_cmd = Command::new(uv);
+        let mut sync_cmd = uv_command(uv);
         sync_cmd.arg("sync").current_dir(&backend_dir);
 
         // In release: suppress console window on Windows, redirect output to a
@@ -425,7 +446,7 @@ pub fn run() {
             // set it up, and bypassing `uv run` avoids a console flash on
             // Windows caused by uv spawning its own subprocess internally.
             let mut cmd = if cfg!(debug_assertions) {
-                let mut c = Command::new(&uv);
+                let mut c = uv_command(&uv);
                 c.args(["run", "uvicorn", "live_photo_commentary.main:app", "--host", "127.0.0.1", "--port"]);
                 c
             } else {
