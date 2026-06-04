@@ -204,14 +204,16 @@ async fn install_cuda_torch(
 /// so we redirect it to `AppData\Local\uv` which OneDrive does not touch.
 fn uv_command(uv: &std::path::Path) -> Command {
     let mut cmd = Command::new(uv);
-    // On Windows, AppData\Roaming and AppData\Local are often redirected by
-    // OneDrive (Known Folder Move / OneDrive for Business), which places reparse
-    // points in the path. uv can't create Python minor-version symlinks through
-    // them (error 448). The user-profile root itself is never redirected, so
-    // %USERPROFILE%\.uv\python is a safe landing spot.
+    // On Windows, OneDrive (Known Folder Move / for Business) and domain roaming
+    // profiles can make the entire user profile a reparse point. uv can't create
+    // Python minor-version junctions anywhere under %USERPROFILE% in that case
+    // (error 448). %PROGRAMDATA% (C:\ProgramData) is always local, never synced
+    // by OneDrive, and writable by standard users, so it's a safe landing spot.
     #[cfg(target_os = "windows")]
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        let python_dir = std::path::Path::new(&profile).join(".uv").join("python");
+    {
+        let python_dir = std::env::var("PROGRAMDATA")
+            .map(|p| std::path::Path::new(&p).join("uv").join("python"))
+            .unwrap_or_else(|_| std::path::PathBuf::from(r"C:\ProgramData\uv\python"));
         cmd.env("UV_PYTHON_INSTALL_DIR", python_dir);
     }
     cmd
@@ -361,26 +363,39 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
         log::info!("Running `uv sync` in {} …", backend_dir.display());
         let _ = app.emit("setup_progress", "Setting up Python environment…");
 
-        let mut sync_cmd = uv_command(uv);
-        sync_cmd.arg("sync").current_dir(&backend_dir);
-
-        // In release: suppress console window on Windows, redirect output to a
-        // log file so failures are diagnosable without attaching a debugger.
-        #[cfg(target_os = "windows")]
-        if !cfg!(debug_assertions) {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            sync_cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        if !cfg!(debug_assertions) {
-            if let Ok(log_file) = std::fs::File::create(backend_dir.join("uv-sync.log")) {
-                if let Ok(log_clone) = log_file.try_clone() {
-                    sync_cmd
-                        .stdout(Stdio::from(log_file))
-                        .stderr(Stdio::from(log_clone));
-                }
+        // On Windows release: wrap in `cmd /c "... & pause"` so the console
+        // window stays open after uv finishes and the user can read the output.
+        // This also avoids the CREATE_NO_WINDOW issue (error 448 on junction
+        // creation). The window only appears on first launch when the venv
+        // doesn't exist yet.
+        #[cfg(all(target_os = "windows", not(debug_assertions)))]
+        let mut sync_cmd = {
+            let uv_str = uv.to_string_lossy();
+            let uv_quoted = if uv_str.contains(' ') {
+                format!("\"{}\"", uv_str)
+            } else {
+                uv_str.into_owned()
+            };
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/c")
+                .arg(format!("{} sync & pause", uv_quoted))
+                .current_dir(&backend_dir);
+            // Apply the same env vars as uv_command().
+            if let Ok(d) = std::env::var("PROGRAMDATA") {
+                cmd.env(
+                    "UV_PYTHON_INSTALL_DIR",
+                    std::path::Path::new(&d).join("uv").join("python"),
+                );
             }
-        }
+            cmd
+        };
+
+        #[cfg(not(all(target_os = "windows", not(debug_assertions))))]
+        let mut sync_cmd = {
+            let mut cmd = uv_command(uv);
+            cmd.arg("sync").current_dir(&backend_dir);
+            cmd
+        };
 
         match sync_cmd.status() {
             Ok(s) if s.success() => log::info!("Python environment ready."),
