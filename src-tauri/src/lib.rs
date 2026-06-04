@@ -371,10 +371,12 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
         #[cfg(all(target_os = "windows", not(debug_assertions)))]
         let mut sync_cmd = {
             let uv_str = uv.to_string_lossy();
-            let uv_quoted = if uv_str.contains(' ') {
-                format!("\"{}\"", uv_str)
+            // Strip the \\?\ extended-length prefix — cmd.exe doesn't accept it.
+            let uv_clean = uv_str.trim_start_matches(r"\\?\");
+            let uv_quoted = if uv_clean.contains(' ') {
+                format!("\"{}\"", uv_clean)
             } else {
-                uv_str.into_owned()
+                uv_clean.to_owned()
             };
             let mut cmd = Command::new("cmd");
             cmd.arg("/c")
