@@ -153,7 +153,7 @@ class Pipeline:
             text = item
             try:
                 self._audio_chunks.clear()
-                for i, (audio, fragment, chunk_phonemes) in enumerate(self.synthesizer(text)):
+                for i, (audio, fragment, chunk_phonemes, _mark_timings) in enumerate(self.synthesizer(text)):
                     audio_path = self._tmp_dir / f"chunk_{i}.wav"
                     audio_path.write_bytes(self.synthesizer.to_wav_bytes(audio))
                     self._audio_chunks[i] = audio_path

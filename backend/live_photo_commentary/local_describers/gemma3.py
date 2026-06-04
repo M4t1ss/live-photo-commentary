@@ -14,6 +14,16 @@ class Gemma3LocalDescriber(LocalDescriber):
                 "torch_dtype": "auto",
             } | self.model_kwargs
             return Qwen2_5_VLForConditionalGeneration.from_pretrained(self.model_id, **model_kwargs)
+        if "gemma-4" in self.model_id.lower():
+            from transformers import AutoModelForImageTextToText
+            model_kwargs = {
+                "device_map": "cuda" if cuda_available and not self.device_param else None,
+                "trust_remote_code": True,
+                "quantization_config": quantization_config,
+                "torch_dtype": "auto",
+                "_attn_implementation": attn_implementation,
+            } | self.model_kwargs
+            return AutoModelForImageTextToText.from_pretrained(self.model_id, **model_kwargs)
         return super()._create_model(quantization_config, attn_implementation, cuda_available)
 
     def build_messages(self, user_prompt, images=None, system_prompt=None):

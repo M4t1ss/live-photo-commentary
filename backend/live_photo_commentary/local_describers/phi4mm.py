@@ -2,6 +2,7 @@ from ..local_describer import LocalDescriber
 
 
 class Phi4MMLocalDescriber(LocalDescriber):
+    processor_extra_kwargs = {"num_crops": 4}
     def build_messages(self, user_prompt, images=None, system_prompt=None):
         images = images or []
         placeholder = ''.join(f"<|image_{ix + 1}|>\n" for ix in range(len(images)))
