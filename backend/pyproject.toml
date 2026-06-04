@@ -26,21 +26,9 @@ dependencies = [
 cloud = ["openai", "google-generativeai", "elevenlabs"]
 test = ["pytest>=8", "pytest-asyncio>=0.24", "httpx2"]
 
-[tool.uv.sources]
-# On Windows and Linux, install the CUDA 12.4 builds (works with any driver
-# supporting CUDA 12.4+, falls back to CPU if no GPU present).
-# macOS gets CPU builds from PyPI, which include MPS support.
-torch = [
-  { index = "pytorch-cu124", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
-]
-torchvision = [
-  { index = "pytorch-cu124", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
-]
-
-[[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
-explicit = true  # only used for packages listed in [tool.uv.sources]
+# Standard PyPI torch (~250 MB): CPU everywhere, MPS on Apple Silicon.
+# NVIDIA users who want CUDA acceleration can reinstall after setup:
+#   uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

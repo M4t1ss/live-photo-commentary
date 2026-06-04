@@ -27,6 +27,10 @@ const volumeInput        = document.getElementById("cfg-volume");
 const volumePctEl        = document.getElementById("cfg-volume-pct");
 const barVolumeInput     = document.getElementById("bar-volume");
 const barMuteBtn         = document.getElementById("bar-mute");
+const cudaBanner         = document.getElementById("cuda-banner");
+const cudaBannerMsg      = document.getElementById("cuda-banner-msg");
+const cudaInstallBtn     = document.getElementById("cuda-install-btn");
+const cudaDismissBtn     = document.getElementById("cuda-dismiss-btn");
 
 // --- App state ---
 let volume = parseFloat(localStorage.getItem("lpc_volume") ?? "1");
@@ -416,11 +420,50 @@ function capitalize(s) {
   return s ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
+// --- CUDA upgrade banner ---
+let pendingCuIndex = null;
+
+cudaInstallBtn.addEventListener("click", () => {
+  if (!pendingCuIndex) return;
+  cudaInstallBtn.disabled = true;
+  cudaDismissBtn.disabled = true;
+  invoke("install_cuda_torch", { cuIndex: pendingCuIndex });
+});
+
+cudaDismissBtn.addEventListener("click", () => {
+  cudaBanner.classList.add("hidden");
+});
+
 // --- Init ---
 async function main() {
   setPhase("Idle", "none");
   port = await invoke("get_backend_port");
   connectWebSocket();
+
+  await listen("cuda_upgrade_available", ({ payload }) => {
+    pendingCuIndex = payload;
+    cudaBannerMsg.textContent =
+      `NVIDIA GPU detected (${payload}). Install CUDA-optimised PyTorch for faster inference?`;
+    cudaBanner.classList.remove("hidden");
+  });
+
+  await listen("cuda_install_progress", ({ payload }) => {
+    cudaBannerMsg.textContent = payload;
+  });
+
+  await listen("cuda_install_done", () => {
+    cudaBannerMsg.textContent = "CUDA PyTorch installed. Restart the app to use GPU acceleration.";
+    cudaInstallBtn.textContent = "Restart";
+    cudaInstallBtn.disabled = false;
+    cudaInstallBtn.onclick = () => invoke("restart_app");
+    cudaDismissBtn.classList.add("hidden");
+  });
+
+  await listen("cuda_install_failed", ({ payload }) => {
+    cudaBannerMsg.textContent = `Installation failed: ${payload}`;
+    cudaInstallBtn.disabled = false;
+    cudaDismissBtn.disabled = false;
+  });
 
   await listen("backend_crashed", () => {
     setRunning(false);

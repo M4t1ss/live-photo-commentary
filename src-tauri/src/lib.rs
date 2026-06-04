@@ -47,11 +47,19 @@ impl Drop for BackendProcess {
     }
 }
 
-// ── Tauri command ─────────────────────────────────────────────────────────────
+// ── Tauri commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]
 fn get_backend_port(state: State<BackendState>) -> u16 {
     state.port
+}
+
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    if let Some(state) = app.try_state::<BackendState>() {
+        state.process.kill();
+    }
+    std::process::exit(0);
 }
 
 // ── Port discovery ────────────────────────────────────────────────────────────
@@ -59,6 +67,130 @@ fn get_backend_port(state: State<BackendState>) -> u16 {
 fn find_free_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.local_addr().unwrap().port()
+}
+
+// ── CUDA detection (Windows / Linux only) ────────────────────────────────────
+
+#[cfg(not(target_os = "macos"))]
+fn pytorch_cuda_index(major: u32, minor: u32) -> Option<&'static str> {
+    match major {
+        12 if minor >= 8 => Some("cu128"),
+        12 if minor >= 6 => Some("cu126"),
+        12 if minor >= 4 => Some("cu124"),
+        12 if minor >= 1 => Some("cu121"),
+        11 if minor >= 8 => Some("cu118"),
+        _ => None,
+    }
+}
+
+/// Runs `nvidia-smi`, extracts the maximum supported CUDA version, and returns
+/// the matching PyTorch wheel index (e.g. `"cu124"`), or `None` if no NVIDIA
+/// GPU is detected or the driver is too old.
+#[cfg(not(target_os = "macos"))]
+fn detect_cuda_index() -> Option<&'static str> {
+    let mut cmd = Command::new("nvidia-smi");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd.stdout(Stdio::piped()).stderr(Stdio::null()).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        if let Some(pos) = line.find("CUDA Version:") {
+            let rest = line[pos + "CUDA Version:".len()..].trim();
+            let version = rest.split_whitespace().next()?;
+            let mut parts = version.splitn(2, '.');
+            let major: u32 = parts.next()?.parse().ok()?;
+            // Strip trailing non-digit chars (pipes, spaces) that appear in the smi table
+            let minor_str = parts.next()?;
+            let minor: u32 = minor_str
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .ok()?;
+            return pytorch_cuda_index(major, minor);
+        }
+    }
+    None
+}
+
+// ── CUDA torch installation ───────────────────────────────────────────────────
+
+/// Appends (or replaces) the `[tool.uv.sources]` / `[[tool.uv.index]]` blocks
+/// in pyproject.toml so that `uv sync` pulls the CUDA-enabled torch wheel.
+fn update_pyproject_for_cuda(backend_dir: &std::path::Path, cu_index: &str) -> std::io::Result<()> {
+    let path = backend_dir.join("pyproject.toml");
+    let mut content = std::fs::read_to_string(&path)?;
+    // Strip any previously appended CUDA block so re-runs are idempotent.
+    if let Some(pos) = content.find("\n[tool.uv.sources]") {
+        content.truncate(pos);
+    }
+    let idx = format!("pytorch-{cu_index}");
+    let platform = "sys_platform == 'win32' or sys_platform == 'linux'";
+    content.push_str(&format!(
+        "\n[tool.uv.sources]\ntorch       = [{{ index = \"{idx}\", marker = \"{platform}\" }}]\ntorchvision = [{{ index = \"{idx}\", marker = \"{platform}\" }}]\n\n[[tool.uv.index]]\nname = \"{idx}\"\nurl  = \"https://download.pytorch.org/whl/{cu_index}\"\nexplicit = true\n"
+    ));
+    std::fs::write(path, content)
+}
+
+struct InstallState {
+    uv_path: std::path::PathBuf,
+    backend_dir: std::path::PathBuf,
+}
+
+#[tauri::command]
+async fn install_cuda_torch(
+    cu_index: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, InstallState>,
+) -> Result<(), String> {
+    let uv = state.uv_path.clone();
+    let backend_dir = state.backend_dir.clone();
+    let marker = backend_dir.join(".cuda_torch");
+
+    update_pyproject_for_cuda(&backend_dir, &cu_index)
+        .map_err(|e| format!("Failed to update pyproject.toml: {e}"))?;
+
+    let _ = app.emit("cuda_install_progress", "Downloading CUDA PyTorch — this may take a few minutes…");
+
+    let cu = cu_index.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        let mut cmd = Command::new(&uv);
+        cmd.args([
+            "sync",
+            "--reinstall-package", "torch",
+            "--reinstall-package", "torchvision",
+        ])
+        .current_dir(&backend_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        cmd.status()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    if status.success() {
+        let _ = std::fs::write(&marker, &cu);
+        let _ = app.emit("cuda_install_done", &cu);
+        Ok(())
+    } else {
+        let msg = format!("uv sync failed (exit code {:?})", status.code());
+        let _ = app.emit("cuda_install_failed", &msg);
+        Err(msg)
+    }
 }
 
 // ── uv binary location ────────────────────────────────────────────────────────
@@ -268,6 +400,24 @@ pub fn run() {
             let uv = get_uv_path(app.handle());
             let backend_dir = setup_backend(app.handle(), &uv);
 
+            // CUDA upgrade detection — non-macOS only (macOS uses MPS via PyTorch CPU builds).
+            #[cfg(not(target_os = "macos"))]
+            {
+                let marker = backend_dir.join(".cuda_torch");
+                let installed = std::fs::read_to_string(&marker).unwrap_or_default();
+                if let Some(cu_index) = detect_cuda_index() {
+                    if installed.trim() != cu_index {
+                        log::info!("NVIDIA GPU detected, suggesting {cu_index} torch");
+                        let _ = app.handle().emit("cuda_upgrade_available", cu_index);
+                    }
+                }
+            }
+
+            app.manage(InstallState {
+                uv_path: uv.clone(),
+                backend_dir: backend_dir.clone(),
+            });
+
             let port_str = port.to_string();
 
             // In debug: use `uv run` so the dev venv is auto-managed.
@@ -383,7 +533,11 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_backend_port])
+        .invoke_handler(tauri::generate_handler![
+            get_backend_port,
+            install_cuda_torch,
+            restart_app,
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
