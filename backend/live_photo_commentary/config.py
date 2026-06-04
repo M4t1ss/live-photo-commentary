@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     )
 
     vlm_provider: str = "local"
-    vlm_model: str | None = "google/gemma-4-E4B-it"
+    vlm_model: str | None = "apple/FastVLM-0.5B"
     tts_voice: str = "af_heart"
     post_speech_delay: float = 2.0
     difference_threshold: float = 0.0
