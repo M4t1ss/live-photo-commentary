@@ -371,18 +371,21 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
         #[cfg(all(target_os = "windows", not(debug_assertions)))]
         let mut sync_cmd = {
             let uv_str = uv.to_string_lossy();
-            // Strip the \\?\ extended-length prefix — cmd.exe doesn't accept it.
+            // Strip the \\?\ extended-length prefix that Tauri's resource_dir
+            // can return — cmd.exe doesn't handle it, and PowerShell single-
+            // quoted strings don't need it.
             let uv_clean = uv_str.trim_start_matches(r"\\?\");
-            let uv_quoted = if uv_clean.contains(' ') {
-                format!("\"{}\"", uv_clean)
-            } else {
-                uv_clean.to_owned()
-            };
-            let mut cmd = Command::new("cmd");
-            cmd.arg("/c")
-                .arg(format!("{} sync & pause", uv_quoted))
+            // Escape any single quotes in the path (unlikely but correct).
+            let uv_ps = uv_clean.replace('\'', "''");
+            // PowerShell: run uv sync, then pause so the user can read the
+            // output before the window closes.
+            let ps_cmd = format!(
+                "& '{}' sync; Read-Host 'Press Enter to close this window'",
+                uv_ps
+            );
+            let mut cmd = Command::new("powershell");
+            cmd.args(["-Command", &ps_cmd])
                 .current_dir(&backend_dir);
-            // Apply the same env vars as uv_command().
             if let Ok(d) = std::env::var("PROGRAMDATA") {
                 cmd.env(
                     "UV_PYTHON_INSTALL_DIR",
