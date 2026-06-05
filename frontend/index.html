@@ -1,15 +1,120 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Live Photo Commentary</title>
-  </head>
-  <body>
-    <h1>Live Photo Commentary</h1>
-    <p>Backend: <span id="backend-status">fetching port…</span></p>
-    <p>WebSocket: <span id="ws-status">—</span></p>
-    <p>Echo: <span id="echo">—</span></p>
-    <script src="app.js"></script>
-  </body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Live Photo Commentary</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="main">
+    <div id="left-panel">
+      <canvas id="avatar-canvas"></canvas>
+      <div id="cuda-banner" class="hidden">
+        <span id="cuda-banner-msg"></span>
+        <div id="cuda-banner-btns">
+          <button id="cuda-install-btn">Install</button>
+          <button id="cuda-dismiss-btn">Not now</button>
+        </div>
+      </div>
+      <div id="subtitle"></div>
+      <div id="player-bar">
+        <div id="bar-left">
+          <button id="start-stop" title="Start" disabled>&#9205;</button>
+          <button id="bar-mute" title="Mute">&#128266;</button>
+          <input type="range" id="bar-volume" min="0" max="1" step="0.05" />
+        </div>
+        <div id="bar-right">
+          <button id="toggle-subtitle" class="active" title="Toggle subtitles">CC</button>
+          <button id="settings-btn" title="Settings" disabled>&#9881;</button>
+        </div>
+      </div>
+    </div>
+    <div id="right-panel">
+      <img id="current-frame" alt="Current frame" />
+      <img id="prev-frame" class="hidden" alt="Previous frame" />
+      <div id="status-bar">
+        <span id="status-phase">Idle</span>
+        <span id="status-timer"></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-overlay" class="hidden">
+    <div id="modal">
+      <h2>Settings</h2>
+
+      <section>
+        <h3>Vision model</h3>
+        <label>Model <select id="cfg-vlm"></select></label>
+      </section>
+
+      <section>
+        <h3>Voice</h3>
+        <label>Voice
+          <input id="cfg-tts-voice" list="tts-voice-list"
+                 placeholder='af_heart  or  {"af_nicole":0.8,"jf_alpha":0.2}' />
+          <datalist id="tts-voice-list"></datalist>
+        </label>
+      </section>
+
+      <section>
+        <h3>Audio</h3>
+        <label>Volume
+          <div id="volume-row">
+            <input type="range" id="cfg-volume" min="0" max="1" step="0.05" />
+            <span id="cfg-volume-pct"></span>
+          </div>
+        </label>
+      </section>
+
+      <section>
+        <h3>Timing</h3>
+        <label>Post-speech delay (s)
+          <input type="number" id="cfg-post-speech-delay" step="0.5" min="0" />
+        </label>
+      </section>
+
+      <section>
+        <h3>Difference filter</h3>
+        <label>Threshold
+          <input type="number" id="cfg-diff-threshold" step="0.001" min="0" />
+        </label>
+        <label>Measure
+          <select id="cfg-diff-measure">
+            <option value="mse">MSE</option>
+            <option value="mae">MAE</option>
+          </select>
+        </label>
+      </section>
+
+      <section>
+        <h3>History</h3>
+        <label>Max history size
+          <input type="number" id="cfg-max-history" step="1" min="0" />
+        </label>
+      </section>
+
+      <section>
+        <h3>API keys</h3>
+        <label>Gemini
+          <input type="password" id="cfg-gemini-key" placeholder="unchanged" autocomplete="off" />
+        </label>
+        <label>OpenAI
+          <input type="password" id="cfg-openai-key" placeholder="unchanged" autocomplete="off" />
+        </label>
+        <label>ElevenLabs
+          <input type="password" id="cfg-elevenlabs-key" placeholder="unchanged" autocomplete="off" />
+        </label>
+      </section>
+
+      <div id="modal-buttons">
+        <button id="modal-cancel">Cancel</button>
+        <button id="modal-ok">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
 </html>

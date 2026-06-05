@@ -1,0 +1,276 @@
+:root {
+  --bg: #111;
+  --panel-bg: #1a1a1a;
+  --text: #e0e0e0;
+  --accent: #4a9eff;
+  --border: #2e2e2e;
+  --modal-bg: #1e1e1e;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Two-panel layout */
+#main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* Left panel — avatar canvas + subtitle */
+#left-panel {
+  flex: 1;
+  position: relative;
+  background: #000;
+  min-width: 0;
+}
+
+#avatar-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#subtitle {
+  position: absolute;
+  bottom: 52px;
+  left: 0;
+  right: 0;
+  padding: 6px 24px;
+  text-align: center;
+  font-size: 17px;
+  line-height: 1.5;
+  color: #fff;
+  text-shadow: 0 1px 6px #000, 0 0 16px #000;
+  pointer-events: none;
+}
+
+/* CUDA upgrade banner */
+#cuda-banner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  background: rgba(12, 12, 12, 0.92);
+  border-bottom: 1px solid var(--accent);
+  z-index: 10;
+  font-size: 13px;
+}
+#cuda-banner-msg { flex: 1; color: var(--text); }
+#cuda-banner-btns { display: flex; gap: 8px; flex-shrink: 0; }
+#cuda-banner-btns button {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+#cuda-banner-btns button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+#cuda-banner-btns button:disabled { opacity: 0.4; cursor: not-allowed; }
+#cuda-install-btn { border-color: var(--accent); color: var(--accent); }
+#cuda-install-btn:hover:not(:disabled) { background: var(--accent); color: #111; }
+
+/* YouTube-style player bar */
+#player-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 10px 8px;
+  background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.78));
+}
+
+#bar-left, #bar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#player-bar button {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.82);
+  padding: 4px 7px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+#player-bar button:hover:not(:disabled) { color: #fff; }
+#player-bar button.running { color: #e06c75; }
+#player-bar button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+#toggle-subtitle {
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.45);
+}
+#toggle-subtitle.active { color: var(--accent); }
+
+#bar-volume {
+  width: 72px;
+  cursor: pointer;
+  accent-color: var(--accent);
+  vertical-align: middle;
+}
+
+/* Right panel — status + current + previous screenshots */
+#right-panel {
+  width: 320px;
+  flex-shrink: 0;
+  background: var(--panel-bg);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  min-height: 0;
+}
+
+#status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background: var(--bg);
+  border-radius: 3px;
+  flex-shrink: 0;
+  min-height: 28px;
+  margin-top: auto;
+}
+
+#status-phase {
+  font-size: 12px;
+  color: #aaa;
+}
+
+#status-timer {
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--accent);
+  min-width: 3.5ch;
+  text-align: right;
+}
+
+#right-panel img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  flex-shrink: 0;
+  object-fit: contain;
+  background: #000;
+  border-radius: 3px;
+}
+
+/* Modal */
+#modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+#modal {
+  background: var(--modal-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  width: 440px;
+  max-height: 82vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+#modal h2 { font-size: 17px; font-weight: 600; }
+
+#modal section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#modal h3 {
+  font-size: 11px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+#modal label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+
+#volume-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 220px;
+}
+#cfg-volume { flex: 1; }
+#cfg-volume-pct { font-size: 13px; color: #aaa; min-width: 3ch; text-align: right; }
+
+#modal input,
+#modal select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 14px;
+  width: 220px;
+  flex-shrink: 0;
+}
+
+#modal input:focus,
+#modal select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+#modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+#modal-buttons button {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 7px 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+#modal-buttons button:hover { border-color: var(--accent); color: var(--accent); }
+#modal-ok { border-color: var(--accent); color: var(--accent); }
+#modal-ok:hover { background: var(--accent); color: #111; }
+
+.hidden { display: none !important; }

@@ -10,9 +10,7 @@ from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
 import numpy as np
 import onnxruntime
 
-from .synthesizer import Synthesizer
-
-
+from ..synthesizer import Synthesizer
 
 
 class KokoroSynthesizer(Synthesizer):
@@ -173,7 +171,6 @@ class KokoroSynthesizer(Synthesizer):
                 for file_path in map(Path, files)
                 if file_path.parent == voices_path and file_path.suffix == '.bin'
             ]
-            raise Exception("foo")
         except Exception as x:
             local_path = Path(snapshot_download(cls.MODEL_REPO, local_files_only=True))
             voices = [

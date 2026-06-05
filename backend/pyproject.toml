@@ -1,10 +1,9 @@
 [project]
 name = "live-photo-commentary-backend"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
   "fastapi>=0.136.3",
-  "httpx>=0.28.1",
   "mss>=10.2.0",
   "pillow>=12.2.0",
   "pydantic-settings>=2.14.1",
@@ -15,8 +14,21 @@ dependencies = [
   "misaki[en,ja]>=0.9.4",
   "onnxruntime>=1.26.0",
   "semantic-text-splitter>=0.30.1",
+  "imagehash>=4.3.2",
+  "torch",
+  "torchvision",
+  "transformers",
+  "accelerate",
+  "timm>=1.0.27",
 ]
 
 [dependency-groups]
 cloud = ["openai", "google-generativeai", "elevenlabs"]
-local = ["torch", "transformers"]
+test = ["pytest>=8", "pytest-asyncio>=0.24", "httpx2"]
+
+# Standard PyPI torch (~250 MB): CPU everywhere, MPS on Apple Silicon.
+# NVIDIA users who want CUDA acceleration can reinstall after setup:
+#   uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
