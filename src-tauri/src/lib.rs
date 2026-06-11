@@ -203,6 +203,7 @@ async fn install_cuda_torch(
 /// 448). uv defaults to installing managed Pythons under `AppData\Roaming\uv`,
 /// so we redirect it to `AppData\Local\uv` which OneDrive does not touch.
 fn uv_command(uv: &std::path::Path) -> Command {
+    #[allow(unused_mut)]
     let mut cmd = Command::new(uv);
     // On Windows, OneDrive (Known Folder Move / for Business) and domain roaming
     // profiles can make the entire user profile a reparse point. uv can't create
@@ -377,10 +378,12 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
             let uv_clean = uv_str.trim_start_matches(r"\\?\");
             // Escape any single quotes in the path (unlikely but correct).
             let uv_ps = uv_clean.replace('\'', "''");
-            // PowerShell: run uv sync, then pause so the user can read the
-            // output before the window closes.
+            // PowerShell: run uv sync; if it fails, retry once (the first
+            // attempt may fail on junction creation when Python is freshly
+            // downloaded — the second attempt finds Python already present and
+            // succeeds).  Then pause so the user can read the output.
             let ps_cmd = format!(
-                "& '{}' sync; Read-Host 'Press Enter to close this window'",
+                "& '{0}' sync; if ($LASTEXITCODE -ne 0) {{ Write-Host ''; Write-Host 'First attempt failed — retrying once...' -ForegroundColor Yellow; Start-Sleep -Seconds 1; & '{0}' sync }}; Read-Host 'Press Enter to close this window'",
                 uv_ps
             );
             let mut cmd = Command::new("powershell");
