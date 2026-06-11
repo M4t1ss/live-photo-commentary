@@ -203,7 +203,7 @@ async fn install_cuda_torch(
 /// 448). uv defaults to installing managed Pythons under `AppData\Roaming\uv`,
 /// so we redirect it to `AppData\Local\uv` which OneDrive does not touch.
 fn uv_command(uv: &std::path::Path) -> Command {
-    let mut cmd = Command::new(uv);
+    let cmd = Command::new(uv);
     // On Windows, AppData\Roaming and AppData\Local are often redirected by
     // OneDrive (Known Folder Move / OneDrive for Business), which places reparse
     // points in the path. uv can't create Python minor-version symlinks through
