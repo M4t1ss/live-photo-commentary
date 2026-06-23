@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Live Photo Commentary</title>
   <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://esm.sh/three@0.176.0",
+      "three/addons/": "https://esm.sh/three@0.176.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
   <div id="main">
@@ -116,5 +124,6 @@
   </div>
 
   <script src="app.js"></script>
+  <script type="module" src="avatar.js"></script>
 </body>
 </html>
