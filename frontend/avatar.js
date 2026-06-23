@@ -32,6 +32,27 @@ let jawBone    = null;
 let minJawAngle = 0;
 let maxJawAngle = 0.15;
 
+// Scroll-wheel zoom — 0 = full body, 1 = head shot.
+let zoomT = 0;
+let _fullBodyCam = null;  // { camY, camZ, lookY } — set after model loads
+let _headShotCam = null;
+
+function _applyZoom() {
+  if (!_fullBodyCam) return;
+  const s = zoomT * zoomT * (3 - 2 * zoomT);  // smoothstep
+  const camY  = _fullBodyCam.camY  + s * (_headShotCam.camY  - _fullBodyCam.camY);
+  const camZ  = _fullBodyCam.camZ  + s * (_headShotCam.camZ  - _fullBodyCam.camZ);
+  const lookY = _fullBodyCam.lookY + s * (_headShotCam.lookY - _fullBodyCam.lookY);
+  camera.position.set(0, camY, camZ);
+  camera.lookAt(0, lookY, 0);
+}
+
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  zoomT = Math.max(0, Math.min(1, zoomT - e.deltaY * 0.001));
+  _applyZoom();
+}, { passive: false });
+
 // --- Envelope curve ---
 // x: normalised position within one half of the bell (0 = edge, 1 = peak).
 // Replace body to try a different curve shape (smoothstep, cosine, etc.).
@@ -97,6 +118,9 @@ window.initAvatar = function (config, port) {
     const dist    = (size.y / 2) / Math.tan(halfFov) * 1.15;
     camera.position.set(0, size.y * 0.5, dist);
     camera.lookAt(0, size.y * 0.5, 0);
+
+    _fullBodyCam = { camY: size.y * 0.50, camZ: dist,        lookY: size.y * 0.50 };
+    _headShotCam = { camY: size.y * 0.90, camZ: dist * 0.18, lookY: size.y * 0.90 };
 
     if (gltf.animations.length > 0) {
       mixer = new THREE.AnimationMixer(model);
