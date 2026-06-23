@@ -204,14 +204,9 @@ async fn install_cuda_torch(
 /// so we redirect it to `AppData\Local\uv` which OneDrive does not touch.
 fn uv_command(uv: &std::path::Path) -> Command {
     let mut cmd = Command::new(uv);
-    // On Windows, AppData\Roaming and AppData\Local are often redirected by
-    // OneDrive (Known Folder Move / OneDrive for Business), which places reparse
-    // points in the path. uv can't create Python minor-version symlinks through
-    // them (error 448). The user-profile root itself is never redirected, so
-    // %USERPROFILE%\.uv\python is a safe landing spot.
     #[cfg(target_os = "windows")]
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        let python_dir = std::path::Path::new(&profile).join(".uv").join("python");
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let python_dir = std::path::Path::new(&local).join("uv").join("python");
         cmd.env("UV_PYTHON_INSTALL_DIR", python_dir);
     }
     cmd
