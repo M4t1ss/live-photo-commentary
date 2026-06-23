@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     openai_api_key: str | None = None
     elevenlabs_api_key: str | None = None
+    model_dir: Path = Path("../models")
 
 
 _API_KEY_FIELDS = frozenset({"gemini_api_key", "openai_api_key", "elevenlabs_api_key"})
@@ -39,7 +40,7 @@ def apply(updates: dict) -> Settings:
 
 
 def as_dict(masked: bool = True) -> dict:
-    d = _settings.model_dump()
+    d = _settings.model_dump(exclude={"model_dir"})
     if masked:
         for field in _API_KEY_FIELDS:
             if d[field] is not None:

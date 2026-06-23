@@ -260,10 +260,11 @@ function resetAudio() {
   audioQueue = [];
   ttsAllReceived = false;
   isPlaying = false;
+  window.setLipSyncData?.([], null);
 }
 
-function enqueueChunk({ audio_url, text }) {
-  audioQueue.push({ audio_url, text });
+function enqueueChunk({ audio_url, text, phonemes }) {
+  audioQueue.push({ audio_url, text, timeline: buildTimeline(phonemes ?? []) });
   if (!isPlaying) playNext();
 }
 
@@ -271,15 +272,17 @@ function playNext() {
   if (audioQueue.length === 0) {
     isPlaying = false;
     currentAudio = null;
+    window.setLipSyncData?.([], null);
     if (ttsAllReceived) sendSpeechEnded();
     return;
   }
   isPlaying = true;
-  const { audio_url, text } = audioQueue.shift();
+  const { audio_url, text, timeline } = audioQueue.shift();
   if (subtitlesVisible) subtitleEl.textContent = text;
   const audio = new Audio(`http://127.0.0.1:${port}${audio_url}`);
   audio.volume = volume;
   currentAudio = audio;
+  window.setLipSyncData?.(timeline, audio);
   audio.addEventListener("ended", playNext);
   audio.addEventListener("error", playNext);
   audio.play().catch(playNext);
@@ -438,6 +441,9 @@ cudaDismissBtn.addEventListener("click", () => {
 async function main() {
   setPhase("Starting up…", "up");
   port = await invoke("get_backend_port");
+  const modelCfg = await fetch(`http://127.0.0.1:${port}/model-config`).then(r => r.json()).catch(() => ({}));
+  window.initLipSync?.(modelCfg);
+  window.initAvatar?.(modelCfg, port);
   connectWebSocket();
 
   await listen("setup_progress", ({ payload }) => {
