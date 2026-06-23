@@ -195,21 +195,8 @@ async fn install_cuda_torch(
 
 // ── uv helpers ───────────────────────────────────────────────────────────────
 
-/// Returns a `Command` for the given uv binary with environment variables set
-/// to avoid OneDrive-related reparse-point errors on Windows.
-///
-/// On Windows, `AppData\Roaming` is often redirected by OneDrive's Known Folder
-/// Move, which creates reparse points that Windows refuses to traverse (error
-/// 448). uv defaults to installing managed Pythons under `AppData\Roaming\uv`,
-/// so we redirect it to `AppData\Local\uv` which OneDrive does not touch.
 fn uv_command(uv: &std::path::Path) -> Command {
-    let mut cmd = Command::new(uv);
-    #[cfg(target_os = "windows")]
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        let python_dir = std::path::Path::new(&local).join("uv").join("python");
-        cmd.env("UV_PYTHON_INSTALL_DIR", python_dir);
-    }
-    cmd
+    Command::new(uv)
 }
 
 // ── uv binary location ────────────────────────────────────────────────────────
