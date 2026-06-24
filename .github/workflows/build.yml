@@ -96,6 +96,16 @@ jobs:
           name: screenshot-exe
           path: src-tauri/resources/screenshot.exe
 
+      # Copy model.glb / model.yaml into resources/ if present in the repo.
+      # Models are not committed by default; this step is a no-op when absent.
+      - name: Copy model files into resources (if present)
+        shell: bash
+        run: |
+          if [ -f models/model.glb ] && [ -f models/model.yaml ]; then
+            mkdir -p src-tauri/resources/models
+            cp models/model.glb models/model.yaml src-tauri/resources/models/
+          fi
+
       # Cache the cargo-tauri binary so it is only compiled on first run.
       - name: Cache Tauri CLI
         id: cache-tauri-cli

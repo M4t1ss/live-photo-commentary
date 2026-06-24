@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Live Photo Commentary</title>
   <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://esm.sh/three@0.176.0",
+      "three/addons/": "https://esm.sh/three@0.176.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
   <div id="main">
@@ -70,8 +78,8 @@
 
       <section>
         <h3>Timing</h3>
-        <label>Post-speech delay (s)
-          <input type="number" id="cfg-post-speech-delay" step="0.5" min="0" />
+        <label>Pre-screenshot delay (s)
+          <input type="number" id="cfg-pre-screenshot-delay" step="0.5" min="0" />
         </label>
       </section>
 
@@ -115,6 +123,8 @@
     </div>
   </div>
 
+  <script src="lipsync.js"></script>
   <script src="app.js"></script>
+  <script type="module" src="avatar.js"></script>
 </body>
 </html>

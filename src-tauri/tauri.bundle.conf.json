@@ -2,7 +2,8 @@
   "bundle": {
     "resources": [
       "resources/uv-*",
-      "resources/backend/**/*"
+      "resources/backend/**/*",
+      "resources/models/model.*"
     ]
   }
 }
