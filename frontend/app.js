@@ -31,6 +31,8 @@ const cudaBanner         = document.getElementById("cuda-banner");
 const cudaBannerMsg      = document.getElementById("cuda-banner-msg");
 const cudaInstallBtn     = document.getElementById("cuda-install-btn");
 const cudaDismissBtn     = document.getElementById("cuda-dismiss-btn");
+const splashEl           = document.getElementById("splash");
+const splashStatusEl     = document.getElementById("splash-status");
 
 // --- App state ---
 let volume = parseFloat(localStorage.getItem("lpc_volume") ?? "1");
@@ -56,7 +58,7 @@ function checkReady() {
   const ready = configReceived && modelsReceived && backendReady;
   startStopBtn.disabled = !ready;
   settingsBtn.disabled  = !ready;
-  if (ready && !running) setPhase("Idle", "none");
+  if (ready && !running) { setPhase("Idle", "none"); dismissSplash(); }
 }
 
 function setRunning(value) {
@@ -113,8 +115,16 @@ let timerInterval = null;
 let timerStart = null;
 let timerEnd = null; // null = countup, timestamp = countdown target
 
+let splashDismissed = false;
+function dismissSplash() {
+  if (splashDismissed) return;
+  splashDismissed = true;
+  splashEl.classList.add("splash-gone");
+}
+
 function setPhase(label, mode = "up", durationMs = 0) {
   statusPhaseEl.textContent = label;
+  splashStatusEl.textContent = label;
   clearInterval(timerInterval);
 
   if (mode === "none") {
@@ -495,15 +505,32 @@ cudaDismissBtn.addEventListener("click", () => {
 // --- Init ---
 async function main() {
   setPhase("Starting up…", "up");
-  port = await invoke("get_backend_port");
-  const modelCfg = await fetch(`http://127.0.0.1:${port}/model-config`).then(r => r.json()).catch(() => ({}));
-  window.initLipSync?.(modelCfg);
-  window.initAvatar?.(modelCfg, port);
-  connectWebSocket();
 
-  await listen("setup_progress", ({ payload }) => {
-    setPhase(payload, "up");
+  // Register early so splash status updates during uv sync / backend setup,
+  // and so backend_crashed is never missed while invoke is still pending.
+  await listen("setup_progress", ({ payload }) => setPhase(payload, "up"));
+  await listen("backend_crashed", () => {
+    dismissSplash();
+    setRunning(false);
+    configReceived = false;
+    modelsReceived = false;
+    backendReady   = false;
+    checkReady();
+    setPhase("Backend crashed", "none");
   });
+
+  // Fetch model config and init avatar only once the backend is confirmed
+  // ready. Registering before invoke("get_backend_port") ensures the event
+  // is never missed even when the backend starts very quickly.
+  const unlistenReady = await listen("backend_ready", async () => {
+    unlistenReady();
+    const modelCfg = await fetch(`http://127.0.0.1:${port}/model-config`).then(r => r.json()).catch(() => ({}));
+    window.initLipSync?.(modelCfg);
+    window.initAvatar?.(modelCfg, port);
+  });
+
+  port = await invoke("get_backend_port");
+  connectWebSocket();
 
   await listen("cuda_upgrade_available", ({ payload }) => {
     pendingCuIndex = payload;
@@ -528,15 +555,6 @@ async function main() {
     cudaBannerMsg.textContent = `Installation failed: ${payload}`;
     cudaInstallBtn.disabled = false;
     cudaDismissBtn.disabled = false;
-  });
-
-  await listen("backend_crashed", () => {
-    setRunning(false);
-    configReceived = false;
-    modelsReceived = false;
-    backendReady   = false;
-    checkReady();
-    setPhase("Backend crashed", "none");
   });
 }
 

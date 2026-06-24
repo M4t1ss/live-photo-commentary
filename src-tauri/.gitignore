@@ -2,3 +2,6 @@
 # will have compiled files and executables
 /target/
 /gen/schemas
+
+# Populated by the build process from the top-level models/ directory
+/resources/models/
