@@ -4,9 +4,13 @@
 //   buildTimeline(phonemes) — called by app.js when a TTS chunk arrives
 
 let _visemeMap = {};
+let _maxEnvelopeDuration = 0.3;
 
 window.initLipSync = function (config) {
   _visemeMap = config.visemeMap ?? {};
+  _maxEnvelopeDuration = config.maxEnvelopeDuration ?? 0.3;
+  // Expose viseme map globally for debugging
+  window._visemeMap = _visemeMap;
 };
 
 // buildTimeline converts Kokoro phoneme timing into a flat list of morph events.
@@ -43,17 +47,21 @@ window.buildTimeline = function (phonemes) {
     // Non-visual phonemes between this one and its visual predecessor are skipped.
     let prevVisual = i - 1;
     while (prevVisual >= 0 && !isVisual[prevVisual]) prevVisual--;
-    const absStart = prevVisual < 0
+    let absStart = prevVisual < 0
       ? Math.max(0, absPeak - dur * 0.5)
       : starts[prevVisual];
+    // Cap: don't start more than maxEnvelopeDuration before the peak
+    absStart = Math.max(absStart, absPeak - _maxEnvelopeDuration);
 
     // absEnd: start of the nearest next visual phoneme.
     // Non-visual phonemes between this one and its visual successor are skipped.
     let nextVisual = i + 1;
     while (nextVisual < phonemes.length && !isVisual[nextVisual]) nextVisual++;
-    const absEnd = nextVisual >= phonemes.length
+    let absEnd = nextVisual >= phonemes.length
       ? starts[phonemes.length] + dur * 0.5
       : starts[nextVisual];
+    // Cap: don't end more than maxEnvelopeDuration after the peak
+    absEnd = Math.min(absEnd, absPeak + _maxEnvelopeDuration);
 
     for (const [key, value] of Object.entries(mapping)) {
       events.push({ key, absStart, absPeak, absEnd, value });

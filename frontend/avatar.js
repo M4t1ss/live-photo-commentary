@@ -25,12 +25,16 @@ let mixer = null;
 // read every frame by applyLipSync.
 let lipSyncTimeline = [];
 let lipSyncAudio    = null;
+let lipSyncDisabled = false;  // set by showPhoneme for debugging
 
 // Built from the loaded model; used by applyLipSync.
 const morphMeshes = new Map();  // Map<Mesh, morphTargetDictionary>
-let jawBone    = null;
-let minJawAngle = 0;
-let maxJawAngle = 0.15;
+let jawBone       = null;
+let jawAxis       = 'x';
+let jawRestAngle  = 0;      // initial angle of jaw bone in its axis
+let minJawAngle   = 0;      // relative angle from rest (should be ≤ 0)
+let maxJawAngle   = 0.15;   // relative angle from rest (should be ≥ 0)
+let visemeMap     = {};     // phoneme → {morph: value, ...}
 
 // Scroll-wheel zoom — 0 = full body, 1 = head shot.
 let zoomT = 0;
@@ -88,7 +92,8 @@ function applyLipSync(t) {
   }
 
   if (jawBone) {
-    jawBone.rotation.x = minJawAngle + jawValue * (maxJawAngle - minJawAngle);
+    const relativeAngle = minJawAngle + jawValue * (maxJawAngle - minJawAngle);
+    jawBone.rotation[jawAxis] = jawRestAngle + relativeAngle;
   }
 }
 
@@ -100,6 +105,8 @@ window.setLipSyncData = function (timeline, audio) {
 
 // Called by app.js after it resolves the backend port and fetches /model-config.
 window.initAvatar = function (config, port) {
+  visemeMap = config.visemeMap ?? {};
+  jawAxis = config.jawAxis ?? 'x';
   minJawAngle = config.minJawAngle ?? 0;
   maxJawAngle = config.maxJawAngle ?? 0.15;
 
@@ -124,7 +131,7 @@ window.initAvatar = function (config, port) {
 
     if (gltf.animations.length > 0) {
       mixer = new THREE.AnimationMixer(model);
-      mixer.clipAction(gltf.animations[0]).play();
+      // mixer.clipAction(gltf.animations[0]).play();
     }
 
     const jawBoneName = config.jawBone ?? 'CC_Base_JawRoot';
@@ -132,7 +139,11 @@ window.initAvatar = function (config, port) {
       if (node.isMesh && node.morphTargetDictionary && node.morphTargetInfluences) {
         morphMeshes.set(node, node.morphTargetDictionary);
       }
-      if (node.name === jawBoneName) jawBone = node;
+      if (node.name === jawBoneName) {
+        jawBone = node;
+        // Store the initial rotation angle in the jaw axis.
+        jawRestAngle = node.rotation[jawAxis] ?? 0;
+      }
     });
   }, undefined, (err) => console.error('[avatar] model load failed', err));
 };
@@ -151,19 +162,80 @@ new ResizeObserver(resize).observe(canvas);
 resize();
 
 // --- Render loop ---
-(function frame() {
-  requestAnimationFrame(frame);
+function _tick() {
   const delta = clock.getDelta();
   if (mixer) mixer.update(delta);
-
-  // Always run applyLipSync so morphs are zeroed when there is no active audio.
-  if (morphMeshes.size > 0 || jawBone) {
+  if (!lipSyncDisabled && (morphMeshes.size > 0 || jawBone)) {
     const t = lipSyncAudio ? lipSyncAudio.currentTime : Infinity;
     applyLipSync(t);
   }
-
   renderer.render(scene, camera);
+}
+
+(function frame() {
+  requestAnimationFrame(frame);
+  _tick();
 })();
+
+// requestAnimationFrame is paused when the page is hidden (user switches away).
+// A self-scheduling setTimeout keeps lip sync running for screen-capture tools
+// that grab this window while it is in the background.  setTimeout rather than
+// setInterval so callbacks never pile up if a frame runs long.
+let _hiddenLoopActive = false;
+function _hiddenTick() {
+  if (!_hiddenLoopActive) return;
+  _tick();
+  setTimeout(_hiddenTick, 16);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    _hiddenLoopActive = true;
+    _hiddenTick();
+  } else {
+    _hiddenLoopActive = false;
+    clock.getDelta(); // reset accumulated delta so the first rAF frame is normal
+  }
+});
 
 // Stub — will drive emotion animations in a later stage.
 window.setEmotion = (_emotion) => {};
+
+// Debug helper: show a phoneme shape, optionally blending to another.
+// ratio: 1.0 = fully ph1, 0.0 = fully ph2, 0.5 = blend (using max)
+// Usage: showPhoneme('ɑ')  or  showPhoneme('p', 'ə', 0.5)
+window.showPhoneme = function (ph1, ph2 = null, ratio = 1.0) {
+  lipSyncDisabled = true;   // Prevent render loop from clearing morphs
+  lipSyncAudio = null;      // Cleanup just in case
+  lipSyncTimeline = [];     // Clear timeline
+
+  const mapping1 = visemeMap[ph1] || {};
+  const mapping2 = ph2 ? (visemeMap[ph2] || {}) : {};
+
+  const influences = {};
+  let jawValue = 0;
+
+  const allKeys = new Set([...Object.keys(mapping1), ...Object.keys(mapping2)]);
+  for (const key of allKeys) {
+    const v1 = mapping1[key] ?? 0;
+    const v2 = mapping2[key] ?? 0;
+    if (key === 'jaw') {
+      jawValue = Math.max(v1 * ratio, v2 * (1 - ratio));
+    } else {
+      influences[key] = Math.max(v1 * ratio, v2 * (1 - ratio));
+    }
+  }
+
+  console.log(`[showPhoneme] computed influences:`, influences, `jawValue=${jawValue}`);
+
+  for (const [mesh, dict] of morphMeshes) {
+    for (const [name, idx] of Object.entries(dict)) {
+      mesh.morphTargetInfluences[idx] = influences[name] ?? 0;
+    }
+  }
+
+  if (jawBone) {
+    const relativeAngle = minJawAngle + jawValue * (maxJawAngle - minJawAngle);
+    jawBone.rotation[jawAxis] = jawRestAngle + relativeAngle;
+    console.log(`[showPhoneme] jaw: axis=${jawAxis}, restAngle=${jawRestAngle}, relative=${minJawAngle + jawValue * (maxJawAngle - minJawAngle)}, final=${jawRestAngle + relativeAngle}`);
+  }
+};

@@ -455,6 +455,15 @@ pub fn run() {
                 None
             };
 
+            // Point the backend at the bundled models directory if present.
+            // Falls back to the Python default ("../models") when absent.
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                let models_dir = resource_dir.join("resources").join("models");
+                if models_dir.exists() {
+                    cmd.env("MODEL_DIR", models_dir);
+                }
+            }
+
             cmd.arg(&port_str)
                 .current_dir(&backend_dir)
                 .stdout(if cfg!(debug_assertions) {

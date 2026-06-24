@@ -27,6 +27,7 @@ class Pipeline:
         self._auto_loop_task: asyncio.Task | None = None
         self._speech_ended: asyncio.Event | None = None  # created on attach()
 
+        self._generation: int = 0
         self._vlm_q: queue.Queue = queue.Queue(maxsize=1)
         self._tts_q: queue.Queue = queue.Queue(maxsize=1)
 
@@ -68,7 +69,7 @@ class Pipeline:
                     return
 
         try:
-            self._vlm_q.put_nowait((img, prev_img))
+            self._vlm_q.put_nowait((self._generation, img, prev_img))
         except queue.Full:
             await self._broadcast_fn({"type": "busy", "message": "VLM busy, cycle skipped"})
 
@@ -89,6 +90,7 @@ class Pipeline:
 
     async def stop_loop(self) -> None:
         self._auto_loop_running = False
+        self._generation += 1
         if self._auto_loop_task:
             self._auto_loop_task.cancel()
             self._auto_loop_task = None
@@ -123,19 +125,23 @@ class Pipeline:
                 continue
             if item is _SENTINEL:
                 return
+            gen, curr_img, prev_img = item
+            if gen != self._generation:
+                continue
             describer = self.describer
             if describer is None:
                 self._send({"type": "error", "message": "No VLM configured"})
                 continue
-            curr_img, prev_img = item
             describer.max_history_size = config.get().max_history_size
             try:
                 text = describer(curr_img, prev_img)
             except Exception as exc:
                 self._send({"type": "error", "message": f"VLM error: {exc}"})
                 continue
+            if gen != self._generation:
+                continue
             try:
-                self._tts_q.put_nowait(text)
+                self._tts_q.put_nowait((gen, text))
             except queue.Full:
                 self._send({"type": "error", "message": "TTS busy"})
 
@@ -147,13 +153,17 @@ class Pipeline:
                 continue
             if item is _SENTINEL:
                 return
+            gen, text = item
+            if gen != self._generation:
+                continue
             if self.synthesizer is None:
                 self._send({"type": "error", "message": "No TTS configured"})
                 continue
-            text = item
             try:
                 self._audio_chunks.clear()
                 for i, (audio, fragment, chunk_phonemes, _mark_timings) in enumerate(self.synthesizer(text)):
+                    if gen != self._generation:
+                        break
                     audio_path = self._tmp_dir / f"chunk_{i}.wav"
                     audio_path.write_bytes(self.synthesizer.to_wav_bytes(audio))
                     self._audio_chunks[i] = audio_path
@@ -164,7 +174,8 @@ class Pipeline:
                         "audio_url": f"/audio/chunk/{i}",
                         "phonemes": [[ph, round(t, 4)] for ph, t in chunk_phonemes],
                     })
-                self._send({"type": "tts_done"})
+                else:
+                    self._send({"type": "tts_done"})
             except Exception as exc:
                 self._send({"type": "error", "message": f"TTS error: {exc}"})
 
