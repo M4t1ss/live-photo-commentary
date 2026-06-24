@@ -25,7 +25,7 @@ class Pipeline:
 
         self._auto_loop_running = False
         self._auto_loop_task: asyncio.Task | None = None
-        self._speech_ended: asyncio.Event | None = None  # created on attach()
+        self._take_screenshot: asyncio.Event | None = None  # created on attach()
 
         self._generation: int = 0
         self._vlm_q: queue.Queue = queue.Queue(maxsize=1)
@@ -37,7 +37,7 @@ class Pipeline:
     def attach(self, loop: asyncio.AbstractEventLoop, broadcast_fn) -> None:
         self._loop = loop
         self._broadcast_fn = broadcast_fn
-        self._speech_ended = asyncio.Event()
+        self._take_screenshot = asyncio.Event()
 
     async def trigger(self) -> None:
         from .screenshot import screenshot
@@ -65,7 +65,7 @@ class Pipeline:
                 )
                 if diff < cfg.difference_threshold:
                     await self._broadcast_fn({"type": "skipped", "diff": round(diff, 6)})
-                    self.on_speech_ended()  # unblock the loop so it retries
+                    self.on_take_screenshot()  # unblock the loop so it retries
                     return
 
         try:
@@ -84,7 +84,7 @@ class Pipeline:
         if self._auto_loop_running:
             return
         self._auto_loop_running = True
-        self._speech_ended.clear()
+        self._take_screenshot.clear()
         await self.trigger()
         self._auto_loop_task = asyncio.create_task(self._auto_loop())
 
@@ -95,17 +95,14 @@ class Pipeline:
             self._auto_loop_task.cancel()
             self._auto_loop_task = None
 
-    def on_speech_ended(self) -> None:
-        if self._speech_ended:
-            self._speech_ended.set()
+    def on_take_screenshot(self) -> None:
+        if self._take_screenshot:
+            self._take_screenshot.set()
 
     async def _auto_loop(self) -> None:
         while self._auto_loop_running:
-            await self._speech_ended.wait()
-            self._speech_ended.clear()
-            if not self._auto_loop_running:
-                break
-            await asyncio.sleep(config.get().post_speech_delay)
+            await self._take_screenshot.wait()
+            self._take_screenshot.clear()
             if not self._auto_loop_running:
                 break
             try:
@@ -161,18 +158,24 @@ class Pipeline:
                 continue
             try:
                 self._audio_chunks.clear()
-                for i, (audio, fragment, chunk_phonemes, _mark_timings) in enumerate(self.synthesizer(text)):
+                for i, (audio, fragment, chunk_phonemes, mark_timings, subtitle_segments) in enumerate(self.synthesizer(text)):
                     if gen != self._generation:
                         break
                     audio_path = self._tmp_dir / f"chunk_{i}.wav"
                     audio_path.write_bytes(self.synthesizer.to_wav_bytes(audio))
                     self._audio_chunks[i] = audio_path
+                    sub_times = [round(t, 4) for name, t in mark_timings if name == "sub"]
+                    subtitles = [
+                        {"text": seg, "time": t}
+                        for seg, t in zip(subtitle_segments, [0.0] + sub_times)
+                    ]
                     self._send({
                         "type": "chunk",
                         "index": i,
                         "text": fragment,
                         "audio_url": f"/audio/chunk/{i}",
                         "phonemes": [[ph, round(t, 4)] for ph, t in chunk_phonemes],
+                        "subtitles": subtitles,
                     })
                 else:
                     self._send({"type": "tts_done"})

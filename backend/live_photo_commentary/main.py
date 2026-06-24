@@ -314,9 +314,9 @@ async def websocket_endpoint(ws: WebSocket):
                 case "stop_cycle":
                     if pipeline is not None:
                         await pipeline.stop_loop()
-                case "speech_ended":
+                case "take_screenshot":
                     if pipeline is not None:
-                        pipeline.on_speech_ended()
+                        pipeline.on_take_screenshot()
     except WebSocketDisconnect:
         pass
     finally:

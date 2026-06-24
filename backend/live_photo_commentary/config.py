@@ -13,10 +13,11 @@ class Settings(BaseSettings):
     vlm_provider: str = "local"
     vlm_model: str | None = "apple/FastVLM-0.5B"
     tts_voice: str = "af_heart"
-    post_speech_delay: float = 2.0
+    pre_screenshot_delay: float = 2.0
     difference_threshold: float = 0.0
     difference_measure: str = "mse"
     max_history_size: int = 0
+    subtitle_max_chars: int = 60
     gemini_api_key: str | None = None
     openai_api_key: str | None = None
     elevenlabs_api_key: str | None = None
