@@ -507,7 +507,8 @@ async function main() {
   setPhase("Starting up…", "up");
 
   // Register early so splash status updates during uv sync / backend setup,
-  // and so backend_crashed is never missed while invoke is still pending.
+  // and so backend_crashed / cuda_upgrade_available are never missed while
+  // invoke is still pending.
   await listen("setup_progress", ({ payload }) => setPhase(payload, "up"));
   await listen("backend_crashed", () => {
     dismissSplash();
@@ -517,6 +518,30 @@ async function main() {
     backendReady   = false;
     checkReady();
     setPhase("Backend crashed", "none");
+  });
+
+  // cuda_upgrade_available fires right after uv sync (before uvicorn even
+  // starts), so it must be registered here alongside the other early listeners.
+  await listen("cuda_upgrade_available", ({ payload }) => {
+    pendingCuIndex = payload;
+    cudaBannerMsg.textContent =
+      `NVIDIA GPU detected (${payload}). Install CUDA-optimised PyTorch for faster inference?`;
+    cudaBanner.classList.remove("hidden");
+  });
+  await listen("cuda_install_progress", ({ payload }) => {
+    cudaBannerMsg.textContent = payload;
+  });
+  await listen("cuda_install_done", () => {
+    cudaBannerMsg.textContent = "CUDA PyTorch installed. Restart the app to use GPU acceleration.";
+    cudaInstallBtn.textContent = "Restart";
+    cudaInstallBtn.disabled = false;
+    cudaInstallBtn.onclick = () => invoke("restart_app");
+    cudaDismissBtn.classList.add("hidden");
+  });
+  await listen("cuda_install_failed", ({ payload }) => {
+    cudaBannerMsg.textContent = `Installation failed: ${payload}`;
+    cudaInstallBtn.disabled = false;
+    cudaDismissBtn.disabled = false;
   });
 
   // Fetch model config and init avatar only once the backend is confirmed
@@ -531,31 +556,6 @@ async function main() {
 
   port = await invoke("get_backend_port");
   connectWebSocket();
-
-  await listen("cuda_upgrade_available", ({ payload }) => {
-    pendingCuIndex = payload;
-    cudaBannerMsg.textContent =
-      `NVIDIA GPU detected (${payload}). Install CUDA-optimised PyTorch for faster inference?`;
-    cudaBanner.classList.remove("hidden");
-  });
-
-  await listen("cuda_install_progress", ({ payload }) => {
-    cudaBannerMsg.textContent = payload;
-  });
-
-  await listen("cuda_install_done", () => {
-    cudaBannerMsg.textContent = "CUDA PyTorch installed. Restart the app to use GPU acceleration.";
-    cudaInstallBtn.textContent = "Restart";
-    cudaInstallBtn.disabled = false;
-    cudaInstallBtn.onclick = () => invoke("restart_app");
-    cudaDismissBtn.classList.add("hidden");
-  });
-
-  await listen("cuda_install_failed", ({ payload }) => {
-    cudaBannerMsg.textContent = `Installation failed: ${payload}`;
-    cudaInstallBtn.disabled = false;
-    cudaDismissBtn.disabled = false;
-  });
 }
 
 main();

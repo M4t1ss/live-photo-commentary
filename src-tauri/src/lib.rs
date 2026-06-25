@@ -59,6 +59,9 @@ fn restart_app(app: tauri::AppHandle) {
     if let Some(state) = app.try_state::<BackendState>() {
         state.process.kill();
     }
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe).spawn();
+    }
     std::process::exit(0);
 }
 
@@ -74,6 +77,7 @@ fn find_free_port() -> u16 {
 #[cfg(not(target_os = "macos"))]
 fn pytorch_cuda_index(major: u32, minor: u32) -> Option<&'static str> {
     match major {
+        13.. => Some("cu128"), // CUDA 13.x driver supports cu128 wheels (backward-compatible)
         12 if minor >= 8 => Some("cu128"),
         12 if minor >= 6 => Some("cu126"),
         12 if minor >= 4 => Some("cu124"),
@@ -101,21 +105,28 @@ fn detect_cuda_index() -> Option<&'static str> {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
-        if let Some(pos) = line.find("CUDA Version:") {
-            let rest = line[pos + "CUDA Version:".len()..].trim();
-            let version = rest.split_whitespace().next()?;
-            let mut parts = version.splitn(2, '.');
-            let major: u32 = parts.next()?.parse().ok()?;
-            // Strip trailing non-digit chars (pipes, spaces) that appear in the smi table
-            let minor_str = parts.next()?;
-            let minor: u32 = minor_str
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>()
-                .parse()
-                .ok()?;
-            return pytorch_cuda_index(major, minor);
-        }
+        // Windows nvidia-smi may report "CUDA UMD Version:" instead of "CUDA Version:"
+        let key = if line.contains("CUDA Version:") {
+            "CUDA Version:"
+        } else if line.contains("CUDA UMD Version:") {
+            "CUDA UMD Version:"
+        } else {
+            continue;
+        };
+        let pos = line.find(key).unwrap();
+        let rest = line[pos + key.len()..].trim();
+        let version = rest.split_whitespace().next()?;
+        let mut parts = version.splitn(2, '.');
+        let major: u32 = parts.next()?.parse().ok()?;
+        // Strip trailing non-digit chars (pipes, spaces) that appear in the smi table
+        let minor_str = parts.next()?;
+        let minor: u32 = minor_str
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .ok()?;
+        return pytorch_cuda_index(major, minor);
     }
     None
 }
@@ -144,6 +155,36 @@ struct InstallState {
     backend_dir: std::path::PathBuf,
 }
 
+/// Isolated directory for the CUDA venv — always in AppData, never the source
+/// tree, so `cargo tauri dev` never dirties pyproject.toml or uv.lock.
+fn get_cuda_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    app.path()
+        .app_data_dir()
+        .expect("app data dir unavailable")
+        .join("backend-cuda")
+}
+
+/// Returns the Python executable to use for uvicorn:
+/// the CUDA venv if installed, otherwise the regular venv.
+fn get_python_exe(
+    cuda_dir: &std::path::Path,
+    backend_dir: &std::path::Path,
+) -> std::path::PathBuf {
+    let cuda_python = if cfg!(target_os = "windows") {
+        cuda_dir.join(".venv").join("Scripts").join("python.exe")
+    } else {
+        cuda_dir.join(".venv").join("bin").join("python")
+    };
+    if cuda_dir.join(".cuda_torch").exists() && cuda_python.exists() {
+        return cuda_python;
+    }
+    if cfg!(target_os = "windows") {
+        backend_dir.join(".venv").join("Scripts").join("python.exe")
+    } else {
+        backend_dir.join(".venv").join("bin").join("python")
+    }
+}
+
 #[tauri::command]
 async fn install_cuda_torch(
     cu_index: String,
@@ -151,10 +192,26 @@ async fn install_cuda_torch(
     state: tauri::State<'_, InstallState>,
 ) -> Result<(), String> {
     let uv = state.uv_path.clone();
-    let backend_dir = state.backend_dir.clone();
-    let marker = backend_dir.join(".cuda_torch");
+    let source_backend = state.backend_dir.clone();
+    let cuda_dir = get_cuda_dir(&app);
+    let marker = cuda_dir.join(".cuda_torch");
 
-    update_pyproject_for_cuda(&backend_dir, &cu_index)
+    // Create an isolated directory so we never modify the source-tree files.
+    std::fs::create_dir_all(&cuda_dir)
+        .map_err(|e| format!("Failed to create CUDA dir: {e}"))?;
+
+    // Copy pyproject.toml from source (always fresh so the base is clean).
+    std::fs::copy(
+        source_backend.join("pyproject.toml"),
+        cuda_dir.join("pyproject.toml"),
+    ).map_err(|e| format!("Failed to copy pyproject.toml: {e}"))?;
+
+    // Seed the resolver with the existing lock file to speed up resolution.
+    if source_backend.join("uv.lock").exists() {
+        let _ = std::fs::copy(source_backend.join("uv.lock"), cuda_dir.join("uv.lock"));
+    }
+
+    update_pyproject_for_cuda(&cuda_dir, &cu_index)
         .map_err(|e| format!("Failed to update pyproject.toml: {e}"))?;
 
     let _ = app.emit("cuda_install_progress", "Downloading CUDA PyTorch — this may take a few minutes…");
@@ -164,10 +221,11 @@ async fn install_cuda_torch(
         let mut cmd = uv_command(&uv);
         cmd.args([
             "sync",
+            "--no-install-project", // source code loaded via PYTHONPATH, not editable install
             "--reinstall-package", "torch",
             "--reinstall-package", "torchvision",
         ])
-        .current_dir(&backend_dir)
+        .current_dir(&cuda_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
         #[cfg(target_os = "windows")]
@@ -471,7 +529,8 @@ pub fn run() {
                 // CUDA upgrade detection — non-macOS only.
                 #[cfg(not(target_os = "macos"))]
                 {
-                    let marker = backend_dir.join(".cuda_torch");
+                    let cuda_dir = get_cuda_dir(&handle);
+                    let marker = cuda_dir.join(".cuda_torch");
                     let installed = std::fs::read_to_string(&marker).unwrap_or_default();
                     if let Some(cu_index) = detect_cuda_index() {
                         if installed.trim() != cu_index {
@@ -483,24 +542,29 @@ pub fn run() {
 
                 let port_str = port.to_string();
 
-                // In debug: use `uv run` so the dev venv is auto-managed.
-                // In release: call the venv Python directly — uv sync has already
-                // set it up, and bypassing `uv run` avoids a console flash on
-                // Windows caused by uv spawning its own subprocess internally.
-                let mut cmd = if cfg!(debug_assertions) {
+                // Choose the Python executable: CUDA venv (AppData) if installed,
+                // otherwise the regular venv.  In debug the regular venv is managed
+                // by `uv run`; for CUDA we call python directly in both modes so
+                // the CUDA packages in AppData are used instead of the source-tree venv.
+                let cuda_dir = get_cuda_dir(&handle);
+                let python = get_python_exe(&cuda_dir, &backend_dir);
+                let using_cuda_venv = python.starts_with(&cuda_dir);
+
+                let mut cmd = if cfg!(debug_assertions) && !using_cuda_venv {
+                    // Dev without CUDA: let uv manage the venv automatically.
                     let mut c = uv_command(&uv);
                     c.args(["run", "uvicorn", "live_photo_commentary.main:app",
                            "--host", "127.0.0.1", "--port"]);
                     c
                 } else {
-                    let python = if cfg!(target_os = "windows") {
-                        backend_dir.join(".venv").join("Scripts").join("python.exe")
-                    } else {
-                        backend_dir.join(".venv").join("bin").join("python")
-                    };
-                    let mut c = Command::new(python);
+                    let mut c = Command::new(&python);
                     c.args(["-m", "uvicorn", "live_photo_commentary.main:app",
                            "--host", "127.0.0.1", "--port"]);
+                    // CUDA venv has no editable install of the project; inject the
+                    // source directory so `live_photo_commentary` is importable.
+                    if using_cuda_venv {
+                        c.env("PYTHONPATH", &backend_dir);
+                    }
                     c
                 };
 

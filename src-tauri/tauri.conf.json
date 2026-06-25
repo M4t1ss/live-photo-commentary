@@ -34,6 +34,11 @@
     "android": {
       "debugApplicationIdSuffix": ".debug"
     },
-    "resources": []
+    "resources": [],
+    "windows": {
+      "nsis": {
+        "installerHooks": "nsis/hooks.nsi"
+      }
+    }
   }
 }
