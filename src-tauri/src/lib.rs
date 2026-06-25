@@ -55,14 +55,17 @@ fn get_backend_port(state: State<BackendState>) -> u16 {
 }
 
 #[tauri::command]
-fn restart_app(app: tauri::AppHandle) {
-    if let Some(state) = app.try_state::<BackendState>() {
-        state.process.kill();
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = Command::new(exe).spawn();
-    }
-    std::process::exit(0);
+fn restart_backend(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+    install: State<'_, InstallState>,
+) {
+    let port = state.port;
+    let inner = Arc::clone(&state.process.inner);
+    let uv = install.uv_path.clone();
+    let backend_dir = install.backend_dir.clone();
+    state.process.kill();
+    tauri::async_runtime::spawn(spawn_and_monitor_backend(app, port, uv, backend_dir, inner));
 }
 
 // ── Port discovery ────────────────────────────────────────────────────────────
@@ -475,6 +478,137 @@ async fn poll_until_ready(port: u16) {
     }
 }
 
+// ── Backend spawn / monitor ───────────────────────────────────────────────────
+
+async fn spawn_and_monitor_backend(
+    handle: tauri::AppHandle,
+    port: u16,
+    uv: std::path::PathBuf,
+    backend_dir: std::path::PathBuf,
+    inner: Arc<Mutex<Option<Child>>>,
+) {
+    let port_str = port.to_string();
+
+    // Choose the Python executable: CUDA venv (AppData) if installed,
+    // otherwise the regular venv.  In debug the regular venv is managed
+    // by `uv run`; for CUDA we call python directly in both modes so
+    // the CUDA packages in AppData are used instead of the source-tree venv.
+    let cuda_dir = get_cuda_dir(&handle);
+    let python = get_python_exe(&cuda_dir, &backend_dir);
+    let using_cuda_venv = python.starts_with(&cuda_dir);
+
+    let mut cmd = if cfg!(debug_assertions) && !using_cuda_venv {
+        // Dev without CUDA: let uv manage the venv automatically.
+        let mut c = uv_command(&uv);
+        c.args(["run", "uvicorn", "live_photo_commentary.main:app",
+               "--host", "127.0.0.1", "--port"]);
+        c
+    } else {
+        let mut c = Command::new(&python);
+        c.args(["-m", "uvicorn", "live_photo_commentary.main:app",
+               "--host", "127.0.0.1", "--port"]);
+        // CUDA venv has no editable install of the project; inject the
+        // source directory so `live_photo_commentary` is importable.
+        if using_cuda_venv {
+            c.env("PYTHONPATH", &backend_dir);
+        }
+        c
+    };
+
+    // In release, redirect stdout+stderr to a log file in backend_dir
+    // so crashes are diagnosable.
+    let log_file = if !cfg!(debug_assertions) {
+        std::fs::File::create(backend_dir.join("backend.log")).ok()
+    } else {
+        None
+    };
+
+    // Point the backend at the bundled models directory if present.
+    if let Ok(resource_dir) = handle.path().resource_dir() {
+        let models_dir = resource_dir.join("resources").join("models");
+        if models_dir.exists() {
+            cmd.env("MODEL_DIR", models_dir);
+        }
+    }
+
+    cmd.arg(&port_str)
+        .current_dir(&backend_dir)
+        .stdout(if cfg!(debug_assertions) {
+            Stdio::inherit()
+        } else {
+            log_file.as_ref()
+                .and_then(|f| f.try_clone().ok())
+                .map(Stdio::from)
+                .unwrap_or_else(Stdio::null)
+        })
+        .stderr(if cfg!(debug_assertions) {
+            Stdio::inherit()
+        } else {
+            log_file.map(Stdio::from).unwrap_or_else(Stdio::null)
+        });
+
+    // On Windows release builds, set CREATE_NO_WINDOW so the OS
+    // doesn't open a console window for the child process.
+    #[cfg(target_os = "windows")]
+    if !cfg!(debug_assertions) {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to spawn backend process: {e}");
+            let _ = handle.emit("backend_crashed", -1i32);
+            return;
+        }
+    };
+
+    // Insert child into the shared Arc so kill() and the monitor can reach it.
+    *inner.lock().unwrap() = Some(child);
+
+    // ── Crash monitor ────────────────────────────────────────────────────────
+    // Polls the child every 500 ms. If the process exits without being killed
+    // by us (i.e. it crashed), emits `backend_crashed` so the frontend shows
+    // an error instead of retrying forever.
+    //
+    // Race-free: RunEvent::Exit / Drop and this thread share the same
+    // Mutex<Option<Child>>. Whichever locks first takes the Option:
+    //  • RunEvent::Exit calls kill() → takes child, sets None.
+    //    Monitor's next iteration finds None → exits silently.
+    //  • Monitor finds try_wait() returned Some (crashed) → takes it, sets
+    //    None, emits event. kill() later finds None → noop.
+    let monitor_inner = Arc::clone(&inner);
+    let monitor_handle = handle.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let mut guard = monitor_inner.lock().unwrap();
+        match guard.as_mut() {
+            None => break, // normal shutdown via Drop
+            Some(child) => match child.try_wait() {
+                Ok(Some(status)) => {
+                    *guard = None; // prevent Drop from double-killing
+                    drop(guard);
+                    let code = status.code().unwrap_or(-1);
+                    log::error!("Backend exited unexpectedly (code {code})");
+                    let _ = monitor_handle.emit("backend_crashed", code);
+                    break;
+                }
+                Ok(None) => {}  // still running
+                Err(e) => {
+                    log::error!("Error monitoring backend process: {e}");
+                    break;
+                }
+            },
+        }
+    });
+
+    // Emit `backend_ready` once the health endpoint responds.
+    poll_until_ready(port).await;
+    let _ = handle.emit("backend_ready", port);
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -540,128 +674,7 @@ pub fn run() {
                     }
                 }
 
-                let port_str = port.to_string();
-
-                // Choose the Python executable: CUDA venv (AppData) if installed,
-                // otherwise the regular venv.  In debug the regular venv is managed
-                // by `uv run`; for CUDA we call python directly in both modes so
-                // the CUDA packages in AppData are used instead of the source-tree venv.
-                let cuda_dir = get_cuda_dir(&handle);
-                let python = get_python_exe(&cuda_dir, &backend_dir);
-                let using_cuda_venv = python.starts_with(&cuda_dir);
-
-                let mut cmd = if cfg!(debug_assertions) && !using_cuda_venv {
-                    // Dev without CUDA: let uv manage the venv automatically.
-                    let mut c = uv_command(&uv);
-                    c.args(["run", "uvicorn", "live_photo_commentary.main:app",
-                           "--host", "127.0.0.1", "--port"]);
-                    c
-                } else {
-                    let mut c = Command::new(&python);
-                    c.args(["-m", "uvicorn", "live_photo_commentary.main:app",
-                           "--host", "127.0.0.1", "--port"]);
-                    // CUDA venv has no editable install of the project; inject the
-                    // source directory so `live_photo_commentary` is importable.
-                    if using_cuda_venv {
-                        c.env("PYTHONPATH", &backend_dir);
-                    }
-                    c
-                };
-
-                // In release, redirect stdout+stderr to a log file in backend_dir
-                // so crashes are diagnosable.
-                let log_file = if !cfg!(debug_assertions) {
-                    std::fs::File::create(backend_dir.join("backend.log")).ok()
-                } else {
-                    None
-                };
-
-                // Point the backend at the bundled models directory if present.
-                if let Ok(resource_dir) = handle.path().resource_dir() {
-                    let models_dir = resource_dir.join("resources").join("models");
-                    if models_dir.exists() {
-                        cmd.env("MODEL_DIR", models_dir);
-                    }
-                }
-
-                cmd.arg(&port_str)
-                    .current_dir(&backend_dir)
-                    .stdout(if cfg!(debug_assertions) {
-                        Stdio::inherit()
-                    } else {
-                        log_file.as_ref()
-                            .and_then(|f| f.try_clone().ok())
-                            .map(Stdio::from)
-                            .unwrap_or_else(Stdio::null)
-                    })
-                    .stderr(if cfg!(debug_assertions) {
-                        Stdio::inherit()
-                    } else {
-                        log_file.map(Stdio::from).unwrap_or_else(Stdio::null)
-                    });
-
-                // On Windows release builds, set CREATE_NO_WINDOW so the OS
-                // doesn't open a console window for the child process.
-                #[cfg(target_os = "windows")]
-                if !cfg!(debug_assertions) {
-                    use std::os::windows::process::CommandExt;
-                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-                    cmd.creation_flags(CREATE_NO_WINDOW);
-                }
-
-                let child = match cmd.spawn() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        log::error!("Failed to spawn backend process: {e}");
-                        let _ = handle.emit("backend_crashed", -1i32);
-                        return;
-                    }
-                };
-
-                // Insert child into the shared Arc so kill() and the monitor
-                // can reach it.
-                *inner_for_bg.lock().unwrap() = Some(child);
-
-                // ── Crash monitor ────────────────────────────────────────────
-                // Polls the child every 500 ms. If the process exits without
-                // being killed by us (i.e. it crashed), emits `backend_crashed`
-                // so the frontend shows an error instead of retrying forever.
-                //
-                // Race-free: RunEvent::Exit / Drop and this thread share the
-                // same Mutex<Option<Child>>. Whichever locks first takes the
-                // Option:
-                //  • RunEvent::Exit calls kill() → takes child, sets None.
-                //    Monitor's next iteration finds None → exits silently.
-                //  • Monitor finds try_wait() returned Some (crashed) → takes
-                //    it, sets None, emits event. kill() later finds None → noop.
-                let monitor_inner = Arc::clone(&inner_for_bg);
-                let monitor_handle = handle.clone();
-                std::thread::spawn(move || loop {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    let mut guard = monitor_inner.lock().unwrap();
-                    match guard.as_mut() {
-                        None => break, // normal shutdown via Drop
-                        Some(child) => match child.try_wait() {
-                            Ok(Some(status)) => {
-                                *guard = None; // prevent Drop from double-killing
-                                drop(guard);
-                                let code = status.code().unwrap_or(-1);
-                                log::error!("Backend exited unexpectedly (code {code})");
-                                let _ = monitor_handle.emit("backend_crashed", code);
-                                break;
-                            }
-                            Ok(None) => {}  // still running
-                            Err(e) => {
-                                log::error!("Error monitoring backend process: {e}");
-                                break;
-                            }
-                        },
-                    }
-                });
-
-                // Emit `backend_ready` once the health endpoint responds.
-                poll_until_ready(port).await;
-                let _ = handle.emit("backend_ready", port);
+                spawn_and_monitor_backend(handle, port, uv, backend_dir, inner_for_bg).await;
             });
 
             Ok(())
@@ -669,7 +682,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_backend_port,
             install_cuda_torch,
-            restart_app,
+            restart_backend,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

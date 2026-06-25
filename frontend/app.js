@@ -121,6 +121,10 @@ function dismissSplash() {
   splashDismissed = true;
   splashEl.classList.add("splash-gone");
 }
+function showSplash() {
+  splashDismissed = false;
+  splashEl.classList.remove("splash-gone");
+}
 
 function setPhase(label, mode = "up", durationMs = 0) {
   statusPhaseEl.textContent = label;
@@ -532,10 +536,10 @@ async function main() {
     cudaBannerMsg.textContent = payload;
   });
   await listen("cuda_install_done", () => {
-    cudaBannerMsg.textContent = "CUDA PyTorch installed. Restart the app to use GPU acceleration.";
+    cudaBannerMsg.textContent = "CUDA PyTorch installed. Restart the backend to use GPU acceleration.";
     cudaInstallBtn.textContent = "Restart";
     cudaInstallBtn.disabled = false;
-    cudaInstallBtn.onclick = () => invoke("restart_app");
+    cudaInstallBtn.onclick = () => { cudaBanner.classList.add("hidden"); showSplash(); invoke("restart_backend"); };
     cudaDismissBtn.classList.add("hidden");
   });
   await listen("cuda_install_failed", ({ payload }) => {
