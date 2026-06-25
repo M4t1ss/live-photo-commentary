@@ -350,6 +350,24 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
     // Checking pyvenv.cfg (not just the .venv dir) catches partial installs
     // where the directory was created but uv sync didn't finish.
     if !backend_dir.join(".venv").join("pyvenv.cfg").exists() {
+        // On Windows, executables in .venv\Scripts stay locked while any
+        // process using them is alive (e.g. a previous session's uvicorn).
+        // Remove the stale directory before uv sync so it can start clean;
+        // if removal fails the sync attempt below may still succeed or will
+        // produce the same error with a useful hint in the log.
+        let venv_dir = backend_dir.join(".venv");
+        if venv_dir.exists() {
+            log::info!("Removing stale .venv before sync…");
+            if let Err(e) = std::fs::remove_dir_all(&venv_dir) {
+                log::error!(
+                    "Cannot remove stale .venv ({e}). \
+                     If a Python process from a previous session is still \
+                     running, kill it (e.g. `Get-Process python* | Stop-Process -Force`) \
+                     and restart the app."
+                );
+            }
+        }
+
         log::info!("Running `uv sync` in {} …", backend_dir.display());
         let _ = app.emit("setup_progress", "Setting up Python environment…");
 
