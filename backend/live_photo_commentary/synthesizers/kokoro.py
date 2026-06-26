@@ -33,6 +33,7 @@ class KokoroSynthesizer(Synthesizer):
     _PHONEME_CAPACITY = 512 - 2
     _SPLITTER_CACHE_SIZE = 10000
     _EXTRACT_MARKS_RE = re.compile(r'\{([^}]*)\}')
+    _SUB_TAG_RE = re.compile(r'\{sub\}')
 
     _g2p = None
 
@@ -93,6 +94,8 @@ class KokoroSynthesizer(Synthesizer):
         self.session = onnxruntime.InferenceSession(model_path, providers=providers)
 
     def _splitter_callback(self, text: str) -> int:
+        if text.count('{') != text.count('}'):
+            return self._PHONEME_CAPACITY + 1
         phonemes, _ = self.g2p(text)
         return len(phonemes)
 
@@ -112,8 +115,19 @@ class KokoroSynthesizer(Synthesizer):
             return "{" + marks.pop(0) + "}"
         return cls._EXTRACT_MARKS_RE.sub(restore, text)
 
+    @classmethod
+    def _subtitle_segments(cls, text: str) -> list[str]:
+        """Split text on {sub} marks and strip all other tags from each segment."""
+        parts = cls._SUB_TAG_RE.split(text)
+        result = [cls._EXTRACT_MARKS_RE.sub('', part).strip() for part in parts]
+        return [s for s in result if s]
+
     def synthesize(self, text):
-        markless_text, marks = self._extract_marks(text)
+        from ..subtitle_splitter import insert_subtitle_tags
+        from .. import config
+        tagged_text = insert_subtitle_tags(text, max_chars=config.get().subtitle_max_chars)
+        subtitle_segments = self._subtitle_segments(tagged_text)
+        markless_text, marks = self._extract_marks(tagged_text)
         braceless_text = self._EXTRACT_MARKS_RE.sub('', markless_text)
         phonemes, tokens = self.g2p(markless_text) 
         input_ids = []
@@ -156,7 +170,7 @@ class KokoroSynthesizer(Synthesizer):
             (phoneme, timing) for phoneme, timing in phoneme_timings
             if phoneme not in '{}'
         ]
-        return audio, braceless_text, phoneme_timings, mark_timings
+        return audio, braceless_text, phoneme_timings, mark_timings, subtitle_segments
 
     def sample_rate(self):
         return 24000

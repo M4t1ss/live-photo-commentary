@@ -7,7 +7,7 @@ import numpy as np
 
 
 type Timings = list[tuple[str, float]]
-type SynthResult = tuple[np.ndarray, str, Timings, Timings]
+type SynthResult = tuple[np.ndarray, str, Timings, Timings, list[str]]
 
 class Synthesizer(ABC):
     def __new__(cls, **kwargs):

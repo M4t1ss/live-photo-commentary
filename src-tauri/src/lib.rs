@@ -55,11 +55,17 @@ fn get_backend_port(state: State<BackendState>) -> u16 {
 }
 
 #[tauri::command]
-fn restart_app(app: tauri::AppHandle) {
-    if let Some(state) = app.try_state::<BackendState>() {
-        state.process.kill();
-    }
-    std::process::exit(0);
+fn restart_backend(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+    install: State<'_, InstallState>,
+) {
+    let port = state.port;
+    let inner = Arc::clone(&state.process.inner);
+    let uv = install.uv_path.clone();
+    let backend_dir = install.backend_dir.clone();
+    state.process.kill();
+    tauri::async_runtime::spawn(spawn_and_monitor_backend(app, port, uv, backend_dir, inner));
 }
 
 // ── Port discovery ────────────────────────────────────────────────────────────
@@ -74,6 +80,7 @@ fn find_free_port() -> u16 {
 #[cfg(not(target_os = "macos"))]
 fn pytorch_cuda_index(major: u32, minor: u32) -> Option<&'static str> {
     match major {
+        13.. => Some("cu128"), // CUDA 13.x driver supports cu128 wheels (backward-compatible)
         12 if minor >= 8 => Some("cu128"),
         12 if minor >= 6 => Some("cu126"),
         12 if minor >= 4 => Some("cu124"),
@@ -101,21 +108,28 @@ fn detect_cuda_index() -> Option<&'static str> {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
-        if let Some(pos) = line.find("CUDA Version:") {
-            let rest = line[pos + "CUDA Version:".len()..].trim();
-            let version = rest.split_whitespace().next()?;
-            let mut parts = version.splitn(2, '.');
-            let major: u32 = parts.next()?.parse().ok()?;
-            // Strip trailing non-digit chars (pipes, spaces) that appear in the smi table
-            let minor_str = parts.next()?;
-            let minor: u32 = minor_str
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>()
-                .parse()
-                .ok()?;
-            return pytorch_cuda_index(major, minor);
-        }
+        // Windows nvidia-smi may report "CUDA UMD Version:" instead of "CUDA Version:"
+        let key = if line.contains("CUDA Version:") {
+            "CUDA Version:"
+        } else if line.contains("CUDA UMD Version:") {
+            "CUDA UMD Version:"
+        } else {
+            continue;
+        };
+        let pos = line.find(key).unwrap();
+        let rest = line[pos + key.len()..].trim();
+        let version = rest.split_whitespace().next()?;
+        let mut parts = version.splitn(2, '.');
+        let major: u32 = parts.next()?.parse().ok()?;
+        // Strip trailing non-digit chars (pipes, spaces) that appear in the smi table
+        let minor_str = parts.next()?;
+        let minor: u32 = minor_str
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .ok()?;
+        return pytorch_cuda_index(major, minor);
     }
     None
 }
@@ -144,6 +158,36 @@ struct InstallState {
     backend_dir: std::path::PathBuf,
 }
 
+/// Isolated directory for the CUDA venv — always in AppData, never the source
+/// tree, so `cargo tauri dev` never dirties pyproject.toml or uv.lock.
+fn get_cuda_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    app.path()
+        .app_data_dir()
+        .expect("app data dir unavailable")
+        .join("backend-cuda")
+}
+
+/// Returns the Python executable to use for uvicorn:
+/// the CUDA venv if installed, otherwise the regular venv.
+fn get_python_exe(
+    cuda_dir: &std::path::Path,
+    backend_dir: &std::path::Path,
+) -> std::path::PathBuf {
+    let cuda_python = if cfg!(target_os = "windows") {
+        cuda_dir.join(".venv").join("Scripts").join("python.exe")
+    } else {
+        cuda_dir.join(".venv").join("bin").join("python")
+    };
+    if cuda_dir.join(".cuda_torch").exists() && cuda_python.exists() {
+        return cuda_python;
+    }
+    if cfg!(target_os = "windows") {
+        backend_dir.join(".venv").join("Scripts").join("python.exe")
+    } else {
+        backend_dir.join(".venv").join("bin").join("python")
+    }
+}
+
 #[tauri::command]
 async fn install_cuda_torch(
     cu_index: String,
@@ -151,10 +195,26 @@ async fn install_cuda_torch(
     state: tauri::State<'_, InstallState>,
 ) -> Result<(), String> {
     let uv = state.uv_path.clone();
-    let backend_dir = state.backend_dir.clone();
-    let marker = backend_dir.join(".cuda_torch");
+    let source_backend = state.backend_dir.clone();
+    let cuda_dir = get_cuda_dir(&app);
+    let marker = cuda_dir.join(".cuda_torch");
 
-    update_pyproject_for_cuda(&backend_dir, &cu_index)
+    // Create an isolated directory so we never modify the source-tree files.
+    std::fs::create_dir_all(&cuda_dir)
+        .map_err(|e| format!("Failed to create CUDA dir: {e}"))?;
+
+    // Copy pyproject.toml from source (always fresh so the base is clean).
+    std::fs::copy(
+        source_backend.join("pyproject.toml"),
+        cuda_dir.join("pyproject.toml"),
+    ).map_err(|e| format!("Failed to copy pyproject.toml: {e}"))?;
+
+    // Seed the resolver with the existing lock file to speed up resolution.
+    if source_backend.join("uv.lock").exists() {
+        let _ = std::fs::copy(source_backend.join("uv.lock"), cuda_dir.join("uv.lock"));
+    }
+
+    update_pyproject_for_cuda(&cuda_dir, &cu_index)
         .map_err(|e| format!("Failed to update pyproject.toml: {e}"))?;
 
     let _ = app.emit("cuda_install_progress", "Downloading CUDA PyTorch — this may take a few minutes…");
@@ -164,10 +224,11 @@ async fn install_cuda_torch(
         let mut cmd = uv_command(&uv);
         cmd.args([
             "sync",
+            "--no-install-project", // source code loaded via PYTHONPATH, not editable install
             "--reinstall-package", "torch",
             "--reinstall-package", "torchvision",
         ])
-        .current_dir(&backend_dir)
+        .current_dir(&cuda_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
         #[cfg(target_os = "windows")]
@@ -195,23 +256,15 @@ async fn install_cuda_torch(
 
 // ── uv helpers ───────────────────────────────────────────────────────────────
 
-/// Returns a `Command` for the given uv binary with environment variables set
-/// to avoid OneDrive-related reparse-point errors on Windows.
-///
-/// On Windows, `AppData\Roaming` is often redirected by OneDrive's Known Folder
-/// Move, which creates reparse points that Windows refuses to traverse (error
-/// 448). uv defaults to installing managed Pythons under `AppData\Roaming\uv`,
-/// so we redirect it to `AppData\Local\uv` which OneDrive does not touch.
 fn uv_command(uv: &std::path::Path) -> Command {
     let mut cmd = Command::new(uv);
-    // On Windows, AppData\Roaming and AppData\Local are often redirected by
-    // OneDrive (Known Folder Move / OneDrive for Business), which places reparse
-    // points in the path. uv can't create Python minor-version symlinks through
-    // them (error 448). The user-profile root itself is never redirected, so
-    // %USERPROFILE%\.uv\python is a safe landing spot.
+    // On Windows, AppData\Roaming is often redirected by OneDrive's Known Folder
+    // Move, which creates reparse points that Windows refuses to traverse (error
+    // 448). uv defaults to installing managed Pythons under AppData\Roaming\uv,
+    // so redirect it to AppData\Local\uv which OneDrive does not touch.
     #[cfg(target_os = "windows")]
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        let python_dir = std::path::Path::new(&profile).join(".uv").join("python");
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let python_dir = std::path::Path::new(&local).join("uv").join("python");
         cmd.env("UV_PYTHON_INSTALL_DIR", python_dir);
     }
     cmd
@@ -303,8 +356,8 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 ///      removes `pyvenv.cfg` to force a venv rebuild with the new `uv.lock`.
 ///   2. Runs `uv sync` if `.venv` is absent or incomplete.
 ///
-/// Blocks until complete — the window will be delayed on first launch.
-/// TODO: Show a "Setting up…" progress window during this step.
+/// Intended to run on a blocking thread (via `spawn_blocking`) — never call
+/// from the main event loop, as `uv sync` can take minutes on first launch.
 fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::PathBuf {
     const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -358,6 +411,24 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
     // Checking pyvenv.cfg (not just the .venv dir) catches partial installs
     // where the directory was created but uv sync didn't finish.
     if !backend_dir.join(".venv").join("pyvenv.cfg").exists() {
+        // On Windows, executables in .venv\Scripts stay locked while any
+        // process using them is alive (e.g. a previous session's uvicorn).
+        // Remove the stale directory before uv sync so it can start clean;
+        // if removal fails the sync attempt below may still succeed or will
+        // produce the same error with a useful hint in the log.
+        let venv_dir = backend_dir.join(".venv");
+        if venv_dir.exists() {
+            log::info!("Removing stale .venv before sync…");
+            if let Err(e) = std::fs::remove_dir_all(&venv_dir) {
+                log::error!(
+                    "Cannot remove stale .venv ({e}). \
+                     If a Python process from a previous session is still \
+                     running, kill it (e.g. `Get-Process python* | Stop-Process -Force`) \
+                     and restart the app."
+                );
+            }
+        }
+
         log::info!("Running `uv sync` in {} …", backend_dir.display());
         let _ = app.emit("setup_progress", "Setting up Python environment…");
 
@@ -407,6 +478,137 @@ async fn poll_until_ready(port: u16) {
     }
 }
 
+// ── Backend spawn / monitor ───────────────────────────────────────────────────
+
+async fn spawn_and_monitor_backend(
+    handle: tauri::AppHandle,
+    port: u16,
+    uv: std::path::PathBuf,
+    backend_dir: std::path::PathBuf,
+    inner: Arc<Mutex<Option<Child>>>,
+) {
+    let port_str = port.to_string();
+
+    // Choose the Python executable: CUDA venv (AppData) if installed,
+    // otherwise the regular venv.  In debug the regular venv is managed
+    // by `uv run`; for CUDA we call python directly in both modes so
+    // the CUDA packages in AppData are used instead of the source-tree venv.
+    let cuda_dir = get_cuda_dir(&handle);
+    let python = get_python_exe(&cuda_dir, &backend_dir);
+    let using_cuda_venv = python.starts_with(&cuda_dir);
+
+    let mut cmd = if cfg!(debug_assertions) && !using_cuda_venv {
+        // Dev without CUDA: let uv manage the venv automatically.
+        let mut c = uv_command(&uv);
+        c.args(["run", "uvicorn", "live_photo_commentary.main:app",
+               "--host", "127.0.0.1", "--port"]);
+        c
+    } else {
+        let mut c = Command::new(&python);
+        c.args(["-m", "uvicorn", "live_photo_commentary.main:app",
+               "--host", "127.0.0.1", "--port"]);
+        // CUDA venv has no editable install of the project; inject the
+        // source directory so `live_photo_commentary` is importable.
+        if using_cuda_venv {
+            c.env("PYTHONPATH", &backend_dir);
+        }
+        c
+    };
+
+    // In release, redirect stdout+stderr to a log file in backend_dir
+    // so crashes are diagnosable.
+    let log_file = if !cfg!(debug_assertions) {
+        std::fs::File::create(backend_dir.join("backend.log")).ok()
+    } else {
+        None
+    };
+
+    // Point the backend at the bundled models directory if present.
+    if let Ok(resource_dir) = handle.path().resource_dir() {
+        let models_dir = resource_dir.join("resources").join("models");
+        if models_dir.exists() {
+            cmd.env("MODEL_DIR", models_dir);
+        }
+    }
+
+    cmd.arg(&port_str)
+        .current_dir(&backend_dir)
+        .stdout(if cfg!(debug_assertions) {
+            Stdio::inherit()
+        } else {
+            log_file.as_ref()
+                .and_then(|f| f.try_clone().ok())
+                .map(Stdio::from)
+                .unwrap_or_else(Stdio::null)
+        })
+        .stderr(if cfg!(debug_assertions) {
+            Stdio::inherit()
+        } else {
+            log_file.map(Stdio::from).unwrap_or_else(Stdio::null)
+        });
+
+    // On Windows release builds, set CREATE_NO_WINDOW so the OS
+    // doesn't open a console window for the child process.
+    #[cfg(target_os = "windows")]
+    if !cfg!(debug_assertions) {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to spawn backend process: {e}");
+            let _ = handle.emit("backend_crashed", -1i32);
+            return;
+        }
+    };
+
+    // Insert child into the shared Arc so kill() and the monitor can reach it.
+    *inner.lock().unwrap() = Some(child);
+
+    // ── Crash monitor ────────────────────────────────────────────────────────
+    // Polls the child every 500 ms. If the process exits without being killed
+    // by us (i.e. it crashed), emits `backend_crashed` so the frontend shows
+    // an error instead of retrying forever.
+    //
+    // Race-free: RunEvent::Exit / Drop and this thread share the same
+    // Mutex<Option<Child>>. Whichever locks first takes the Option:
+    //  • RunEvent::Exit calls kill() → takes child, sets None.
+    //    Monitor's next iteration finds None → exits silently.
+    //  • Monitor finds try_wait() returned Some (crashed) → takes it, sets
+    //    None, emits event. kill() later finds None → noop.
+    let monitor_inner = Arc::clone(&inner);
+    let monitor_handle = handle.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let mut guard = monitor_inner.lock().unwrap();
+        match guard.as_mut() {
+            None => break, // normal shutdown via Drop
+            Some(child) => match child.try_wait() {
+                Ok(Some(status)) => {
+                    *guard = None; // prevent Drop from double-killing
+                    drop(guard);
+                    let code = status.code().unwrap_or(-1);
+                    log::error!("Backend exited unexpectedly (code {code})");
+                    let _ = monitor_handle.emit("backend_crashed", code);
+                    break;
+                }
+                Ok(None) => {}  // still running
+                Err(e) => {
+                    log::error!("Error monitoring backend process: {e}");
+                    break;
+                }
+            },
+        }
+    });
+
+    // Emit `backend_ready` once the health endpoint responds.
+    poll_until_ready(port).await;
+    let _ = handle.emit("backend_ready", port);
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -424,137 +626,55 @@ pub fn run() {
             }
 
             let uv = get_uv_path(app.handle());
-            let backend_dir = setup_backend(app.handle(), &uv);
 
-            // CUDA upgrade detection — non-macOS only (macOS uses MPS via PyTorch CPU builds).
-            #[cfg(not(target_os = "macos"))]
-            {
-                let marker = backend_dir.join(".cuda_torch");
-                let installed = std::fs::read_to_string(&marker).unwrap_or_default();
-                if let Some(cu_index) = detect_cuda_index() {
-                    if installed.trim() != cu_index {
-                        log::info!("NVIDIA GPU detected, suggesting {cu_index} torch");
-                        let _ = app.handle().emit("cuda_upgrade_available", cu_index);
-                    }
-                }
-            }
-
+            // Manage InstallState immediately — get_backend_dir is a pure path
+            // computation and does not run uv sync.
+            let backend_dir = get_backend_dir(app.handle());
             app.manage(InstallState {
                 uv_path: uv.clone(),
                 backend_dir: backend_dir.clone(),
             });
 
-            let port_str = port.to_string();
-
-            // In debug: use `uv run` so the dev venv is auto-managed.
-            // In release: call the venv Python directly — uv sync has already
-            // set it up, and bypassing `uv run` avoids a console flash on
-            // Windows caused by uv spawning its own subprocess internally.
-            let mut cmd = if cfg!(debug_assertions) {
-                let mut c = uv_command(&uv);
-                c.args(["run", "uvicorn", "live_photo_commentary.main:app", "--host", "127.0.0.1", "--port"]);
-                c
-            } else {
-                let python = if cfg!(target_os = "windows") {
-                    backend_dir.join(".venv").join("Scripts").join("python.exe")
-                } else {
-                    backend_dir.join(".venv").join("bin").join("python")
-                };
-                let mut c = Command::new(python);
-                c.args(["-m", "uvicorn", "live_photo_commentary.main:app", "--host", "127.0.0.1", "--port"]);
-                c
-            };
-            // In release, redirect stdout+stderr to a log file in backend_dir
-            // so crashes are diagnosable. Falls back to null if the file can't
-            // be created (e.g. backend_dir doesn't exist yet).
-            let log_file = if !cfg!(debug_assertions) {
-                std::fs::File::create(backend_dir.join("backend.log")).ok()
-            } else {
-                None
-            };
-
-            cmd.arg(&port_str)
-                .current_dir(&backend_dir)
-                .stdout(if cfg!(debug_assertions) {
-                    Stdio::inherit()
-                } else {
-                    log_file.as_ref().and_then(|f| f.try_clone().ok()).map(Stdio::from).unwrap_or_else(Stdio::null)
-                })
-                .stderr(if cfg!(debug_assertions) {
-                    Stdio::inherit()
-                } else {
-                    log_file.map(Stdio::from).unwrap_or_else(Stdio::null)
-                });
-
-            // On Windows release builds, set CREATE_NO_WINDOW so the OS
-            // doesn't open a console window for the child process.
-            #[cfg(target_os = "windows")]
-            if !cfg!(debug_assertions) {
-                use std::os::windows::process::CommandExt;
-                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-                cmd.creation_flags(CREATE_NO_WINDOW);
-            }
-
-            let child = match cmd.spawn() {
-                Ok(c) => c,
-                Err(e) => {
-                    log::error!("Failed to spawn backend process: {e}");
-                    // Emit the crash event so the frontend shows an error
-                    // rather than spinning on a health check that never resolves.
-                    let _ = app.handle().emit("backend_crashed", -1i32);
-                    return Ok(());
-                }
-            };
-
-            let inner = Arc::new(Mutex::new(Some(child)));
-
-            // ── Crash monitor ────────────────────────────────────────────────
-            // Polls the child every 500 ms. If the process exits without being
-            // killed by us (i.e. it crashed), emits `backend_crashed` to the
-            // frontend so it can show an error instead of retrying forever.
-            //
-            // Race-free: RunEvent::Exit / Drop and this thread share the same
-            // Mutex<Option<Child>>. Whichever locks first takes the Option:
-            //  • RunEvent::Exit calls kill() → takes child, sets None.
-            //    Monitor's next iteration finds None → exits silently.
-            //  • Monitor finds try_wait() returned Some (crashed) → takes it,
-            //    sets to None, emits event.
-            //    kill() later finds None → does nothing.
-            let monitor_inner = Arc::clone(&inner);
-            let monitor_handle = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                let mut guard = monitor_inner.lock().unwrap();
-                match guard.as_mut() {
-                    None => break, // normal shutdown via Drop
-                    Some(child) => match child.try_wait() {
-                        Ok(Some(status)) => {
-                            *guard = None; // prevent Drop from double-killing
-                            drop(guard);
-                            let code = status.code().unwrap_or(-1);
-                            log::error!("Backend exited unexpectedly (code {code})");
-                            let _ = monitor_handle.emit("backend_crashed", code);
-                            break;
-                        }
-                        Ok(None) => {}  // still running
-                        Err(e) => {
-                            log::error!("Error monitoring backend process: {e}");
-                            break;
-                        }
-                    },
-                }
-            });
-
+            // Pre-allocate BackendState with the chosen port; the child process
+            // handle starts as None and is filled in once the background task
+            // spawns the backend (after uv sync completes).
+            let inner = Arc::new(Mutex::new(None::<Child>));
+            let inner_for_bg = Arc::clone(&inner);
             app.manage(BackendState {
                 port,
                 process: BackendProcess { inner },
             });
 
-            // Emit `backend_ready` once the health endpoint responds.
+            // Spawn all heavy work (uv sync, process spawn, health polling) on
+            // a background task so setup() returns immediately and the WebView
+            // can render the splash screen.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                poll_until_ready(port).await;
-                let _ = handle.emit("backend_ready", port);
+                // setup_backend may run `uv sync`, which can take minutes on
+                // first launch — must not run on the event loop thread.
+                let h = handle.clone();
+                let uv_bg = uv.clone();
+                let backend_dir = tokio::task::spawn_blocking(move || {
+                    setup_backend(&h, &uv_bg)
+                })
+                .await
+                .unwrap_or_else(|_| get_backend_dir(&handle));
+
+                // CUDA upgrade detection — non-macOS only.
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let cuda_dir = get_cuda_dir(&handle);
+                    let marker = cuda_dir.join(".cuda_torch");
+                    let installed = std::fs::read_to_string(&marker).unwrap_or_default();
+                    if let Some(cu_index) = detect_cuda_index() {
+                        if installed.trim() != cu_index {
+                            log::info!("NVIDIA GPU detected, suggesting {cu_index} torch");
+                            let _ = handle.emit("cuda_upgrade_available", cu_index);
+                        }
+                    }
+                }
+
+                spawn_and_monitor_backend(handle, port, uv, backend_dir, inner_for_bg).await;
             });
 
             Ok(())
@@ -562,7 +682,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_backend_port,
             install_cuda_torch,
-            restart_app,
+            restart_backend,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

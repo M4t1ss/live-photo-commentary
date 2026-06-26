@@ -23,7 +23,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "deb", "appimage", "dmg"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -34,6 +34,11 @@
     "android": {
       "debugApplicationIdSuffix": ".debug"
     },
-    "resources": []
+    "resources": [],
+    "windows": {
+      "nsis": {
+        "installerHooks": "nsis/hooks.nsi"
+      }
+    }
   }
 }

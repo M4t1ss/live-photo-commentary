@@ -10,6 +10,7 @@ if sys.platform == "win32":
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from . import config
@@ -29,8 +30,9 @@ _tts_ready: bool = False
 
 async def _send(data: dict) -> None:
     if _ws is not None:
+        text = json.dumps(data)
         try:
-            await _ws.send_text(json.dumps(data))
+            await _ws.send_text(text)
         except Exception:
             pass
 
@@ -210,6 +212,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/health")
@@ -231,6 +234,33 @@ async def get_audio_chunk(index: int):
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail="Chunk not available")
     return FileResponse(str(path), media_type="audio/wav")
+
+
+@app.get("/model-config")
+async def get_model_config():
+    import yaml
+    yaml_path = config.get().model_dir / "model.yaml"
+    if not yaml_path.exists():
+        return {}
+    with open(yaml_path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    return {
+        "jawBone": raw.get("jaw_bone"),
+        "jawAxis": raw.get("jaw_axis", "x"),
+        "minJawAngle": raw.get("min_jaw_angle", 0.0),
+        "maxJawAngle": raw.get("max_jaw_angle", 0.15),
+        "maxEnvelopeDuration": raw.get("max_envelope_duration", 0.3),
+        "visemeMap": raw.get("viseme_map", {}),
+        "blink": raw.get("blink"),
+    }
+
+
+@app.get("/model")
+async def get_model():
+    model_path = config.get().model_dir / "model.glb"
+    if not model_path.exists():
+        raise HTTPException(status_code=404, detail="Model not found")
+    return FileResponse(str(model_path), media_type="model/gltf-binary")
 
 
 async def _send_models() -> None:
@@ -285,9 +315,9 @@ async def websocket_endpoint(ws: WebSocket):
                 case "stop_cycle":
                     if pipeline is not None:
                         await pipeline.stop_loop()
-                case "speech_ended":
+                case "take_screenshot":
                     if pipeline is not None:
-                        pipeline.on_speech_ended()
+                        pipeline.on_take_screenshot()
     except WebSocketDisconnect:
         pass
     finally:
