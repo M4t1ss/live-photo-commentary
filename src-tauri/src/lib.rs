@@ -433,7 +433,13 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
         let _ = app.emit("setup_progress", "Setting up Python environment…");
 
         let mut sync_cmd = uv_command(uv);
-        sync_cmd.arg("sync").current_dir(&backend_dir);
+        sync_cmd.arg("sync");
+        sync_cmd.current_dir(&backend_dir);
+        // Verbose output so uv-sync.log shows where each package comes from
+        // (pre-built wheel path vs. PyPI download vs. source build).
+        if !cfg!(debug_assertions) {
+            sync_cmd.arg("--verbose");
+        }
 
         // In release: suppress console window on Windows, redirect output to a
         // log file so failures are diagnosable without attaching a debugger.
@@ -455,8 +461,16 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
 
         match sync_cmd.status() {
             Ok(s) if s.success() => log::info!("Python environment ready."),
-            Ok(s) => log::error!("`uv sync` failed (exit code {:?})", s.code()),
-            Err(e) => log::error!("Failed to run `uv sync`: {e}"),
+            Ok(s) => {
+                log::error!("`uv sync` failed (exit code {:?})", s.code());
+                // Remove the partial venv so the next launch retries rather
+                // than silently using an incomplete environment.
+                let _ = std::fs::remove_dir_all(backend_dir.join(".venv"));
+            }
+            Err(e) => {
+                log::error!("Failed to run `uv sync`: {e}");
+                let _ = std::fs::remove_dir_all(backend_dir.join(".venv"));
+            }
         }
     }
 
@@ -617,12 +631,14 @@ pub fn run() {
 
     tauri::Builder::default()
         .setup(move |app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
+            {
+                let builder = tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info);
+                #[cfg(not(debug_assertions))]
+                let builder = builder.target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir { file_name: None },
+                ));
+                app.handle().plugin(builder.build())?;
             }
 
             let uv = get_uv_path(app.handle());
