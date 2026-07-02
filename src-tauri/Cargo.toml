@@ -1,8 +1,8 @@
 [package]
 name = "app"
-version = "0.1.1"
+version = "0.1.2"
 description = "Live Photo Commentary desktop app"
-authors = ["Goran Topic"]
+authors = ["Goran Topic", "Matiss Rikters"]
 license = "MIT"
 repository = "https://github.com/M4t1ss/live-photo-commentary"
 edition = "2021"

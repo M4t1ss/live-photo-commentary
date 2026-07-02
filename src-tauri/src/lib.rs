@@ -537,6 +537,10 @@ async fn spawn_and_monitor_backend(
         None
     };
 
+    // Disable Python's output buffering so backend.log captures crashes that
+    // happen before the process has a chance to flush its write buffer.
+    cmd.env("PYTHONUNBUFFERED", "1");
+
     // Point the backend at the bundled models directory if present.
     if let Ok(resource_dir) = handle.path().resource_dir() {
         let models_dir = resource_dir.join("resources").join("models");
