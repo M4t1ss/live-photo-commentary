@@ -270,6 +270,40 @@ fn uv_command(uv: &std::path::Path) -> Command {
     cmd
 }
 
+// ── Antivirus detection helpers ───────────────────────────────────────────────
+
+/// Returns a hint string when an IO error looks like Windows Defender or
+/// antivirus software blocked an executable from running.
+fn av_blocked_hint(e: &std::io::Error) -> Option<&'static str> {
+    #[cfg(target_os = "windows")]
+    // 5   = ERROR_ACCESS_DENIED  (Defender blocked execution of a quarantined binary)
+    // 225 = ERROR_VIRUS_INFECTED (file flagged as a threat)
+    // 226 = ERROR_VIRUS_DELETED  (file partially removed by Defender)
+    if matches!(e.raw_os_error(), Some(5) | Some(225) | Some(226)) {
+        return Some(
+            "Windows Defender or antivirus may have blocked the executable. \
+             Open Windows Security → Virus & threat protection → Protection history \
+             to check, or add the app data folder to Defender exclusions and restart.",
+        );
+    }
+    let _ = e;
+    None
+}
+
+/// Returns a hint string when a process exits very shortly after spawning.
+/// An immediate exit is a common pattern when AV software terminates a
+/// process as it launches.
+fn quick_exit_hint(elapsed: std::time::Duration) -> &'static str {
+    #[cfg(target_os = "windows")]
+    if elapsed < std::time::Duration::from_secs(3) {
+        return " Windows Defender or antivirus may have terminated the process immediately. \
+                Open Windows Security → Virus & threat protection → Protection history \
+                to check, or add the app data folder to Defender exclusions and restart.";
+    }
+    let _ = elapsed;
+    ""
+}
+
 // ── uv binary location ────────────────────────────────────────────────────────
 
 /// Returns the path to the uv binary.
@@ -358,7 +392,7 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 ///
 /// Intended to run on a blocking thread (via `spawn_blocking`) — never call
 /// from the main event loop, as `uv sync` can take minutes on first launch.
-fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::PathBuf {
+fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> Result<std::path::PathBuf, String> {
     const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
     let backend_dir = get_backend_dir(app);
@@ -389,7 +423,7 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
                 let _ = app.emit("setup_progress", "Updating backend…");
                 if let Err(e) = copy_dir_recursive(&resource_backend, &backend_dir) {
                     log::error!("Failed to copy backend source: {e}");
-                    return backend_dir;
+                    return Ok(backend_dir);
                 }
                 // Mark the version so we skip the copy on the next launch.
                 let _ = std::fs::write(backend_dir.join(".app_version"), APP_VERSION);
@@ -402,7 +436,7 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
                     "Bundled backend not found at {} — backend will not start",
                     resource_backend.display()
                 );
-                return backend_dir;
+                return Ok(backend_dir);
             }
         }
     }
@@ -468,13 +502,17 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> std::path::Pat
                 let _ = std::fs::remove_dir_all(backend_dir.join(".venv"));
             }
             Err(e) => {
-                log::error!("Failed to run `uv sync`: {e}");
+                let hint = av_blocked_hint(&e).map(|h| format!(" {h}")).unwrap_or_default();
+                log::error!("Failed to run `uv sync`: {e}.{hint}");
+                let msg = format!("Setup failed: could not run uv.{hint}");
+                let _ = app.emit("setup_progress", &msg);
                 let _ = std::fs::remove_dir_all(backend_dir.join(".venv"));
+                return Err(msg);
             }
         }
     }
 
-    backend_dir
+    Ok(backend_dir)
 }
 
 // ── Health polling ────────────────────────────────────────────────────────────
@@ -577,14 +615,17 @@ async fn spawn_and_monitor_backend(
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            log::error!("Failed to spawn backend process: {e}");
-            let _ = handle.emit("backend_crashed", -1i32);
+            let hint = av_blocked_hint(&e).map(|h| format!(" {h}")).unwrap_or_default();
+            let msg = format!("Failed to start backend: {e}.{hint}");
+            log::error!("{msg}");
+            let _ = handle.emit("backend_crashed", msg);
             return;
         }
     };
 
     // Insert child into the shared Arc so kill() and the monitor can reach it.
     *inner.lock().unwrap() = Some(child);
+    let spawn_time = std::time::Instant::now();
 
     // ── Crash monitor ────────────────────────────────────────────────────────
     // Polls the child every 500 ms. If the process exits without being killed
@@ -609,8 +650,11 @@ async fn spawn_and_monitor_backend(
                     *guard = None; // prevent Drop from double-killing
                     drop(guard);
                     let code = status.code().unwrap_or(-1);
-                    log::error!("Backend exited unexpectedly (code {code})");
-                    let _ = monitor_handle.emit("backend_crashed", code);
+                    let av_hint = quick_exit_hint(spawn_time.elapsed());
+                    let log_hint = if cfg!(debug_assertions) { "" } else { " Check backend.log for details." };
+                    let msg = format!("Backend exited unexpectedly (code {code}).{av_hint}{log_hint}");
+                    log::error!("{msg}");
+                    let _ = monitor_handle.emit("backend_crashed", msg);
                     break;
                 }
                 Ok(None) => {}  // still running
@@ -674,11 +718,18 @@ pub fn run() {
                 // first launch — must not run on the event loop thread.
                 let h = handle.clone();
                 let uv_bg = uv.clone();
-                let backend_dir = tokio::task::spawn_blocking(move || {
+                let backend_dir = match tokio::task::spawn_blocking(move || {
                     setup_backend(&h, &uv_bg)
                 })
                 .await
-                .unwrap_or_else(|_| get_backend_dir(&handle));
+                {
+                    Ok(Ok(dir)) => dir,
+                    Ok(Err(msg)) => {
+                        let _ = handle.emit("backend_crashed", msg);
+                        return;
+                    }
+                    Err(_) => get_backend_dir(&handle),
+                };
 
                 // CUDA upgrade detection — non-macOS only.
                 #[cfg(not(target_os = "macos"))]

@@ -514,14 +514,14 @@ async function main() {
   // and so backend_crashed / cuda_upgrade_available are never missed while
   // invoke is still pending.
   await listen("setup_progress", ({ payload }) => setPhase(payload, "up"));
-  await listen("backend_crashed", () => {
+  await listen("backend_crashed", ({ payload }) => {
     dismissSplash();
     setRunning(false);
     configReceived = false;
     modelsReceived = false;
     backendReady   = false;
     checkReady();
-    setPhase("Backend crashed", "none");
+    setPhase(payload || "Backend crashed", "none");
   });
 
   // cuda_upgrade_available fires right after uv sync (before uvicorn even
