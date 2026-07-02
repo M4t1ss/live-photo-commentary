@@ -1,8 +1,8 @@
 [package]
 name = "app"
-version = "0.1.0"
+version = "0.1.2"
 description = "Live Photo Commentary desktop app"
-authors = ["Goran Topic"]
+authors = ["Goran Topic", "Matiss Rikters"]
 license = "MIT"
 repository = "https://github.com/M4t1ss/live-photo-commentary"
 edition = "2021"
@@ -26,5 +26,6 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2"
+tauri-plugin-window-state = "2"
 reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["time"] }
