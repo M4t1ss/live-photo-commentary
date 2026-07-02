@@ -37,6 +37,10 @@ const leftPanelEl        = document.getElementById("left-panel");
 const subtitlePanelEl    = document.getElementById("subtitle-panel");
 const subtitleRowDivider = document.getElementById("subtitle-row-divider");
 const cfgSubtitleMode    = document.getElementById("cfg-subtitle-mode");
+const cfgBgColor         = document.getElementById("cfg-bg-color");
+const cfgBgPreview       = document.getElementById("cfg-bg-preview");
+const cfgFgColor         = document.getElementById("cfg-fg-color");
+const cfgFgPreview       = document.getElementById("cfg-fg-preview");
 
 // --- App state ---
 let volume = parseFloat(localStorage.getItem("lpc_volume") ?? "1");
@@ -48,6 +52,8 @@ let ws = null;
 let running = false;
 let subtitlesVisible = true;
 let subtitleMode = localStorage.getItem("lpc_subtitle_mode") ?? "overlay";
+let bgColor = localStorage.getItem("lpc_bg_color") ?? "#000000";
+let fgColor = localStorage.getItem("lpc_fg_color") ?? "#ffffff";
 let currentConfig = {};
 let vlmCatalogue = [];
 let ttsVoices = [];
@@ -445,6 +451,10 @@ function populateModal() {
   openaiKeyInput.value    = "";
   elevenlabsKeyInput.value = "";
   cfgSubtitleMode.checked = subtitleMode === "separated";
+  cfgBgColor.value = bgColor;
+  cfgBgPreview.style.background = bgColor;
+  cfgFgColor.value = fgColor;
+  cfgFgPreview.style.background = fgColor;
 }
 
 function setVolume(v, save = false) {
@@ -499,6 +509,14 @@ modalOk.addEventListener("click", () => {
   if (newMode !== subtitleMode) {
     applySubtitleMode(newMode);
     localStorage.setItem("lpc_subtitle_mode", newMode);
+  }
+
+  const newBg = _normalizeHex(cfgBgColor.value);
+  const newFg = _normalizeHex(cfgFgColor.value);
+  if (isValidHex(newBg) && isValidHex(newFg)) {
+    applyColors(newBg, newFg);
+    localStorage.setItem("lpc_bg_color", newBg);
+    localStorage.setItem("lpc_fg_color", newFg);
   }
 
   send({ type: "set_config", data: updates, persist: true });
@@ -580,6 +598,33 @@ async function main() {
 }
 
 main();
+
+// --- Appearance colors ---
+function isValidHex(s) { return /^#[0-9a-fA-F]{6}$/.test(s); }
+
+function applyColors(bg, fg) {
+  bgColor = bg;
+  fgColor = fg;
+  document.documentElement.style.setProperty("--lpc-bg", bg);
+  document.documentElement.style.setProperty("--lpc-fg", fg);
+}
+
+applyColors(bgColor, fgColor);
+
+function _normalizeHex(s) {
+  s = s.trim();
+  if (/^[0-9a-fA-F]{6}$/.test(s)) s = "#" + s;
+  return s;
+}
+
+cfgBgColor.addEventListener("input", () => {
+  const v = _normalizeHex(cfgBgColor.value);
+  if (isValidHex(v)) cfgBgPreview.style.background = v;
+});
+cfgFgColor.addEventListener("input", () => {
+  const v = _normalizeHex(cfgFgColor.value);
+  if (isValidHex(v)) cfgFgPreview.style.background = v;
+});
 
 // --- Subtitle row divider ---
 const SUBTITLE_HEIGHT_KEY = "lpc_subtitle_height";

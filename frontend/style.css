@@ -31,7 +31,7 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: #000;
+  background: var(--lpc-bg, #000);
   min-width: 0;
 }
 
@@ -56,8 +56,8 @@ body {
   text-align: center;
   font-size: 17px;
   line-height: 1.5;
-  color: #fff;
-  text-shadow: 0 1px 6px #000, 0 0 16px #000;
+  color: var(--lpc-fg, #fff);
+  text-shadow: 0 1px 6px var(--lpc-bg, #000), 0 0 16px var(--lpc-bg, #000);
   pointer-events: none;
 }
 
@@ -84,7 +84,7 @@ body {
   text-align: center;
   font-size: 17px;
   line-height: 1.5;
-  color: #e0e0e0;
+  color: var(--lpc-fg, #e0e0e0);
 }
 
 /* Separated mode — activate panel, hide overlay */
@@ -286,6 +286,21 @@ body {
 }
 #cfg-volume { flex: 1; }
 #cfg-volume-pct { font-size: 13px; color: #aaa; min-width: 3ch; text-align: right; }
+
+.color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 220px;
+}
+.color-preview {
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.color-row input { flex: 1; width: auto; }
 
 #modal input,
 #modal select {
