@@ -563,3 +563,49 @@ async function main() {
 }
 
 main();
+
+// --- Split pane ---
+const SPLIT_KEY = 'lpc_split_ratio';
+const DEFAULT_RATIO = 0.75;
+const MIN_RATIO = 0.2;
+const MAX_RATIO = 0.85;
+
+const mainEl     = document.getElementById('main');
+const leftPanel  = document.getElementById('left-panel');
+const rightPanel = document.getElementById('right-panel');
+const dividerEl  = document.getElementById('divider');
+
+function applyPanelSplit(ratio) {
+  const available = mainEl.offsetWidth - dividerEl.offsetWidth;
+  leftPanel.style.flex  = `0 0 ${ratio * available}px`;
+  rightPanel.style.flex = `0 0 ${(1 - ratio) * available}px`;
+}
+
+let splitRatio = parseFloat(localStorage.getItem(SPLIT_KEY) ?? String(DEFAULT_RATIO));
+applyPanelSplit(splitRatio);
+window.addEventListener('resize', () => applyPanelSplit(splitRatio));
+
+dividerEl.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  const startX    = e.clientX;
+  const startLeft = leftPanel.offsetWidth;
+  const available = mainEl.offsetWidth - dividerEl.offsetWidth;
+
+  dividerEl.classList.add('dragging');
+
+  function onMove(e) {
+    const newLeft = startLeft + (e.clientX - startX);
+    splitRatio = Math.max(MIN_RATIO, Math.min(MAX_RATIO, newLeft / available));
+    applyPanelSplit(splitRatio);
+  }
+
+  function onUp() {
+    dividerEl.classList.remove('dragging');
+    localStorage.setItem(SPLIT_KEY, String(splitRatio));
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+});

@@ -133,10 +133,23 @@ body {
   vertical-align: middle;
 }
 
+/* Draggable split divider */
+#divider {
+  width: 5px;
+  flex-shrink: 0;
+  background: var(--border);
+  cursor: col-resize;
+  transition: background 0.15s;
+}
+#divider:hover,
+#divider.dragging {
+  background: var(--accent);
+}
+
 /* Right panel — status + current + previous screenshots */
 #right-panel {
-  width: 320px;
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  min-width: 160px;
   background: var(--panel-bg);
   border-left: 1px solid var(--border);
   display: flex;

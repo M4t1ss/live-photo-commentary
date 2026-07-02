@@ -1,6 +1,7 @@
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_window_state::WindowExt;
 
 // ── App state ────────────────────────────────────────────────────────────────
 
@@ -678,6 +679,7 @@ pub fn run() {
     let port = find_free_port();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(move |app| {
             {
                 let builder = tauri_plugin_log::Builder::default()
@@ -687,6 +689,10 @@ pub fn run() {
                     tauri_plugin_log::TargetKind::LogDir { file_name: None },
                 ));
                 app.handle().plugin(builder.build())?;
+            }
+
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.restore_state(tauri_plugin_window_state::StateFlags::all());
             }
 
             let uv = get_uv_path(app.handle());
