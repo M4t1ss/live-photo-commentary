@@ -29,9 +29,16 @@ body {
 /* Left panel — avatar canvas + subtitle */
 #left-panel {
   flex: 1;
-  position: relative;
+  display: flex;
+  flex-direction: column;
   background: #000;
   min-width: 0;
+}
+
+#avatar-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
 }
 
 #avatar-canvas {
@@ -53,6 +60,37 @@ body {
   text-shadow: 0 1px 6px #000, 0 0 16px #000;
   pointer-events: none;
 }
+
+/* Horizontal subtitle divider (separated mode) */
+#subtitle-row-divider {
+  display: none;
+  height: 5px;
+  flex-shrink: 0;
+  background: var(--border);
+  cursor: row-resize;
+  transition: background 0.15s;
+}
+#subtitle-row-divider:hover,
+#subtitle-row-divider.dragging {
+  background: var(--accent);
+}
+
+/* Subtitle panel (separated mode) */
+#subtitle-panel {
+  display: none;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 10px 24px;
+  text-align: center;
+  font-size: 17px;
+  line-height: 1.5;
+  color: #e0e0e0;
+}
+
+/* Separated mode — activate panel, hide overlay */
+#left-panel.subtitle-separated #subtitle-row-divider { display: block; }
+#left-panel.subtitle-separated #subtitle-panel       { display: block; }
+#left-panel.subtitle-separated #subtitle             { display: none; }
 
 /* CUDA upgrade banner */
 #cuda-banner {

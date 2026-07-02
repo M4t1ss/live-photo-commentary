@@ -33,6 +33,10 @@ const cudaInstallBtn     = document.getElementById("cuda-install-btn");
 const cudaDismissBtn     = document.getElementById("cuda-dismiss-btn");
 const splashEl           = document.getElementById("splash");
 const splashStatusEl     = document.getElementById("splash-status");
+const leftPanelEl        = document.getElementById("left-panel");
+const subtitlePanelEl    = document.getElementById("subtitle-panel");
+const subtitleRowDivider = document.getElementById("subtitle-row-divider");
+const cfgSubtitleMode    = document.getElementById("cfg-subtitle-mode");
 
 // --- App state ---
 let volume = parseFloat(localStorage.getItem("lpc_volume") ?? "1");
@@ -43,6 +47,7 @@ let port = null;
 let ws = null;
 let running = false;
 let subtitlesVisible = true;
+let subtitleMode = localStorage.getItem("lpc_subtitle_mode") ?? "overlay";
 let currentConfig = {};
 let vlmCatalogue = [];
 let ttsVoices = [];
@@ -89,6 +94,11 @@ let _subtitles = null;
 let _subtitleIdx = 0;
 let _subtitleTimer = null;
 
+function setSubtitleText(text) {
+  subtitleEl.textContent = text;
+  subtitlePanelEl.textContent = text;
+}
+
 function _clearSubtitleTimer() {
   if (_subtitleTimer !== null) { clearInterval(_subtitleTimer); _subtitleTimer = null; }
 }
@@ -105,7 +115,7 @@ function _startSubtitleTimer() {
     }
     if (idx !== _subtitleIdx) {
       _subtitleIdx = idx;
-      if (subtitlesVisible) subtitleEl.textContent = _subtitles[idx].text;
+      if (subtitlesVisible) setSubtitleText(_subtitles[idx].text);
     }
   }, 50);
 }
@@ -333,7 +343,7 @@ function playNext() {
   const { audio_url, text, timeline, subtitles } = audioQueue.shift();
   _subtitles = subtitles;
   _subtitleIdx = 0;
-  if (subtitlesVisible) subtitleEl.textContent = subtitles[0].text;
+  if (subtitlesVisible) setSubtitleText(subtitles[0].text);
   const audio = new Audio(`http://127.0.0.1:${port}${audio_url}`);
   audio.volume = volume;
   currentAudio = audio;
@@ -346,7 +356,7 @@ function playNext() {
 
 function sendSpeechEnded() {
   ttsAllReceived = false;
-  subtitleEl.textContent = "";
+  setSubtitleText("");
   const delayMs = (currentConfig.pre_screenshot_delay ?? 2.0) * 1000;
   setPhase("Screenshot in", "down", delayMs);
   setTimeout(() => {
@@ -364,7 +374,7 @@ startStopBtn.addEventListener("click", () => {
     }
     setRunning(false);
     resetAudio();
-    subtitleEl.textContent = "";
+    setSubtitleText("");
     setPhase("Idle", "none");
     if (!pendingStart) send({ type: "stop_cycle" });
   } else {
@@ -381,8 +391,8 @@ startStopBtn.addEventListener("click", () => {
 toggleSubtitleBtn.addEventListener("click", () => {
   subtitlesVisible = !subtitlesVisible;
   toggleSubtitleBtn.classList.toggle("active", subtitlesVisible);
-  if (!subtitlesVisible) subtitleEl.textContent = "";
-  else if (_subtitles) subtitleEl.textContent = _subtitles[_subtitleIdx].text;
+  if (!subtitlesVisible) setSubtitleText("");
+  else if (_subtitles) setSubtitleText(_subtitles[_subtitleIdx].text);
 });
 
 // --- Settings modal ---
@@ -434,6 +444,7 @@ function populateModal() {
   geminiKeyInput.value    = "";
   openaiKeyInput.value    = "";
   elevenlabsKeyInput.value = "";
+  cfgSubtitleMode.checked = subtitleMode === "separated";
 }
 
 function setVolume(v, save = false) {
@@ -483,6 +494,12 @@ modalOk.addEventListener("click", () => {
   if (elevenlabsKeyInput.value) updates.elevenlabs_api_key = elevenlabsKeyInput.value;
 
   setVolume(parseFloat(volumeInput.value), true);
+
+  const newMode = cfgSubtitleMode.checked ? "separated" : "overlay";
+  if (newMode !== subtitleMode) {
+    applySubtitleMode(newMode);
+    localStorage.setItem("lpc_subtitle_mode", newMode);
+  }
 
   send({ type: "set_config", data: updates, persist: true });
   closeModal();
@@ -563,6 +580,55 @@ async function main() {
 }
 
 main();
+
+// --- Subtitle row divider ---
+const SUBTITLE_HEIGHT_KEY = "lpc_subtitle_height";
+const DEFAULT_SUBTITLE_HEIGHT = 80;
+const MIN_SUBTITLE_HEIGHT = 40;
+
+let subtitlePanelHeight = parseInt(localStorage.getItem(SUBTITLE_HEIGHT_KEY) ?? String(DEFAULT_SUBTITLE_HEIGHT), 10);
+
+function applySubtitleHeight(h) {
+  subtitlePanelEl.style.height = h + "px";
+}
+
+// --- Subtitle mode ---
+function applySubtitleMode(mode) {
+  subtitleMode = mode;
+  if (mode === "separated") {
+    leftPanelEl.classList.add("subtitle-separated");
+    applySubtitleHeight(subtitlePanelHeight);
+  } else {
+    leftPanelEl.classList.remove("subtitle-separated");
+  }
+}
+
+applySubtitleMode(subtitleMode);
+
+subtitleRowDivider.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  const startY = e.clientY;
+  const startH = subtitlePanelEl.offsetHeight;
+
+  subtitleRowDivider.classList.add("dragging");
+
+  function onMove(e) {
+    const maxH = leftPanelEl.offsetHeight * 0.5;
+    const newH = Math.max(MIN_SUBTITLE_HEIGHT, Math.min(maxH, startH - (e.clientY - startY)));
+    subtitlePanelHeight = newH;
+    applySubtitleHeight(newH);
+  }
+
+  function onUp() {
+    subtitleRowDivider.classList.remove("dragging");
+    localStorage.setItem(SUBTITLE_HEIGHT_KEY, String(subtitlePanelHeight));
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  }
+
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+});
 
 // --- Split pane ---
 const SPLIT_KEY = 'lpc_split_ratio';

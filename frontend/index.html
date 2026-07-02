@@ -17,26 +17,30 @@
 <body>
   <div id="main">
     <div id="left-panel">
-      <canvas id="avatar-canvas"></canvas>
-      <div id="cuda-banner" class="hidden">
-        <span id="cuda-banner-msg"></span>
-        <div id="cuda-banner-btns">
-          <button id="cuda-install-btn">Install</button>
-          <button id="cuda-dismiss-btn">Not now</button>
+      <div id="avatar-area">
+        <canvas id="avatar-canvas"></canvas>
+        <div id="cuda-banner" class="hidden">
+          <span id="cuda-banner-msg"></span>
+          <div id="cuda-banner-btns">
+            <button id="cuda-install-btn">Install</button>
+            <button id="cuda-dismiss-btn">Not now</button>
+          </div>
+        </div>
+        <div id="subtitle"></div>
+        <div id="player-bar">
+          <div id="bar-left">
+            <button id="start-stop" title="Start" disabled>&#9205;</button>
+            <button id="bar-mute" title="Mute">&#128266;</button>
+            <input type="range" id="bar-volume" min="0" max="1" step="0.05" />
+          </div>
+          <div id="bar-right">
+            <button id="toggle-subtitle" class="active" title="Toggle subtitles">CC</button>
+            <button id="settings-btn" title="Settings" disabled>&#9881;</button>
+          </div>
         </div>
       </div>
-      <div id="subtitle"></div>
-      <div id="player-bar">
-        <div id="bar-left">
-          <button id="start-stop" title="Start" disabled>&#9205;</button>
-          <button id="bar-mute" title="Mute">&#128266;</button>
-          <input type="range" id="bar-volume" min="0" max="1" step="0.05" />
-        </div>
-        <div id="bar-right">
-          <button id="toggle-subtitle" class="active" title="Toggle subtitles">CC</button>
-          <button id="settings-btn" title="Settings" disabled>&#9881;</button>
-        </div>
-      </div>
+      <div id="subtitle-row-divider"></div>
+      <div id="subtitle-panel"></div>
     </div>
     <div id="divider"></div>
     <div id="right-panel">
@@ -74,6 +78,13 @@
             <input type="range" id="cfg-volume" min="0" max="1" step="0.05" />
             <span id="cfg-volume-pct"></span>
           </div>
+        </label>
+      </section>
+
+      <section>
+        <h3>Subtitles</h3>
+        <label>Separated subtitles
+          <input type="checkbox" id="cfg-subtitle-mode" />
         </label>
       </section>
 
