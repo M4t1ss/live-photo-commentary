@@ -11,6 +11,7 @@ import numpy as np
 import onnxruntime
 
 from ..synthesizer import Synthesizer
+from ..subtitle_splitter import has_content, insert_subtitle_tags
 
 
 class KokoroSynthesizer(Synthesizer):
@@ -105,7 +106,7 @@ class KokoroSynthesizer(Synthesizer):
         return len(phonemes)
 
     def __call__(self, text):
-        from ..subtitle_splitter import insert_subtitle_tags, has_content
+
         from .. import config
 
         capacity = self._PHONEME_CAPACITY
@@ -157,7 +158,7 @@ class KokoroSynthesizer(Synthesizer):
         return [s for s in result if s]
 
     def synthesize(self, text):
-        from ..subtitle_splitter import insert_subtitle_tags
+
         from .. import config
         tagged = insert_subtitle_tags(text, max_chars=config.get().subtitle_max_chars)
         subtitle_segs = self._subtitle_segments(tagged)
