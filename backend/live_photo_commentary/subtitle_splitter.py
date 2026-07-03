@@ -1,9 +1,15 @@
-import re
+import regex
 
 from semantic_text_splitter import TextSplitter
 
-_TAG_RE = re.compile(r'\{[^}]*\}')
-_WHITESPACE_PLUS_RE = re.compile(r' {2,}')
+_TAG_RE = regex.compile(r'\{[^}]*\}')
+_WHITESPACE_PLUS_RE = regex.compile(r' {2,}')
+_CONTENT_RE = regex.compile(r'[\p{L}\p{N}]')
+
+
+def has_content(text: str) -> bool:
+    """Return True if text contains at least one letter or digit outside of tags."""
+    return bool(_CONTENT_RE.search(_TAG_RE.sub('', text)))
 
 
 def _sub_splitter_callback(text: str) -> int:
@@ -14,6 +20,9 @@ def _sub_splitter_callback(text: str) -> int:
     # ignore tags
     braceless = _TAG_RE.sub('', text).strip()
     braceless = _WHITESPACE_PLUS_RE.sub(' ', braceless)
+    # deny content-free chunks (only punctuation/whitespace outside tags)
+    if not _CONTENT_RE.search(braceless):
+        return 2 ** 31
     return len(braceless)
 
 

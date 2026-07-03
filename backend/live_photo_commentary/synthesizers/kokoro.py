@@ -95,14 +95,17 @@ class KokoroSynthesizer(Synthesizer):
         # chunk splitting is based on phoneme count vs TTS capacity
         # deny splitting within tags
         if text.count('{') != text.count('}'):
-            return self._PHONEME_CAPACITY + 1
+            return 2 ** 31
         # ignore tag contents
         markless, _ = self._extract_marks(text)
+        # deny content-free chunks (only punctuation/whitespace outside tags)
+        if not has_content(markless):
+            return 2 ** 31
         phonemes, _ = self.g2p(markless)
         return len(phonemes)
 
     def __call__(self, text):
-        from ..subtitle_splitter import insert_subtitle_tags
+        from ..subtitle_splitter import insert_subtitle_tags, has_content
         from .. import config
 
         capacity = self._PHONEME_CAPACITY
