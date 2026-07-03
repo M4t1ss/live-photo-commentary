@@ -38,10 +38,7 @@ class KokoroSynthesizer(Synthesizer):
     _g2p = None
 
     def __init__(self, voice="af_heart", model="model", lang=None, speed=1.0, **kwargs):
-        text_splitter = TextSplitter.from_callback(
-            callback=self._splitter_callback, capacity=self._PHONEME_CAPACITY,
-        )
-        super().__init__(text_splitter=text_splitter)
+        super().__init__()
         self.__class__._init_misaki_capabilities()
 
         self.lang = lang
@@ -99,6 +96,32 @@ class KokoroSynthesizer(Synthesizer):
         phonemes, _ = self.g2p(text)
         return len(phonemes)
 
+    def __call__(self, text):
+        from ..subtitle_splitter import insert_subtitle_tags
+        from .. import config
+
+        capacity = self._PHONEME_CAPACITY
+        while True:
+            splitter = TextSplitter.from_callback(self._splitter_callback, capacity=capacity)
+            chunks = list(splitter.chunks(text))
+            prepared = []
+            max_excess = 0
+            for chunk in chunks:
+                tagged = insert_subtitle_tags(chunk, max_chars=config.get().subtitle_max_chars)
+                subtitle_segs = self._subtitle_segments(tagged)
+                markless, marks = self._extract_marks(tagged)
+                braceless = self._EXTRACT_MARKS_RE.sub('', markless)
+                phonemes, _ = self.g2p(markless)
+                excess = len(phonemes) - self._PHONEME_CAPACITY
+                max_excess = max(max_excess, excess)
+                prepared.append((phonemes, marks, subtitle_segs, braceless))
+            if max_excess <= 0:
+                break
+            capacity -= max_excess
+
+        for args in prepared:
+            yield self._synthesize_phonemes(*args)
+
     @classmethod
     def _extract_marks(cls, text):
         marks = []
@@ -125,11 +148,14 @@ class KokoroSynthesizer(Synthesizer):
     def synthesize(self, text):
         from ..subtitle_splitter import insert_subtitle_tags
         from .. import config
-        tagged_text = insert_subtitle_tags(text, max_chars=config.get().subtitle_max_chars)
-        subtitle_segments = self._subtitle_segments(tagged_text)
-        markless_text, marks = self._extract_marks(tagged_text)
-        braceless_text = self._EXTRACT_MARKS_RE.sub('', markless_text)
-        phonemes, tokens = self.g2p(markless_text) 
+        tagged = insert_subtitle_tags(text, max_chars=config.get().subtitle_max_chars)
+        subtitle_segs = self._subtitle_segments(tagged)
+        markless, marks = self._extract_marks(tagged)
+        braceless = self._EXTRACT_MARKS_RE.sub('', markless)
+        phonemes, _ = self.g2p(markless)
+        return self._synthesize_phonemes(phonemes, marks, subtitle_segs, braceless)
+
+    def _synthesize_phonemes(self, phonemes, marks, subtitle_segments, braceless_text):
         input_ids = []
         restore = []
         for ix, phoneme in enumerate(phonemes):
@@ -138,13 +164,13 @@ class KokoroSynthesizer(Synthesizer):
             else:
                 restore.append((ix, phoneme))
         voice_style_input = self.voice[len(input_ids)]
-        input_ids_for_model = [[0, *input_ids, 0]] 
+        input_ids_for_model = [[0, *input_ids, 0]]
         try:
             audio, pred_durs = self.session.run(
-                None, # Outputs to retrieve (None means all outputs)
+                None,
                 dict(
                     input_ids=np.array(input_ids_for_model, dtype=np.int64),
-                    style=voice_style_input, 
+                    style=voice_style_input,
                     speed=np.array([self.speed], dtype=np.float32)),
             )
         except Exception as x:
@@ -152,7 +178,6 @@ class KokoroSynthesizer(Synthesizer):
             raise
 
         pred_durs = np.asarray(pred_durs)[0] / 40 # magic divisor for kokoro timestamps
-        # timings = pred_durs[1:-1].cumsum().tolist()
         full_durs = np.zeros(len(phonemes), dtype=pred_durs.dtype)
         valid_ix = 1 # skip first and last
         for ix in range(len(phonemes)):

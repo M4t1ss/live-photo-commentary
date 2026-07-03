@@ -27,18 +27,11 @@ class Synthesizer(ABC):
                 f"Supported engines: kokoro"
             )
 
-    def __init__(self, text_splitter=None, **kwargs):
-        self.text_splitter = text_splitter
+    def __init__(self, **kwargs):
+        pass
 
     def __call__(self, text) -> Generator[SynthResult, None, None]:
-        """Synthesize text to audio. Handles text splitting if max_chunk is set."""
-        if self.text_splitter is not None:
-            # Split text into chunks and synthesize each
-            for chunk in self.text_splitter.chunks(text):
-                yield self.synthesize(chunk)
-        else:
-            # No splitting, synthesize the full text
-            yield self.synthesize(text)
+        yield self.synthesize(text)
 
     @abstractmethod
     def synthesize(self, text) -> SynthResult:
