@@ -29,9 +29,16 @@ body {
 /* Left panel — avatar canvas + subtitle */
 #left-panel {
   flex: 1;
-  position: relative;
-  background: #000;
+  display: flex;
+  flex-direction: column;
+  background: var(--lpc-bg, #000);
   min-width: 0;
+}
+
+#avatar-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
 }
 
 #avatar-canvas {
@@ -49,10 +56,41 @@ body {
   text-align: center;
   font-size: 17px;
   line-height: 1.5;
-  color: #fff;
-  text-shadow: 0 1px 6px #000, 0 0 16px #000;
+  color: var(--lpc-fg, #fff);
+  text-shadow: 0 1px 6px var(--lpc-bg, #000), 0 0 16px var(--lpc-bg, #000);
   pointer-events: none;
 }
+
+/* Horizontal subtitle divider (separated mode) */
+#subtitle-row-divider {
+  display: none;
+  height: 5px;
+  flex-shrink: 0;
+  background: var(--border);
+  cursor: row-resize;
+  transition: background 0.15s;
+}
+#subtitle-row-divider:hover,
+#subtitle-row-divider.dragging {
+  background: var(--accent);
+}
+
+/* Subtitle panel (separated mode) */
+#subtitle-panel {
+  display: none;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 10px 24px;
+  text-align: center;
+  font-size: 17px;
+  line-height: 1.5;
+  color: var(--lpc-fg, #e0e0e0);
+}
+
+/* Separated mode — activate panel, hide overlay */
+#left-panel.subtitle-separated #subtitle-row-divider { display: block; }
+#left-panel.subtitle-separated #subtitle-panel       { display: block; }
+#left-panel.subtitle-separated #subtitle             { display: none; }
 
 /* CUDA upgrade banner */
 #cuda-banner {
@@ -133,10 +171,23 @@ body {
   vertical-align: middle;
 }
 
+/* Draggable split divider */
+#divider {
+  width: 5px;
+  flex-shrink: 0;
+  background: var(--border);
+  cursor: col-resize;
+  transition: background 0.15s;
+}
+#divider:hover,
+#divider.dragging {
+  background: var(--accent);
+}
+
 /* Right panel — status + current + previous screenshots */
 #right-panel {
-  width: 320px;
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  min-width: 160px;
   background: var(--panel-bg);
   border-left: 1px solid var(--border);
   display: flex;
@@ -235,6 +286,21 @@ body {
 }
 #cfg-volume { flex: 1; }
 #cfg-volume-pct { font-size: 13px; color: #aaa; min-width: 3ch; text-align: right; }
+
+.color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 220px;
+}
+.color-preview {
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.color-row input { flex: 1; width: auto; }
 
 #modal input,
 #modal select {

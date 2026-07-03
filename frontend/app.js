@@ -33,6 +33,14 @@ const cudaInstallBtn     = document.getElementById("cuda-install-btn");
 const cudaDismissBtn     = document.getElementById("cuda-dismiss-btn");
 const splashEl           = document.getElementById("splash");
 const splashStatusEl     = document.getElementById("splash-status");
+const leftPanelEl        = document.getElementById("left-panel");
+const subtitlePanelEl    = document.getElementById("subtitle-panel");
+const subtitleRowDivider = document.getElementById("subtitle-row-divider");
+const cfgSubtitleMode    = document.getElementById("cfg-subtitle-mode");
+const cfgBgColor         = document.getElementById("cfg-bg-color");
+const cfgBgPreview       = document.getElementById("cfg-bg-preview");
+const cfgFgColor         = document.getElementById("cfg-fg-color");
+const cfgFgPreview       = document.getElementById("cfg-fg-preview");
 
 // --- App state ---
 let volume = parseFloat(localStorage.getItem("lpc_volume") ?? "1");
@@ -43,6 +51,9 @@ let port = null;
 let ws = null;
 let running = false;
 let subtitlesVisible = true;
+let subtitleMode = localStorage.getItem("lpc_subtitle_mode") ?? "overlay";
+let bgColor = localStorage.getItem("lpc_bg_color") ?? "#000000";
+let fgColor = localStorage.getItem("lpc_fg_color") ?? "#ffffff";
 let currentConfig = {};
 let vlmCatalogue = [];
 let ttsVoices = [];
@@ -89,6 +100,11 @@ let _subtitles = null;
 let _subtitleIdx = 0;
 let _subtitleTimer = null;
 
+function setSubtitleText(text) {
+  subtitleEl.textContent = text;
+  subtitlePanelEl.textContent = text;
+}
+
 function _clearSubtitleTimer() {
   if (_subtitleTimer !== null) { clearInterval(_subtitleTimer); _subtitleTimer = null; }
 }
@@ -105,7 +121,7 @@ function _startSubtitleTimer() {
     }
     if (idx !== _subtitleIdx) {
       _subtitleIdx = idx;
-      if (subtitlesVisible) subtitleEl.textContent = _subtitles[idx].text;
+      if (subtitlesVisible) setSubtitleText(_subtitles[idx].text);
     }
   }, 50);
 }
@@ -333,7 +349,7 @@ function playNext() {
   const { audio_url, text, timeline, subtitles } = audioQueue.shift();
   _subtitles = subtitles;
   _subtitleIdx = 0;
-  if (subtitlesVisible) subtitleEl.textContent = subtitles[0].text;
+  if (subtitlesVisible) setSubtitleText(subtitles[0].text);
   const audio = new Audio(`http://127.0.0.1:${port}${audio_url}`);
   audio.volume = volume;
   currentAudio = audio;
@@ -346,7 +362,7 @@ function playNext() {
 
 function sendSpeechEnded() {
   ttsAllReceived = false;
-  subtitleEl.textContent = "";
+  setSubtitleText("");
   const delayMs = (currentConfig.pre_screenshot_delay ?? 2.0) * 1000;
   setPhase("Screenshot in", "down", delayMs);
   setTimeout(() => {
@@ -364,7 +380,7 @@ startStopBtn.addEventListener("click", () => {
     }
     setRunning(false);
     resetAudio();
-    subtitleEl.textContent = "";
+    setSubtitleText("");
     setPhase("Idle", "none");
     if (!pendingStart) send({ type: "stop_cycle" });
   } else {
@@ -381,8 +397,8 @@ startStopBtn.addEventListener("click", () => {
 toggleSubtitleBtn.addEventListener("click", () => {
   subtitlesVisible = !subtitlesVisible;
   toggleSubtitleBtn.classList.toggle("active", subtitlesVisible);
-  if (!subtitlesVisible) subtitleEl.textContent = "";
-  else if (_subtitles) subtitleEl.textContent = _subtitles[_subtitleIdx].text;
+  if (!subtitlesVisible) setSubtitleText("");
+  else if (_subtitles) setSubtitleText(_subtitles[_subtitleIdx].text);
 });
 
 // --- Settings modal ---
@@ -434,6 +450,11 @@ function populateModal() {
   geminiKeyInput.value    = "";
   openaiKeyInput.value    = "";
   elevenlabsKeyInput.value = "";
+  cfgSubtitleMode.checked = subtitleMode === "separated";
+  cfgBgColor.value = bgColor;
+  cfgBgPreview.style.background = bgColor;
+  cfgFgColor.value = fgColor;
+  cfgFgPreview.style.background = fgColor;
 }
 
 function setVolume(v, save = false) {
@@ -484,6 +505,20 @@ modalOk.addEventListener("click", () => {
 
   setVolume(parseFloat(volumeInput.value), true);
 
+  const newMode = cfgSubtitleMode.checked ? "separated" : "overlay";
+  if (newMode !== subtitleMode) {
+    applySubtitleMode(newMode);
+    localStorage.setItem("lpc_subtitle_mode", newMode);
+  }
+
+  const newBg = _normalizeHex(cfgBgColor.value);
+  const newFg = _normalizeHex(cfgFgColor.value);
+  if (isValidHex(newBg) && isValidHex(newFg)) {
+    applyColors(newBg, newFg);
+    localStorage.setItem("lpc_bg_color", newBg);
+    localStorage.setItem("lpc_fg_color", newFg);
+  }
+
   send({ type: "set_config", data: updates, persist: true });
   closeModal();
 });
@@ -514,14 +549,14 @@ async function main() {
   // and so backend_crashed / cuda_upgrade_available are never missed while
   // invoke is still pending.
   await listen("setup_progress", ({ payload }) => setPhase(payload, "up"));
-  await listen("backend_crashed", () => {
+  await listen("backend_crashed", ({ payload }) => {
     dismissSplash();
     setRunning(false);
     configReceived = false;
     modelsReceived = false;
     backendReady   = false;
     checkReady();
-    setPhase("Backend crashed", "none");
+    setPhase(payload || "Backend crashed", "none");
   });
 
   // cuda_upgrade_available fires right after uv sync (before uvicorn even
@@ -563,3 +598,125 @@ async function main() {
 }
 
 main();
+
+// --- Appearance colors ---
+function isValidHex(s) { return /^#[0-9a-fA-F]{6}$/.test(s); }
+
+function applyColors(bg, fg) {
+  bgColor = bg;
+  fgColor = fg;
+  document.documentElement.style.setProperty("--lpc-bg", bg);
+  document.documentElement.style.setProperty("--lpc-fg", fg);
+}
+
+applyColors(bgColor, fgColor);
+
+function _normalizeHex(s) {
+  s = s.trim();
+  if (/^[0-9a-fA-F]{6}$/.test(s)) s = "#" + s;
+  return s;
+}
+
+cfgBgColor.addEventListener("input", () => {
+  const v = _normalizeHex(cfgBgColor.value);
+  if (isValidHex(v)) cfgBgPreview.style.background = v;
+});
+cfgFgColor.addEventListener("input", () => {
+  const v = _normalizeHex(cfgFgColor.value);
+  if (isValidHex(v)) cfgFgPreview.style.background = v;
+});
+
+// --- Subtitle row divider ---
+const SUBTITLE_HEIGHT_KEY = "lpc_subtitle_height";
+const DEFAULT_SUBTITLE_HEIGHT = 80;
+const MIN_SUBTITLE_HEIGHT = 40;
+
+let subtitlePanelHeight = parseInt(localStorage.getItem(SUBTITLE_HEIGHT_KEY) ?? String(DEFAULT_SUBTITLE_HEIGHT), 10);
+
+function applySubtitleHeight(h) {
+  subtitlePanelEl.style.height = h + "px";
+}
+
+// --- Subtitle mode ---
+function applySubtitleMode(mode) {
+  subtitleMode = mode;
+  if (mode === "separated") {
+    leftPanelEl.classList.add("subtitle-separated");
+    applySubtitleHeight(subtitlePanelHeight);
+  } else {
+    leftPanelEl.classList.remove("subtitle-separated");
+  }
+}
+
+applySubtitleMode(subtitleMode);
+
+subtitleRowDivider.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  const startY = e.clientY;
+  const startH = subtitlePanelEl.offsetHeight;
+
+  subtitleRowDivider.classList.add("dragging");
+
+  function onMove(e) {
+    const maxH = leftPanelEl.offsetHeight * 0.5;
+    const newH = Math.max(MIN_SUBTITLE_HEIGHT, Math.min(maxH, startH - (e.clientY - startY)));
+    subtitlePanelHeight = newH;
+    applySubtitleHeight(newH);
+  }
+
+  function onUp() {
+    subtitleRowDivider.classList.remove("dragging");
+    localStorage.setItem(SUBTITLE_HEIGHT_KEY, String(subtitlePanelHeight));
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  }
+
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+});
+
+// --- Split pane ---
+const SPLIT_KEY = 'lpc_split_ratio';
+const DEFAULT_RATIO = 0.75;
+const MIN_RATIO = 0.2;
+const MAX_RATIO = 0.85;
+
+const mainEl     = document.getElementById('main');
+const leftPanel  = document.getElementById('left-panel');
+const rightPanel = document.getElementById('right-panel');
+const dividerEl  = document.getElementById('divider');
+
+function applyPanelSplit(ratio) {
+  const available = mainEl.offsetWidth - dividerEl.offsetWidth;
+  leftPanel.style.flex  = `0 0 ${ratio * available}px`;
+  rightPanel.style.flex = `0 0 ${(1 - ratio) * available}px`;
+}
+
+let splitRatio = parseFloat(localStorage.getItem(SPLIT_KEY) ?? String(DEFAULT_RATIO));
+applyPanelSplit(splitRatio);
+window.addEventListener('resize', () => applyPanelSplit(splitRatio));
+
+dividerEl.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  const startX    = e.clientX;
+  const startLeft = leftPanel.offsetWidth;
+  const available = mainEl.offsetWidth - dividerEl.offsetWidth;
+
+  dividerEl.classList.add('dragging');
+
+  function onMove(e) {
+    const newLeft = startLeft + (e.clientX - startX);
+    splitRatio = Math.max(MIN_RATIO, Math.min(MAX_RATIO, newLeft / available));
+    applyPanelSplit(splitRatio);
+  }
+
+  function onUp() {
+    dividerEl.classList.remove('dragging');
+    localStorage.setItem(SPLIT_KEY, String(splitRatio));
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+});
