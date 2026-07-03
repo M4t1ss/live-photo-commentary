@@ -33,6 +33,7 @@ class KokoroSynthesizer(Synthesizer):
     _PHONEME_CAPACITY = 512 - 2
     _SPLITTER_CACHE_SIZE = 10000
     _EXTRACT_MARKS_RE = re.compile(r'\{([^}]*)\}')
+    _WHITESPACE_PLUS_RE = re.compile(r' {2,}')
     _SUB_TAG_RE = re.compile(r'\{sub\}')
 
     _g2p = None
@@ -90,10 +91,14 @@ class KokoroSynthesizer(Synthesizer):
         providers = ["CPUExecutionProvider"]
         self.session = onnxruntime.InferenceSession(model_path, providers=providers)
 
-    def _splitter_callback(self, text: str) -> int:
+    def _chunk_splitter_callback(self, text: str) -> int:
+        # chunk splitting is based on phoneme count vs TTS capacity
+        # deny splitting within tags
         if text.count('{') != text.count('}'):
             return self._PHONEME_CAPACITY + 1
-        phonemes, _ = self.g2p(text)
+        # ignore tag contents
+        markless, _ = self._extract_marks(text)
+        phonemes, _ = self.g2p(markless)
         return len(phonemes)
 
     def __call__(self, text):
@@ -102,7 +107,7 @@ class KokoroSynthesizer(Synthesizer):
 
         capacity = self._PHONEME_CAPACITY
         while True:
-            splitter = TextSplitter.from_callback(self._splitter_callback, capacity=capacity)
+            splitter = TextSplitter.from_callback(self._chunk_splitter_callback, capacity=capacity)
             chunks = list(splitter.chunks(text))
             prepared = []
             max_excess = 0
@@ -110,7 +115,8 @@ class KokoroSynthesizer(Synthesizer):
                 tagged = insert_subtitle_tags(chunk, max_chars=config.get().subtitle_max_chars)
                 subtitle_segs = self._subtitle_segments(tagged)
                 markless, marks = self._extract_marks(tagged)
-                braceless = self._EXTRACT_MARKS_RE.sub('', markless)
+                braceless = self._EXTRACT_MARKS_RE.sub('', markless).strip()
+                braceless = self._WHITESPACE_PLUS_RE.sub(' ', braceless)
                 phonemes, _ = self.g2p(markless)
                 excess = len(phonemes) - self._PHONEME_CAPACITY
                 max_excess = max(max_excess, excess)
@@ -151,7 +157,8 @@ class KokoroSynthesizer(Synthesizer):
         tagged = insert_subtitle_tags(text, max_chars=config.get().subtitle_max_chars)
         subtitle_segs = self._subtitle_segments(tagged)
         markless, marks = self._extract_marks(tagged)
-        braceless = self._EXTRACT_MARKS_RE.sub('', markless)
+        braceless = self._EXTRACT_MARKS_RE.sub('', markless).strip()
+        braceless = self._WHITESPACE_PLUS_RE.sub(' ', braceless)
         phonemes, _ = self.g2p(markless)
         return self._synthesize_phonemes(phonemes, marks, subtitle_segs, braceless)
 
