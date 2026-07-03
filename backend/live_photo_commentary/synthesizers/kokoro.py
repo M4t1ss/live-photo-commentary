@@ -106,6 +106,7 @@ class KokoroSynthesizer(Synthesizer):
         from .. import config
 
         capacity = self._PHONEME_CAPACITY
+        prev_excess = None
         while True:
             splitter = TextSplitter.from_callback(self._chunk_splitter_callback, capacity=capacity)
             chunks = list(splitter.chunks(text))
@@ -121,8 +122,9 @@ class KokoroSynthesizer(Synthesizer):
                 excess = len(phonemes) - self._PHONEME_CAPACITY
                 max_excess = max(max_excess, excess)
                 prepared.append((phonemes, marks, subtitle_segs, braceless))
-            if max_excess <= 0:
+            if max_excess <= 0 or max_excess == prev_excess:
                 break
+            prev_excess = max_excess
             capacity -= max_excess
 
         for args in prepared:
