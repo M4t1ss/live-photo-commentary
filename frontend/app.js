@@ -191,7 +191,7 @@ function connectWebSocket() {
     backendReady   = false;
     setRunning(false);
     checkReady();
-    setPhase("Initialising…", "up");
+    setPhase("Initializing…", "up");
   });
 
   ws.addEventListener("message", (event) => {
@@ -263,7 +263,7 @@ function handleMessage(data) {
       break;
 
     case "model_loading":
-      if (!running) setPhase("Initialising…", "up");
+      if (!running) setPhase("Initializing…", "up");
       break;
 
     case "load_progress":
