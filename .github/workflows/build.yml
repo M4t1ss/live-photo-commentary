@@ -28,7 +28,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v4
+      # UPGRADED: v4 -> v5 removes Node 20 dependency
+      - uses: actions/checkout@v5
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -111,9 +112,10 @@ jobs:
           cargo build --release --target x86_64-pc-windows-gnu --manifest-path src-screenshot/Cargo.toml
           cp src-screenshot/target/x86_64-pc-windows-gnu/release/screenshot.exe src-tauri/resources/screenshot.exe
 
+      # UPGRADED: v4 -> v5 removes Node 20 dependency
       - name: Upload screenshot.exe artifact
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: screenshot-exe
           path: src-tauri/resources/screenshot.exe
@@ -132,9 +134,10 @@ jobs:
           fi
 
       # Cache the cargo-tauri binary so it is only compiled on first run.
+      # UPGRADED: v4 -> v5 removes Node 20 dependency
       - name: Cache Tauri CLI
         id: cache-tauri-cli
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/cargo-tauri*
           key: ${{ runner.os }}-cargo-tauri-2
@@ -147,14 +150,16 @@ jobs:
       # --config injects the resources array only for production builds;
       # the base tauri.conf.json has an empty resources list so dev builds
       # don't require the binary to be present.
+      # UPGRADED: @v0 pinned to latest release to leverage Node 24 support
       - name: Build Tauri application
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v0.5.24
         with:
           tauriScript: cargo tauri
           args: --config src-tauri/tauri.bundle.conf.json
 
+      # UPGRADED: v4 -> v5 removes Node 20 dependency
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: installer-${{ matrix.platform }}
           path: |
