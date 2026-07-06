@@ -191,7 +191,7 @@ function connectWebSocket() {
     backendReady   = false;
     setRunning(false);
     checkReady();
-    setPhase("Initialising…", "up");
+    setPhase("Initializing…", "up");
   });
 
   ws.addEventListener("message", (event) => {
@@ -263,7 +263,7 @@ function handleMessage(data) {
       break;
 
     case "model_loading":
-      if (!running) setPhase("Initialising…", "up");
+      if (!running) setPhase("Initializing…", "up");
       break;
 
     case "load_progress":
@@ -371,18 +371,23 @@ function sendSpeechEnded() {
 }
 
 // --- Controls ---
+function stopCycle() {
+  if (!running) return;
+  const pendingStart = _startCycleTimer !== null;
+  if (pendingStart) {
+    clearTimeout(_startCycleTimer);
+    _startCycleTimer = null;
+  }
+  setRunning(false);
+  resetAudio();
+  setSubtitleText("");
+  setPhase("Idle", "none");
+  if (!pendingStart) send({ type: "stop_cycle" });
+}
+
 startStopBtn.addEventListener("click", () => {
   if (running) {
-    const pendingStart = _startCycleTimer !== null;
-    if (pendingStart) {
-      clearTimeout(_startCycleTimer);
-      _startCycleTimer = null;
-    }
-    setRunning(false);
-    resetAudio();
-    setSubtitleText("");
-    setPhase("Idle", "none");
-    if (!pendingStart) send({ type: "stop_cycle" });
+    stopCycle();
   } else {
     setRunning(true);
     const delayMs = (currentConfig.pre_screenshot_delay ?? 2.0) * 1000;
@@ -574,7 +579,7 @@ async function main() {
     cudaBannerMsg.textContent = "CUDA PyTorch installed. Restart the backend to use GPU acceleration.";
     cudaInstallBtn.textContent = "Restart";
     cudaInstallBtn.disabled = false;
-    cudaInstallBtn.onclick = () => { cudaBanner.classList.add("hidden"); showSplash(); invoke("restart_backend"); };
+    cudaInstallBtn.onclick = () => { stopCycle(); cudaBanner.classList.add("hidden"); showSplash(); invoke("restart_backend"); };
     cudaDismissBtn.classList.add("hidden");
   });
   await listen("cuda_install_failed", ({ payload }) => {
