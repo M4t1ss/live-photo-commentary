@@ -102,7 +102,7 @@ jobs:
             --no-deps --no-cache-dir --wheel-dir src-tauri/resources/backend/vendor/
           python3 tools/patch_pyopenjtalk.py src-tauri/resources/backend
           cd src-tauri/resources/backend && uv lock --python 3.12
-          echo "vendor:" && ls src-tauri/resources/backend/vendor/
+          echo "vendor:" && ls vendor/
 
       - name: Build screenshot.exe (Linux cross-compile)
         if: runner.os == 'Linux'
