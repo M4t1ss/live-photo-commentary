@@ -13,8 +13,9 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from . import config
+from . import config, prompts
 from .pipeline import Pipeline
+from .prompts import DEFAULT_NAME as _DEFAULT_PROMPTSET
 
 log = logging.getLogger(__name__)
 
@@ -69,15 +70,24 @@ _VLM_CATALOGUE = [
 ]
 
 
-def _make_describer(on_progress=None):
+def _make_describer(fields=None, on_progress=None):
     cfg = config.get()
+    extra = fields or {}
     if cfg.vlm_provider == "local":
         model_id = cfg.vlm_model or "microsoft/Phi-4-multimodal-instruct"
         path = _model_local_dirs.get(model_id, model_id)
         from .local_describer import LocalDescriber
-        return LocalDescriber(model_id=path, on_progress=on_progress)
+        return LocalDescriber(model_id=path, on_progress=on_progress, **extra)
     from .remote_describer import RemoteDescriber
-    return RemoteDescriber(provider=cfg.vlm_provider, model_id=cfg.vlm_model)
+    return RemoteDescriber(provider=cfg.vlm_provider, model_id=cfg.vlm_model, **extra)
+
+
+def _apply_promptset(name: str) -> None:
+    """Update the live describer's prompt fields without reloading the model."""
+    if pipeline is not None and pipeline.describer is not None:
+        fields = prompts.load(name)
+        for k, v in fields.items():
+            setattr(pipeline.describer, k, v)
 
 
 def _make_synthesizer():
@@ -151,7 +161,8 @@ async def _reinit_describer() -> None:
         if cfg.vlm_provider == "local":
             model_id = cfg.vlm_model or "microsoft/Phi-4-multimodal-instruct"
             _model_local_dirs[model_id] = await _download_with_progress(model_id)
-        pipeline.describer = await asyncio.to_thread(_make_describer, _progress)
+        fields = prompts.load(config.get().active_promptset)
+        pipeline.describer = await asyncio.to_thread(_make_describer, fields, _progress)
         log.info("Describer ready")
         _vlm_ready = True
         await _send({"type": "model_ready", "model": "vlm"})
@@ -200,6 +211,7 @@ def _suppress_pipe_reset(loop, context):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pipeline
+    prompts.set_dir(Path("prompts"))
     loop = asyncio.get_running_loop()
     if sys.platform == "win32":
         loop.set_exception_handler(_suppress_pipe_reset)
@@ -287,6 +299,13 @@ async def websocket_endpoint(ws: WebSocket):
     for msg in _model_errors.values():
         await _send({"type": "error", "message": msg})
     asyncio.create_task(_send_models())
+    active = config.get().active_promptset
+    await _send({
+        "type": "promptset_loaded",
+        "name": active,
+        "fields": prompts.load(active),
+        "names": prompts.list_names(),
+    })
     try:
         while True:
             data = await ws.receive_json()
@@ -318,6 +337,49 @@ async def websocket_endpoint(ws: WebSocket):
                 case "take_screenshot":
                     if pipeline is not None:
                         pipeline.on_take_screenshot()
+                case "list_promptsets":
+                    await _send({"type": "promptsets", "names": prompts.list_names()})
+                case "load_promptset":
+                    name = (data.get("name") or "").strip() or _DEFAULT_PROMPTSET
+                    fields = prompts.load(name)
+                    config.apply({"active_promptset": name})
+                    await asyncio.to_thread(config.persist, Path(".env"))
+                    _apply_promptset(name)
+                    if pipeline is not None and pipeline.describer is not None:
+                        pipeline.describer.reset()
+                    await _send({
+                        "type": "promptset_loaded",
+                        "name": name,
+                        "fields": fields,
+                        "names": prompts.list_names(),
+                    })
+                case "save_promptset":
+                    name = (data.get("name") or "").strip()
+                    if not name or name == _DEFAULT_PROMPTSET:
+                        await _send({"type": "error", "message": "Cannot save as 'default'"})
+                    else:
+                        prompts.save(name, data.get("fields", {}))
+                        if name == config.get().active_promptset:
+                            _apply_promptset(name)
+                        await _send({"type": "promptsets", "names": prompts.list_names()})
+                case "delete_promptset":
+                    name = (data.get("name") or "").strip()
+                    if not name or name == _DEFAULT_PROMPTSET:
+                        await _send({"type": "error", "message": "Cannot delete 'default'"})
+                    else:
+                        was_active = config.get().active_promptset == name
+                        prompts.delete(name)
+                        if was_active:
+                            config.apply({"active_promptset": _DEFAULT_PROMPTSET})
+                            await asyncio.to_thread(config.persist, Path(".env"))
+                            _apply_promptset(_DEFAULT_PROMPTSET)
+                        active = config.get().active_promptset
+                        await _send({
+                            "type": "promptset_loaded",
+                            "name": active,
+                            "fields": prompts.load(active),
+                            "names": prompts.list_names(),
+                        })
     except WebSocketDisconnect:
         pass
     finally:

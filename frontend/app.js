@@ -41,6 +41,17 @@ const cfgBgColor         = document.getElementById("cfg-bg-color");
 const cfgBgPreview       = document.getElementById("cfg-bg-preview");
 const cfgFgColor         = document.getElementById("cfg-fg-color");
 const cfgFgPreview       = document.getElementById("cfg-fg-preview");
+const cfgPromptset       = document.getElementById("cfg-promptset");
+const promptsetComboBtn  = document.getElementById("promptset-combo-btn");
+const promptsetDropdown  = document.getElementById("promptset-dropdown");
+const promptsetLoad      = document.getElementById("promptset-load");
+const promptsetSave      = document.getElementById("promptset-save");
+const promptsetDelete    = document.getElementById("promptset-delete");
+const cfgSystemPrompt    = document.getElementById("cfg-system-prompt");
+const cfgPromptText      = document.getElementById("cfg-prompt");
+const cfgFirstPrompt     = document.getElementById("cfg-first-prompt");
+const cfgHistoryPrompt   = document.getElementById("cfg-history-prompt");
+const cfgCompactPrompt   = document.getElementById("cfg-compact-prompt");
 
 // --- App state ---
 let volume = parseFloat(localStorage.getItem("lpc_volume") ?? "1");
@@ -57,6 +68,8 @@ let fgColor = localStorage.getItem("lpc_fg_color") ?? "#ffffff";
 let currentConfig = {};
 let vlmCatalogue = [];
 let ttsVoices = [];
+let promptsetNames = [];
+let currentPromptsetName = "default";
 
 let currentFrameUrl = null;
 
@@ -305,6 +318,22 @@ function handleMessage(data) {
       modelsReceived = true;
       checkReady();
       break;
+
+    case "promptset_loaded":
+      currentPromptsetName = data.name;
+      if (data.names) { promptsetNames = data.names; }
+      cfgPromptset.value     = data.name;
+      cfgSystemPrompt.value  = data.fields?.system_prompt ?? "";
+      cfgPromptText.value    = data.fields?.prompt ?? "";
+      cfgFirstPrompt.value   = data.fields?.first_prompt ?? "";
+      cfgHistoryPrompt.value = data.fields?.history_prompt ?? "";
+      cfgCompactPrompt.value = data.fields?.compact_prompt ?? "";
+      _updatePromptsetBtns();
+      break;
+
+    case "promptsets":
+      promptsetNames = data.names ?? [];
+      break;
   }
 }
 
@@ -412,7 +441,18 @@ modalCancel.addEventListener("click", closeModal);
 modalOverlay.addEventListener("click", (e) => { if (e.target === modalOverlay) closeModal(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
 
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b === btn));
+    document.getElementById("tab-general").classList.toggle("hidden", btn.dataset.tab !== "general");
+    document.getElementById("tab-prompts").classList.toggle("hidden", btn.dataset.tab !== "prompts");
+  });
+});
+
 function openModal() {
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === "general"));
+  document.getElementById("tab-general").classList.remove("hidden");
+  document.getElementById("tab-prompts").classList.add("hidden");
   populateModal();
   modalOverlay.classList.remove("hidden");
 }
@@ -456,6 +496,8 @@ function populateModal() {
   openaiKeyInput.value    = "";
   elevenlabsKeyInput.value = "";
   cfgSubtitleMode.checked = subtitleMode === "separated";
+  cfgPromptset.value = currentPromptsetName;
+  _updatePromptsetBtns();
   cfgBgColor.value = bgColor;
   cfgBgPreview.style.background = bgColor;
   cfgFgColor.value = fgColor;
@@ -531,6 +573,77 @@ modalOk.addEventListener("click", () => {
 function capitalize(s) {
   return s ? s[0].toUpperCase() + s.slice(1) : s;
 }
+
+// --- Promptset combobox ---
+function _openPromptsetDropdown() {
+  const current = cfgPromptset.value.trim();
+  promptsetDropdown.innerHTML = "";
+  for (const name of promptsetNames) {
+    const li = document.createElement("li");
+    li.textContent = name;
+    if (name === current) li.classList.add("combo-selected");
+    li.addEventListener("mousedown", (e) => {
+      e.preventDefault(); // keep focus on input
+      cfgPromptset.value = name;
+      _closePromptsetDropdown();
+      _updatePromptsetBtns();
+    });
+    promptsetDropdown.appendChild(li);
+  }
+  promptsetDropdown.classList.remove("hidden");
+}
+
+function _closePromptsetDropdown() {
+  promptsetDropdown.classList.add("hidden");
+}
+
+promptsetComboBtn.addEventListener("click", () => {
+  if (promptsetDropdown.classList.contains("hidden")) {
+    _openPromptsetDropdown();
+    cfgPromptset.focus();
+  } else {
+    _closePromptsetDropdown();
+  }
+});
+
+document.addEventListener("mousedown", (e) => {
+  if (!e.target.closest("#promptset-combo")) _closePromptsetDropdown();
+});
+
+function _updatePromptsetBtns() {
+  const isDefault = cfgPromptset.value.trim() === "default";
+  promptsetSave.disabled   = isDefault;
+  promptsetDelete.disabled = isDefault;
+}
+
+cfgPromptset.addEventListener("input", _updatePromptsetBtns);
+
+promptsetLoad.addEventListener("click", () => {
+  const name = cfgPromptset.value.trim() || "default";
+  send({ type: "load_promptset", name });
+});
+
+promptsetSave.addEventListener("click", () => {
+  const name = cfgPromptset.value.trim();
+  if (!name || name === "default") return;
+  send({
+    type: "save_promptset",
+    name,
+    fields: {
+      system_prompt:  cfgSystemPrompt.value,
+      prompt:         cfgPromptText.value,
+      first_prompt:   cfgFirstPrompt.value,
+      history_prompt: cfgHistoryPrompt.value,
+      compact_prompt: cfgCompactPrompt.value,
+    },
+  });
+});
+
+promptsetDelete.addEventListener("click", () => {
+  const name = cfgPromptset.value.trim();
+  if (!name || name === "default") return;
+  send({ type: "delete_promptset", name });
+});
 
 // --- CUDA upgrade banner ---
 let pendingCuIndex = null;

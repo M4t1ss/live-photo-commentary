@@ -57,6 +57,12 @@
     <div id="modal">
       <h2>Settings</h2>
 
+      <div id="modal-tabs">
+        <button class="tab-btn active" data-tab="general">General</button>
+        <button class="tab-btn" data-tab="prompts">Prompts</button>
+      </div>
+
+      <div id="tab-general">
       <section>
         <h3>Vision model</h3>
         <label>Model <select id="cfg-vlm"></select></label>
@@ -143,6 +149,33 @@
           <input type="password" id="cfg-elevenlabs-key" placeholder="unchanged" autocomplete="off" />
         </label>
       </section>
+
+      </div><!-- #tab-general -->
+
+      <div id="tab-prompts" class="hidden">
+        <section>
+          <h3>Prompt set</h3>
+          <div id="promptset-row">
+            <div id="promptset-combo">
+              <input id="cfg-promptset" type="text" placeholder="default" autocomplete="off" spellcheck="false" />
+              <button id="promptset-combo-btn" tabindex="-1">&#9662;</button>
+              <ul id="promptset-dropdown" class="hidden"></ul>
+            </div>
+            <div id="promptset-btns">
+              <button id="promptset-load">Load</button>
+              <button id="promptset-save">Save</button>
+              <button id="promptset-delete">Delete</button>
+            </div>
+          </div>
+        </section>
+        <section>
+          <label class="prompt-label"><span>System prompt</span><textarea id="cfg-system-prompt" rows="4"></textarea></label>
+          <label class="prompt-label"><span>Prompt</span><textarea id="cfg-prompt" rows="5"></textarea></label>
+          <label class="prompt-label"><span>First prompt</span><textarea id="cfg-first-prompt" rows="3"></textarea></label>
+          <label class="prompt-label"><span>History prompt</span><textarea id="cfg-history-prompt" rows="2"></textarea></label>
+          <label class="prompt-label"><span>Compact prompt</span><textarea id="cfg-compact-prompt" rows="3"></textarea></label>
+        </section>
+      </div><!-- #tab-prompts -->
 
       <div id="modal-buttons">
         <button id="modal-cancel">Cancel</button>

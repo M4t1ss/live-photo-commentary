@@ -318,6 +318,154 @@ body {
   border-color: var(--accent);
 }
 
+/* Settings tabs */
+#modal-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: -4px;
+}
+
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #888;
+  padding: 6px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-bottom: -1px;
+  transition: color 0.15s;
+}
+
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-btn:hover:not(.active) { color: var(--text); }
+
+/* Promptset row */
+#promptset-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Custom combobox */
+#promptset-combo {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+}
+
+#cfg-promptset {
+  flex: 1;
+  width: auto !important;
+  min-width: 0;
+  border-radius: 4px 0 0 4px !important;
+  border-right: none !important;
+}
+
+#promptset-combo-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: #888;
+  border-radius: 0 4px 4px 0;
+  padding: 0 8px;
+  cursor: pointer;
+  font-size: 11px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+#promptset-combo-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+#promptset-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: var(--modal-bg);
+  border: 1px solid var(--accent);
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+  z-index: 300;
+  max-height: 180px;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 2px 0;
+}
+
+#promptset-dropdown li {
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+#promptset-dropdown li:hover { background: var(--border); }
+#promptset-dropdown li.combo-selected { color: var(--accent); }
+
+#promptset-btns {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+#promptset-btns button {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+#promptset-btns button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#promptset-btns button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Prompt field labels */
+.prompt-label {
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 4px !important;
+}
+
+.prompt-label > span {
+  font-size: 11px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+#tab-prompts textarea {
+  width: 100%;
+  resize: vertical;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+#tab-prompts textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 #modal-buttons {
   display: flex;
   justify-content: flex-end;
