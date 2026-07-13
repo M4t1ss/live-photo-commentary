@@ -336,9 +336,9 @@ async def websocket_endpoint(ws: WebSocket):
                 case "stop_cycle":
                     if pipeline is not None:
                         await pipeline.stop_loop()
-                case "take_screenshot":
+                case "frame_ready":
                     if pipeline is not None:
-                        pipeline.on_take_screenshot()
+                        pipeline.on_frame_ready(data.get("path", ""))
                 case "list_promptsets":
                     await _send({"type": "promptsets", "names": prompts.list_names()})
                 case "load_promptset":
