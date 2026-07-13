@@ -204,7 +204,7 @@ async def lifespan(app: FastAPI):
     if sys.platform == "win32":
         loop.set_exception_handler(_suppress_pipe_reset)
     pipeline = Pipeline()
-    pipeline.attach(loop, _send)
+    pipeline.attach(_send)
     asyncio.create_task(_init_models())
     yield
     pipeline.stop()

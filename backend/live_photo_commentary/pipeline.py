@@ -34,10 +34,8 @@ class Pipeline:
         threading.Thread(target=self._vlm_worker, daemon=True).start()
         threading.Thread(target=self._tts_worker, daemon=True).start()
 
-    def attach(self, loop: asyncio.AbstractEventLoop, broadcast_fn) -> None:
-        self._loop = loop
+    def attach(self, broadcast_fn) -> None:
         self._broadcast_fn = broadcast_fn
-        self._take_screenshot = asyncio.Event()
 
     async def trigger(self) -> None:
         from .screenshot import screenshot
@@ -54,7 +52,8 @@ class Pipeline:
         self._frame_path = new_path
         self._frame_slot = new_slot
 
-        await self._broadcast_fn({"type": "frame", "url": "/frame/current"})
+        if self._broadcast_fn:
+            await self._broadcast_fn({"type": "frame", "url": "/frame/current"})
 
         if prev_img is not None:
             cfg = config.get()
@@ -64,14 +63,16 @@ class Pipeline:
                     difference, img, prev_img, cfg.difference_measure
                 )
                 if diff < cfg.difference_threshold:
-                    await self._broadcast_fn({"type": "skipped", "diff": round(diff, 6)})
+                    if self._broadcast_fn:
+                        await self._broadcast_fn({"type": "skipped", "diff": round(diff, 6)})
                     self.on_take_screenshot()  # unblock the loop so it retries
                     return
 
         try:
             self._vlm_q.put_nowait((self._generation, img, prev_img))
         except queue.Full:
-            await self._broadcast_fn({"type": "busy", "message": "VLM busy, cycle skipped"})
+            if self._broadcast_fn:
+                await self._broadcast_fn({"type": "busy", "message": "VLM busy, cycle skipped"})
 
     @property
     def frame_path(self) -> Path | None:
@@ -84,7 +85,10 @@ class Pipeline:
         if self._auto_loop_running:
             return
         self._auto_loop_running = True
-        self._take_screenshot.clear()
+        self._loop = asyncio.get_running_loop()
+        self._take_screenshot = asyncio.Event()
+        if self._take_screenshot:
+            self._take_screenshot.clear()
         await self.trigger()
         self._auto_loop_task = asyncio.create_task(self._auto_loop())
 
@@ -96,19 +100,20 @@ class Pipeline:
             self._auto_loop_task = None
 
     def on_take_screenshot(self) -> None:
-        if self._take_screenshot:
-            self._take_screenshot.set()
+        if self._loop and self._take_screenshot:
+            self._loop.call_soon_threadsafe(self._take_screenshot.set)
 
     async def _auto_loop(self) -> None:
-        while self._auto_loop_running:
-            await self._take_screenshot.wait()
-            self._take_screenshot.clear()
-            if not self._auto_loop_running:
-                break
-            try:
-                await self.trigger()
-            except Exception as exc:
-                self._send({"type": "error", "message": f"Cycle error: {exc}"})
+        if self._loop and self._take_screenshot:
+            while self._auto_loop_running:
+                await self._take_screenshot.wait()
+                self._take_screenshot.clear()
+                if not self._auto_loop_running:
+                    break
+                try:
+                    await self.trigger()
+                except Exception as exc:
+                    self._send({"type": "error", "message": f"Cycle error: {exc}"})
 
     def _send(self, data: dict) -> None:
         if self._loop and self._broadcast_fn:
