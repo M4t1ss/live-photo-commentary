@@ -149,13 +149,24 @@ jobs:
       # Build the Tauri app.
       # --config injects the resources array only for production builds;
       # the base tauri.conf.json has an empty resources list so dev builds
-      # don't require the binary to be present.
+      # don't require the binary to be present. Linux gets its own overlay
+      # since screenshot.exe (WSL screenshot fallback) is only built there.
+      - name: Select bundle config
+        id: bundle-config
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            echo "path=src-tauri/tauri.bundle.linux.conf.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=src-tauri/tauri.bundle.conf.json" >> "$GITHUB_OUTPUT"
+          fi
+
       # UPGRADED: @v0 pinned to latest release to leverage Node 24 support
       - name: Build Tauri application
         uses: tauri-apps/tauri-action@v1
         with:
           tauriScript: cargo tauri
-          args: --config src-tauri/tauri.bundle.conf.json
+          args: --config ${{ steps.bundle-config.outputs.path }}
 
       # UPGRADED: v4 -> v5 removes Node 20 dependency
       - name: Upload installer artifact
