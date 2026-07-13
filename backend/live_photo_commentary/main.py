@@ -1,5 +1,6 @@
 import asyncio
 import json
+import yaml
 import logging
 import sys
 from pathlib import Path
@@ -62,6 +63,7 @@ _VLM_CATALOGUE = [
     {"provider": "local", "model_id": "google/gemma-3-4b-it"},
     {"provider": "local", "model_id": "google/gemma-3-12b-it"},
     {"provider": "local", "model_id": "google/gemma-4-E4B-it"},
+    {"provider": "local", "model_id": "google/gemma-4-E2B-it"},
     {"provider": "local", "model_id": "Qwen/Qwen2.5-VL-3B-Instruct"},
     {"provider": "local", "model_id": "Qwen/Qwen2.5-VL-7B-Instruct"},
     {"provider": "local", "model_id": "apple/FastVLM-0.5B"},
@@ -74,12 +76,14 @@ def _make_describer(fields=None, on_progress=None):
     cfg = config.get()
     extra = fields or {}
     if cfg.vlm_provider == "local":
-        model_id = cfg.vlm_model or "microsoft/Phi-4-multimodal-instruct"
+        model_id = cfg.vlm_model or "google/gemma-4-E2B-it"
         path = _model_local_dirs.get(model_id, model_id)
         from .local_describer import LocalDescriber
-        return LocalDescriber(model_id=path, on_progress=on_progress, **extra)
-    from .remote_describer import RemoteDescriber
-    return RemoteDescriber(provider=cfg.vlm_provider, model_id=cfg.vlm_model, **extra)
+        describer = LocalDescriber(model_id=path, on_progress=on_progress)
+    else:
+        from .remote_describer import RemoteDescriber
+        describer = RemoteDescriber(provider=cfg.vlm_provider, model_id=cfg.vlm_model)
+    return describer
 
 
 def _apply_promptset(name: str) -> None:
@@ -91,7 +95,6 @@ def _apply_promptset(name: str) -> None:
 
 
 def _make_synthesizer():
-    import json
     from .synthesizers.kokoro import KokoroSynthesizer
     raw = config.get().tts_voice
     try:
@@ -216,7 +219,7 @@ async def lifespan(app: FastAPI):
     if sys.platform == "win32":
         loop.set_exception_handler(_suppress_pipe_reset)
     pipeline = Pipeline()
-    pipeline.attach(loop, _send)
+    pipeline.attach(_send)
     asyncio.create_task(_init_models())
     yield
     pipeline.stop()
@@ -250,7 +253,6 @@ async def get_audio_chunk(index: int):
 
 @app.get("/model-config")
 async def get_model_config():
-    import yaml
     yaml_path = config.get().model_dir / "model.yaml"
     if not yaml_path.exists():
         return {}

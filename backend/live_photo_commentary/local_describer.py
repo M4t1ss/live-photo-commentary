@@ -11,20 +11,31 @@ import base64
 # flushes Python's FileFinder cache and forces a fresh readdir on the next
 # find_spec; if the file still isn't visible we wait up to 60 s and retry.
 if __import__('sys').platform == "win32":
-    import sys as _sys, importlib as _il, time as _time
-    for _i in range(120):
-        _il.invalidate_caches()
-        _s = _il.util.find_spec("torch")
-        if _s is not None and _s.origin is not None:
-            break
-        if _i == 0:
-            print("[lpc] waiting for torch/__init__.py to become visible…",
-                  flush=True, file=_sys.stderr)
-        _time.sleep(0.5)
-    else:
+    def _wait_for_torch():
+        import sys
+        import time
+        import importlib
+        import importlib.util
+
+        for i in range(120):
+            importlib.invalidate_caches()
+            try:
+                spec = importlib.util.find_spec("torch")
+                if spec is not None and spec.origin is not None:
+                    return
+            except Exception:
+                pass
+
+            if i == 0:
+                print("[lpc] waiting for torch/__init__.py to become visible…",
+                      flush=True, file=sys.stderr)
+            time.sleep(0.5)
+
         print("[lpc] gave up waiting for torch; import may fail",
-              flush=True, file=_sys.stderr)
-    del _sys, _il, _time, _s, _i
+              flush=True, file=sys.stderr)
+
+    _wait_for_torch()
+    del _wait_for_torch
 
 import torch
 from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer

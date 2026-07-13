@@ -2,6 +2,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+from PIL import Image
 
 import numpy as np
 
@@ -14,67 +15,74 @@ def _is_wsl():
         return False
 
 
-def _screenshot_with_mss(path=None):
-    with _mss.mss() as sct:
-        sct_img = sct.grab(sct.monitors[1])
+# Normally MSS is used
+class ScreenshotWithMSS:
+    def __init__(self):
+        import mss as _mss
+        self._sct = _mss.mss()
+
+    def __call__(self, path=None):
+        sct_img = self._sct.grab(self._sct.monitors[1])
         image = Image.frombytes("RGB", sct_img.size, sct_img.rgb)
-    if path is not None:
-        image.save(path)
-    return image
-
-
-def _get_screenshot_exe_path():
-    path = Path(__file__).parent.parent.parent / 'screenshot.exe'
-    if not path.is_file():
-        raise FileNotFoundError(f'screenshot.exe not found at {path}')
-    return path
-
-
-def _screenshot_with_exe(path=None):
-    exe_path = _get_screenshot_exe_path()
-
-    use_temp = path is None
-    if use_temp:
-        fd, temp_file = tempfile.mkstemp(suffix='.png')
-        os.close(fd)
-        out_path = Path(temp_file)
-    else:
-        out_path = Path(path)
-
-    try:
-        win_path = subprocess.run(
-            ['wslpath', '-w', str(out_path)],
-            capture_output=True, text=True, check=True
-        ).stdout.strip()
-
-        subprocess.run(
-            [str(exe_path), win_path],
-            capture_output=True, check=True, timeout=30
-        )
-
-        image = Image.open(out_path)
-        image.load()
+        if path is not None:
+            image.save(path)
         return image
 
-    except subprocess.TimeoutExpired:
-        raise RuntimeError('screenshot.exe timed out after 30 seconds')
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f'screenshot.exe failed: {e.stderr}')
-    finally:
+    def __del__(self):
+        if hasattr(self, '_sct') and self._sct is not None:
+            self._sct.close()
+
+
+# Only used on WSL
+class ScreenshotWithExe:
+    def __init__(self):
+        # Locate and validate the executable exactly once at instantiation
+        self._exe_path = Path(__file__).parent.parent.parent / 'screenshot.exe'
+        if not self._exe_path.is_file():
+            raise FileNotFoundError(f'screenshot.exe not found at {self._exe_path}')
+
+    def __call__(self, path=None):
+        use_temp = path is None
         if use_temp:
-            try:
-                out_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            fd, temp_file = tempfile.mkstemp(suffix='.png')
+            os.close(fd)
+            out_path = Path(temp_file)
+        else:
+            out_path = Path(path)
+
+        try:
+            # Convert paths for the environment layer
+            win_path = subprocess.run(
+                ['wslpath', '-w', str(out_path)],
+                capture_output=True, text=True, check=True
+            ).stdout.strip()
+
+            # Execute the pre-validated screenshot tool
+            subprocess.run(
+                [str(self._exe_path), win_path],
+                capture_output=True, check=True, timeout=30
+            )
+
+            image = Image.open(out_path)
+            image.load()
+            return image
+
+        except subprocess.TimeoutExpired:
+            raise RuntimeError('screenshot.exe timed out after 30 seconds')
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f'screenshot.exe failed: {e.stderr}')
+        finally:
+            if use_temp:
+                try:
+                    out_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 if _is_wsl():
-    from PIL import Image
-    screenshot = _screenshot_with_exe
+    screenshot = ScreenshotWithExe()
 else:
-    import mss as _mss
-    from PIL import Image
-    screenshot = _screenshot_with_mss
+    screenshot = ScreenshotWithMSS()
 
 
 _imagehash_measures = {'average_hash', 'phash', 'phash_simple', 'dhash', 'dhash_vertical', 'whash', 'colorhash'}
