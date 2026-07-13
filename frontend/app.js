@@ -257,6 +257,10 @@ function handleMessage(data) {
       }
       break;
 
+    case "take_screenshot":
+      if (running) takeScreenshot();
+      break;
+
     case "skipped":
       setPhase(`Skipped  Δ=${data.diff}`, "none");
       break;
@@ -395,8 +399,17 @@ function sendSpeechEnded() {
   const delayMs = (currentConfig.pre_screenshot_delay ?? 2.0) * 1000;
   setPhase("Screenshot in", "down", delayMs);
   setTimeout(() => {
-    if (running) send({ type: "take_screenshot" });
+    if (running) takeScreenshot();
   }, delayMs);
+}
+
+async function takeScreenshot() {
+  try {
+    const path = await invoke("take_screenshot");
+    send({ type: "frame_ready", path });
+  } catch (e) {
+    console.error("[screenshot]", e);
+  }
 }
 
 // --- Controls ---
@@ -423,7 +436,9 @@ startStopBtn.addEventListener("click", () => {
     setPhase("Screenshot in", "down", delayMs);
     _startCycleTimer = setTimeout(() => {
       _startCycleTimer = null;
-      if (running) send({ type: "start_cycle" });
+      if (!running) return;
+      send({ type: "start_cycle" });
+      takeScreenshot();
     }, delayMs);
   }
 });

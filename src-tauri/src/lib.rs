@@ -1,4 +1,5 @@
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_window_state::WindowExt;
@@ -67,6 +68,37 @@ fn restart_backend(
     let backend_dir = install.backend_dir.clone();
     state.process.kill();
     tauri::async_runtime::spawn(spawn_and_monitor_backend(app, port, uv, backend_dir, inner));
+}
+
+// ── Screenshot ───────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn take_screenshot(
+    app: tauri::AppHandle,
+    state: State<'_, ScreenshotState>,
+) -> Result<String, String> {
+    let slot = state.frame_slot.fetch_xor(1, Ordering::Relaxed);
+    let dest = state.frames_dir.join(format!("frame_{slot}.png"));
+
+    if state.is_wsl {
+        let exe = locate_screenshot_exe(&app);
+        let win_dest = wslpath_to_windows(&dest)?;
+        let status = Command::new(&exe)
+            .arg(&win_dest)
+            .status()
+            .map_err(|e| format!("screenshot.exe failed to start: {e}"))?;
+        if !status.success() {
+            return Err(format!("screenshot.exe exited with {:?}", status.code()));
+        }
+    } else {
+        use screenshots::Screen;
+        let screens = Screen::all().map_err(|e| format!("screen enumeration failed: {e}"))?;
+        let screen = screens.into_iter().next().ok_or("no screens found")?;
+        let image = screen.capture().map_err(|e| format!("capture failed: {e}"))?;
+        image.save(&dest).map_err(|e| format!("save failed: {e}"))?;
+    }
+
+    Ok(dest.to_string_lossy().into_owned())
 }
 
 // ── Port discovery ────────────────────────────────────────────────────────────
@@ -157,6 +189,45 @@ fn update_pyproject_for_cuda(backend_dir: &std::path::Path, cu_index: &str) -> s
 struct InstallState {
     uv_path: std::path::PathBuf,
     backend_dir: std::path::PathBuf,
+}
+
+struct ScreenshotState {
+    frames_dir: std::path::PathBuf,
+    frame_slot: AtomicUsize,
+    is_wsl: bool,
+}
+
+fn detect_wsl() -> bool {
+    std::fs::read_to_string("/proc/version")
+        .map(|v| v.to_lowercase().contains("microsoft"))
+        .unwrap_or(false)
+}
+
+fn locate_screenshot_exe(app: &tauri::AppHandle) -> std::path::PathBuf {
+    if cfg!(debug_assertions) {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("CARGO_MANIFEST_DIR has no parent")
+            .join("screenshot.exe")
+    } else {
+        app.path()
+            .resource_dir()
+            .expect("resource dir unavailable")
+            .join("resources")
+            .join("screenshot.exe")
+    }
+}
+
+fn wslpath_to_windows(path: &std::path::Path) -> Result<String, String> {
+    let out = Command::new("wslpath")
+        .arg("-w")
+        .arg(path)
+        .output()
+        .map_err(|e| format!("wslpath failed: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("wslpath error: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// Isolated directory for the CUDA venv — always in AppData, never the source
@@ -586,6 +657,7 @@ async fn spawn_and_monitor_backend(
     // Disable Python's output buffering so backend.log captures crashes that
     // happen before the process has a chance to flush its write buffer.
     cmd.env("PYTHONUNBUFFERED", "1");
+    cmd.env("LPC_FRAMES_DIR", backend_dir.join("frames"));
 
     // Point the backend at the bundled models directory if present.
     if let Ok(resource_dir) = handle.path().resource_dir() {
@@ -712,6 +784,14 @@ pub fn run() {
                 backend_dir: backend_dir.clone(),
             });
 
+            let frames_dir = backend_dir.join("frames");
+            let _ = std::fs::create_dir_all(&frames_dir);
+            app.manage(ScreenshotState {
+                frames_dir,
+                frame_slot: AtomicUsize::new(0),
+                is_wsl: detect_wsl(),
+            });
+
             // Pre-allocate BackendState with the chosen port; the child process
             // handle starts as None and is filled in once the background task
             // spawns the backend (after uv sync completes).
@@ -767,6 +847,7 @@ pub fn run() {
             get_backend_port,
             install_cuda_torch,
             restart_backend,
+            take_screenshot,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
