@@ -7,6 +7,7 @@ from .describer import (
     DEFAULT_FIRST_PROMPT,
     DEFAULT_HISTORY_PROMPT,
     DEFAULT_COMPACT_PROMPT,
+    TAGS_PLACEHOLDER,
 )
 
 FIELDS = ["system_prompt", "prompt", "first_prompt", "history_prompt", "compact_prompt"]
@@ -55,6 +56,17 @@ def save(name: str, fields: dict) -> None:
     data = {k: fields.get(k, "") for k in FIELDS}
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False, width=10000)
+
+
+def substitute_tags(fields: dict, tag_names: list[str]) -> dict:
+    """Replace TAGS_PLACEHOLDER in each field with the available emotion tags,
+    formatted as {tag} marks. "neutral" is always included."""
+    names = list(dict.fromkeys([*tag_names, "neutral"]))
+    tag_list = ", ".join(f"{{{name}}}" for name in names)
+    return {
+        k: v.replace(TAGS_PLACEHOLDER, tag_list) if isinstance(v, str) else v
+        for k, v in fields.items()
+    }
 
 
 def delete(name: str) -> None:

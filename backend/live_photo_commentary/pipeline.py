@@ -169,6 +169,10 @@ class Pipeline:
                         {"text": seg, "time": t}
                         for seg, t in zip(subtitle_segments, [0.0] + sub_times)
                     ]
+                    tags = [
+                        {"name": name, "time": round(t, 4)}
+                        for name, t in mark_timings if name != "sub"
+                    ]
                     self._send({
                         "type": "chunk",
                         "index": i,
@@ -176,6 +180,7 @@ class Pipeline:
                         "audio_url": f"/audio/chunk/{i}",
                         "phonemes": [[ph, round(t, 4)] for ph, t in chunk_phonemes],
                         "subtitles": subtitles,
+                        "tags": tags,
                     })
                 else:
                     self._send({"type": "tts_done"})

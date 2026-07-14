@@ -113,6 +113,10 @@ let _subtitles = null;
 let _subtitleIdx = 0;
 let _subtitleTimer = null;
 
+// Emotion tag scheduling state (tags persist across chunks of one speech act)
+let _tags = [];
+let _tagIdx = 0;
+
 function setSubtitleText(text) {
   subtitleEl.textContent = text;
   subtitlePanelEl.textContent = text;
@@ -124,17 +128,24 @@ function _clearSubtitleTimer() {
 
 function _startSubtitleTimer() {
   _clearSubtitleTimer();
-  if (!_subtitles || _subtitles.length <= 1) return;
+  if ((!_subtitles || _subtitles.length <= 1) && _tags.length === 0) return;
   _subtitleTimer = setInterval(() => {
-    if (!currentAudio || !_subtitles) return;
+    if (!currentAudio) return;
     const t = currentAudio.currentTime;
-    let idx = 0;
-    for (let i = _subtitles.length - 1; i > 0; i--) {
-      if (_subtitles[i].time <= t) { idx = i; break; }
+    if (_subtitles) {
+      let idx = 0;
+      for (let i = _subtitles.length - 1; i > 0; i--) {
+        if (_subtitles[i].time <= t) { idx = i; break; }
+      }
+      if (idx !== _subtitleIdx) {
+        _subtitleIdx = idx;
+        if (subtitlesVisible) setSubtitleText(_subtitles[idx].text);
+      }
     }
-    if (idx !== _subtitleIdx) {
-      _subtitleIdx = idx;
-      if (subtitlesVisible) setSubtitleText(_subtitles[idx].text);
+    // Emotion tags hold until replaced, so just apply each in order as its time passes.
+    while (_tagIdx < _tags.length && _tags[_tagIdx].time <= t) {
+      window.setEmotion?.(_tags[_tagIdx].name);
+      _tagIdx++;
     }
   }, 50);
 }
@@ -354,15 +365,19 @@ function resetAudio() {
   _clearSubtitleTimer();
   _subtitles = null;
   _subtitleIdx = 0;
+  _tags = [];
+  _tagIdx = 0;
   window.setLipSyncData?.([], null);
+  window.setEmotion?.(null);
 }
 
-function enqueueChunk({ audio_url, text, phonemes, subtitles }) {
+function enqueueChunk({ audio_url, text, phonemes, subtitles, tags }) {
   audioQueue.push({
     audio_url,
     text,
     timeline: buildTimeline(phonemes ?? []),
     subtitles: subtitles ?? [{ text, time: 0 }],
+    tags: tags ?? [],
   });
   if (!isPlaying) playNext();
 }
@@ -374,14 +389,19 @@ function playNext() {
     currentAudio = null;
     _subtitles = null;
     _subtitleIdx = 0;
+    _tags = [];
+    _tagIdx = 0;
     window.setLipSyncData?.([], null);
+    window.setEmotion?.(null);
     if (ttsAllReceived) sendSpeechEnded();
     return;
   }
   isPlaying = true;
-  const { audio_url, text, timeline, subtitles } = audioQueue.shift();
+  const { audio_url, text, timeline, subtitles, tags } = audioQueue.shift();
   _subtitles = subtitles;
   _subtitleIdx = 0;
+  _tags = tags;
+  _tagIdx = 0;
   if (subtitlesVisible) setSubtitleText(subtitles[0].text);
   const audio = new Audio(`http://127.0.0.1:${port}${audio_url}`);
   audio.volume = volume;
@@ -564,6 +584,15 @@ modalOk.addEventListener("click", () => {
   if (geminiKeyInput.value)     updates.gemini_api_key     = geminiKeyInput.value;
   if (openaiKeyInput.value)     updates.openai_api_key     = openaiKeyInput.value;
   if (elevenlabsKeyInput.value) updates.elevenlabs_api_key = elevenlabsKeyInput.value;
+
+  // Changing the VLM or TTS model tears down and rebuilds it on the backend,
+  // so a running cycle would hit a "no model configured" error mid-flight.
+  // Stop first (full UI reset included) so the change lands on an idle app.
+  const modelChanged =
+    updates.vlm_provider !== currentConfig.vlm_provider ||
+    updates.vlm_model !== currentConfig.vlm_model ||
+    updates.tts_voice !== currentConfig.tts_voice;
+  if (modelChanged) stopCycle();
 
   setVolume(parseFloat(volumeInput.value), true);
 

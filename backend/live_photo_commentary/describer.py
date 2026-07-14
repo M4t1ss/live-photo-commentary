@@ -2,11 +2,16 @@ import io
 from abc import ABC, abstractmethod
 
 
+TAGS_PLACEHOLDER = "<|tags|>"
+
 DEFAULT_ENDING = (
     "Do not at all mention any specific layout elements or tools that may be visible on the screen, "
     "such as overlays, gridlines or sliders. To adjust intonation, please add dedicated punctuation like ; : , . ! ? … ( ) " " "
     "For example, to emphasize a word or a phrase, surround it with \"quotation marks\". "
-    "However, since the text will undergo speech synthesis, do not use anything unpronounceable, like emojis."
+    "However, since the text will undergo speech synthesis, do not use anything unpronounceable, like emojis. "
+    "You can also convey emotion by inserting one of these tags, written exactly as shown including the braces, "
+    "at the point where the emotion should begin: " + TAGS_PLACEHOLDER + ". "
+    "The emotion holds until you insert a different tag; insert {neutral} to return to a neutral tone."
 )
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -104,7 +109,10 @@ class Describer(ABC):
         else:
             user_prompt = self.first_prompt
 
+        print(f"[lpc] describer system_prompt:\n{self.system_prompt}", flush=True)
+        print(f"[lpc] describer user_prompt:\n{user_prompt}", flush=True)
         response_text = self.prompt_model(user_prompt, images, system_prompt=self.system_prompt)
+        print(f"[lpc] describer response:\n{response_text}", flush=True)
         self.history.append(response_text)
         return response_text
 

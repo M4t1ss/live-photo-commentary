@@ -29,6 +29,7 @@ let jawRestAngle = 0;
 let minJawAngle  = 0;
 let maxJawAngle  = 0.15;
 let _visemeMap   = {};   // phoneme → {morph: value, ...}; used by showPhoneme
+let _tagsConfig  = {};   // tag name → {morph: value, ...}; used by setEmotion
 
 // Scroll-wheel zoom — 0 = full body, 1 = head shot.
 let zoomT = 0;
@@ -157,11 +158,15 @@ class BlinkDriver {
   }
 }
 
-// Stub — drives emotion-based morph shapes. Registered with 'add' blend so
-// emotion contributions stack on top of lip sync without zeroing it.
+// Drives emotion tag morph shapes. Registered with 'add' blend so emotion
+// contributions stack on top of lip sync without zeroing it. The active tag's
+// morphs hold steady (no envelope) until replaced by the next tag or cleared.
 class EmotionDriver {
-  tick(_delta) { return { morphs: {} }; }
-  setEmotion(_emotion) {}
+  constructor() {
+    this._morphs = {};
+  }
+  tick(_delta) { return { morphs: this._morphs }; }
+  setMorphs(morphs) { this._morphs = morphs; }
 }
 
 // ── Animation compositor ──────────────────────────────────────────────────────
@@ -237,13 +242,16 @@ window.setLipSyncData = function (timeline, audio) {
   lipSyncDriver.setData(timeline, audio);
 };
 
-window.setEmotion = function (emotion) {
-  emotionDriver.setEmotion(emotion);
+// Called by app.js when a {tag} mark's time is reached, or with null/undefined
+// to clear back to no emotion override (e.g. when speech ends).
+window.setEmotion = function (tagName) {
+  emotionDriver.setMorphs(tagName ? (_tagsConfig[tagName] ?? {}) : {});
 };
 
 // Called by app.js after it resolves the backend port and fetches /model-config.
 window.initAvatar = function (config, port) {
   _visemeMap  = config.visemeMap   ?? {};
+  _tagsConfig = config.tags        ?? {};
   jawAxis     = config.jawAxis     ?? 'x';
   minJawAngle = config.minJawAngle ?? 0;
   maxJawAngle = config.maxJawAngle ?? 0.15;

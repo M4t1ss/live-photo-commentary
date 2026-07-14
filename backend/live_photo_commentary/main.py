@@ -72,9 +72,8 @@ _VLM_CATALOGUE = [
 ]
 
 
-def _make_describer(fields=None, on_progress=None):
+def _make_describer(on_progress=None):
     cfg = config.get()
-    extra = fields or {}
     if cfg.vlm_provider == "local":
         model_id = cfg.vlm_model or "google/gemma-4-E2B-it"
         path = _model_local_dirs.get(model_id, model_id)
@@ -86,10 +85,19 @@ def _make_describer(fields=None, on_progress=None):
     return describer
 
 
+def _load_tag_names() -> list[str]:
+    yaml_path = config.get().model_dir / "model.yaml"
+    if not yaml_path.exists():
+        return []
+    with open(yaml_path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    return list(raw.get("tags", {}).keys())
+
+
 def _apply_promptset(name: str) -> None:
     """Update the live describer's prompt fields without reloading the model."""
     if pipeline is not None and pipeline.describer is not None:
-        fields = prompts.load(name)
+        fields = prompts.substitute_tags(prompts.load(name), _load_tag_names())
         for k, v in fields.items():
             setattr(pipeline.describer, k, v)
 
@@ -164,8 +172,8 @@ async def _reinit_describer() -> None:
         if cfg.vlm_provider == "local":
             model_id = cfg.vlm_model or "microsoft/Phi-4-multimodal-instruct"
             _model_local_dirs[model_id] = await _download_with_progress(model_id)
-        fields = prompts.load(config.get().active_promptset)
-        pipeline.describer = await asyncio.to_thread(_make_describer, fields, _progress)
+        pipeline.describer = await asyncio.to_thread(_make_describer, _progress)
+        _apply_promptset(config.get().active_promptset)
         log.info("Describer ready")
         _vlm_ready = True
         await _send({"type": "model_ready", "model": "vlm"})
@@ -266,6 +274,7 @@ async def get_model_config():
         "maxEnvelopeDuration": raw.get("max_envelope_duration", 0.3),
         "visemeMap": raw.get("viseme_map", {}),
         "blink": raw.get("blink"),
+        "tags": raw.get("tags", {}),
     }
 
 
