@@ -305,6 +305,8 @@ async def get_model_config():
         "visemeMap": raw.get("viseme_map", {}),
         "blink": raw.get("blink"),
         "tags": raw.get("tags", {}),
+        "idleAnimation": raw.get("animations", {}).get("idle"),
+        "talkingAnimation": raw.get("animations", {}).get("talking"),
     }
 
 

@@ -20,6 +20,7 @@ scene.add(fillLight);
 
 const clock = new THREE.Clock();
 let mixer = null;
+let animDriver = null;
 
 // Model state — populated by initAvatar after the GLB loads.
 const morphMeshes = new Map();  // Map<Mesh, morphTargetDictionary>
@@ -189,6 +190,41 @@ class EmotionDriver {
   }
 }
 
+// Crossfades between an idle and a talking body animation clip on the mixer.
+// Both clips loop continuously; setTalking() smoothly fades weight from one
+// to the other rather than snapping, using three.js's own fadeIn/fadeOut.
+class AnimationDriver {
+  constructor(mixer, idleClip, talkingClip, blendDuration = 0.4) {
+    this._blendDuration = blendDuration;
+    this._talking = false;
+
+    this._idleAction    = idleClip    ? mixer.clipAction(idleClip)    : null;
+    this._talkingAction = talkingClip ? mixer.clipAction(talkingClip) : null;
+
+    if (this._idleAction) {
+      this._idleAction.setLoop(THREE.LoopRepeat, Infinity);
+      this._idleAction.play();
+    }
+    if (this._talkingAction) {
+      this._talkingAction.setLoop(THREE.LoopRepeat, Infinity);
+      this._talkingAction.setEffectiveWeight(0);
+      this._talkingAction.play();
+    }
+  }
+
+  setTalking(talking) {
+    if (talking === this._talking) return;
+    this._talking = talking;
+    if (!this._idleAction || !this._talkingAction) return;
+
+    const [from, to] = talking
+      ? [this._idleAction, this._talkingAction]
+      : [this._talkingAction, this._idleAction];
+    from.fadeOut(this._blendDuration);
+    to.reset().setEffectiveWeight(1).fadeIn(this._blendDuration).play();
+  }
+}
+
 // ── Animation compositor ──────────────────────────────────────────────────────
 // Collects contributions from all registered drivers each frame, merges them,
 // and performs a single write to mesh.morphTargetInfluences + jaw bone.
@@ -260,6 +296,7 @@ const emotionDriver = compositor.register('emotion', new EmotionDriver(), 'add')
 // Called by app.js when a new audio chunk starts playing.
 window.setLipSyncData = function (timeline, audio) {
   lipSyncDriver.setData(timeline, audio);
+  animDriver?.setTalking(!!audio);
 };
 
 // Called by app.js when a {tag} mark's time is reached, or with null/undefined
@@ -305,7 +342,11 @@ window.initAvatar = function (config, port) {
 
     if (gltf.animations.length > 0) {
       mixer = new THREE.AnimationMixer(model);
-      // mixer.clipAction(gltf.animations[0]).play();
+      const idleClip    = THREE.AnimationClip.findByName(gltf.animations, config.idleAnimation ?? 'Idle_Loop RT');
+      const talkingClip = THREE.AnimationClip.findByName(gltf.animations, config.talkingAnimation ?? 'Idle_Talking_Loop RT');
+      if (!idleClip) console.warn(`[avatar] idle animation "${config.idleAnimation}" not found in model`);
+      if (!talkingClip) console.warn(`[avatar] talking animation "${config.talkingAnimation}" not found in model`);
+      animDriver = new AnimationDriver(mixer, idleClip, talkingClip);
     }
 
     const jawBoneName = config.jawBone ?? 'CC_Base_JawRoot';
