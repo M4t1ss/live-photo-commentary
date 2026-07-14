@@ -31,9 +31,22 @@ class Pipeline:
         self._generation: int = 0
         self._vlm_q: queue.Queue = queue.Queue(maxsize=1)
         self._tts_q: queue.Queue = queue.Queue(maxsize=1)
+        self._describer_lock = threading.Lock()
 
         threading.Thread(target=self._vlm_worker, daemon=True).start()
         threading.Thread(target=self._tts_worker, daemon=True).start()
+
+    def take_describer_for_reinit(self):
+        """Atomically detach the current describer so it's safe to free.
+
+        Uses the same lock the VLM worker holds while calling the describer, so
+        this blocks until any in-flight generation has actually finished before
+        handing the (now-detached) describer back to the caller for cleanup.
+        """
+        with self._describer_lock:
+            old = self.describer
+            self.describer = None
+            return old
 
     def attach(self, broadcast_fn) -> None:
         self._broadcast_fn = broadcast_fn
@@ -125,16 +138,19 @@ class Pipeline:
             gen, curr_img, prev_img = item
             if gen != self._generation:
                 continue
-            describer = self.describer
-            if describer is None:
-                self._send({"type": "error", "message": "No VLM configured"})
-                continue
-            describer.max_history_size = config.get().max_history_size
-            try:
-                text = describer(curr_img, prev_img)
-            except Exception as exc:
-                self._send({"type": "error", "message": f"VLM error: {exc}"})
-                continue
+            with self._describer_lock:
+                describer = self.describer
+                if describer is None:
+                    self._send({"type": "error", "message": "No VLM configured"})
+                    continue
+                describer.max_history_size = config.get().max_history_size
+                try:
+                    text = describer(curr_img, prev_img)
+                except Exception as exc:
+                    self._send({"type": "error", "message": f"VLM error: {exc}"})
+                    continue
+                finally:
+                    describer = None
             if gen != self._generation:
                 continue
             try:

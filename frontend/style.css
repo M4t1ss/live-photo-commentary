@@ -525,3 +525,13 @@ body {
 @keyframes splash-spin {
   to { transform: rotate(360deg); }
 }
+#splash-restart-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+#splash-restart-btn:hover { border-color: var(--accent); color: var(--accent); }

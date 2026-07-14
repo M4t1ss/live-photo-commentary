@@ -33,6 +33,7 @@ const cudaInstallBtn     = document.getElementById("cuda-install-btn");
 const cudaDismissBtn     = document.getElementById("cuda-dismiss-btn");
 const splashEl           = document.getElementById("splash");
 const splashStatusEl     = document.getElementById("splash-status");
+const splashRestartBtn   = document.getElementById("splash-restart-btn");
 const leftPanelEl        = document.getElementById("left-panel");
 const subtitlePanelEl    = document.getElementById("subtitle-panel");
 const subtitleRowDivider = document.getElementById("subtitle-row-divider");
@@ -703,6 +704,12 @@ cudaDismissBtn.addEventListener("click", () => {
   cudaBanner.classList.add("hidden");
 });
 
+splashRestartBtn.addEventListener("click", () => {
+  splashRestartBtn.classList.add("hidden");
+  setPhase("Restarting…", "up");
+  invoke("restart_backend");
+});
+
 // --- Init ---
 async function main() {
   setPhase("Starting up…", "up");
@@ -712,13 +719,14 @@ async function main() {
   // invoke is still pending.
   await listen("setup_progress", ({ payload }) => setPhase(payload, "up"));
   await listen("backend_crashed", ({ payload }) => {
-    dismissSplash();
     setRunning(false);
     configReceived = false;
     modelsReceived = false;
     backendReady   = false;
     checkReady();
+    showSplash();
     setPhase(payload || "Backend crashed", "none");
+    splashRestartBtn.classList.remove("hidden");
   });
 
   // cuda_upgrade_available fires right after uv sync (before uvicorn even

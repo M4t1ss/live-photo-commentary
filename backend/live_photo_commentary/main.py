@@ -72,6 +72,26 @@ _VLM_CATALOGUE = [
 ]
 
 
+def _free_describer(describer) -> None:
+    """Drop a describer's model/processor and force the GPU memory to be released
+    before the next model loads, since accelerate's automatic device placement can
+    otherwise offload part of the new model to cpu/disk if it still sees the old
+    model's memory as in use."""
+    if describer is None:
+        return
+    for attr in ("model", "processor", "tokenizer"):
+        if hasattr(describer, attr):
+            setattr(describer, attr, None)
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
 def _make_describer(on_progress=None):
     cfg = config.get()
     if cfg.vlm_provider == "local":
@@ -157,12 +177,22 @@ async def _download_with_progress(model_id: str) -> str:
 async def _reinit_describer() -> None:
     global _vlm_ready
     assert pipeline is not None
-    pipeline.describer = None
     _model_errors.pop("vlm", None)
     _vlm_ready = False
     await _send({"type": "model_loading", "model": "vlm"})
     await _send_ready_state()
     try:
+        # Detach the current describer. This blocks (off the event loop thread)
+        # until any in-flight generation using it has actually finished, then
+        # frees it, so the new model never loads while the old one is still
+        # holding GPU memory (see take_describer_for_reinit / _free_describer).
+        if pipeline.describer is not None:
+            await _send({"type": "load_progress", "message": "Waiting for current generation to finish…"})
+        old_describer = await asyncio.to_thread(pipeline.take_describer_for_reinit)
+        if old_describer is not None:
+            await _send({"type": "load_progress", "message": "Releasing previous model…"})
+            await asyncio.to_thread(_free_describer, old_describer)
+
         cfg = config.get()
         loop = asyncio.get_running_loop()
 
