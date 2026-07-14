@@ -13,7 +13,10 @@ DEFAULT_ENDING = (
     "chosen from: " + TAGS_PLACEHOLDER + ". Place each tag exactly where your feeling shifts, even mid-sentence, "
     "for example: \"I wonder what that is. Is it... {surprised}a flower? {joy}I always liked flowers!\" "
     "A tag's mood holds until the next tag appears; insert {neutral} to return to a neutral tone. "
-    "The tag is a silent stage direction: never mention, describe, or explain it, just place it."
+    "The tag is a silent stage direction: never mention, describe, or explain it, just place it. "
+    "Never let a tag fill a grammatical slot in your sentence, such as right after \"I feel\", \"feeling\", "
+    "or \"with a sense of\" where a word is expected; a tag must sit between complete clauses or thoughts, "
+    "not mid-phrase where a word belongs."
 )
 
 DEFAULT_SYSTEM_PROMPT = (
