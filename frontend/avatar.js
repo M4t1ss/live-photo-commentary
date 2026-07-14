@@ -30,6 +30,7 @@ let minJawAngle  = 0;
 let maxJawAngle  = 0.15;
 let _visemeMap   = {};   // phoneme → {morph: value, ...}; used by showPhoneme
 let _tagsConfig  = {};   // tag name → {morph: value, ...}; used by setEmotion
+let _emotionRampDuration = 0.3;  // seconds for a full 0→1 emotion sweep; reuses maxEnvelopeDuration
 
 // Scroll-wheel zoom — 0 = full body, 1 = head shot.
 let zoomT = 0;
@@ -159,14 +160,33 @@ class BlinkDriver {
 }
 
 // Drives emotion tag morph shapes. Registered with 'add' blend so emotion
-// contributions stack on top of lip sync without zeroing it. The active tag's
-// morphs hold steady (no envelope) until replaced by the next tag or cleared.
+// contributions stack on top of lip sync without zeroing it. Values ramp
+// linearly toward the active tag's target instead of snapping, at the same
+// rate as the lip sync envelope (a full 0→1 sweep takes _emotionRampDuration).
 class EmotionDriver {
   constructor() {
-    this._morphs = {};
+    this._current = {};   // morph name → current (animated) value
+    this._target  = {};   // morph name → target value from the active tag
   }
-  tick(_delta) { return { morphs: this._morphs }; }
-  setMorphs(morphs) { this._morphs = morphs; }
+
+  setMorphs(morphs) {
+    this._target = morphs ?? {};
+  }
+
+  tick(delta) {
+    const step = _emotionRampDuration > 0 ? delta / _emotionRampDuration : Infinity;
+    const keys = new Set([...Object.keys(this._current), ...Object.keys(this._target)]);
+    for (const key of keys) {
+      const from = this._current[key] ?? 0;
+      const to   = this._target[key] ?? 0;
+      if (from === to) continue;
+      const diff = to - from;
+      const next = Math.abs(diff) <= step ? to : from + Math.sign(diff) * step;
+      if (next === 0) delete this._current[key];
+      else this._current[key] = next;
+    }
+    return { morphs: this._current };
+  }
 }
 
 // ── Animation compositor ──────────────────────────────────────────────────────
@@ -244,8 +264,11 @@ window.setLipSyncData = function (timeline, audio) {
 
 // Called by app.js when a {tag} mark's time is reached, or with null/undefined
 // to clear back to no emotion override (e.g. when speech ends).
-window.setEmotion = function (tagName) {
-  emotionDriver.setMorphs(tagName ? (_tagsConfig[tagName] ?? {}) : {});
+// A plain object is also accepted (e.g. from the console while tuning
+// model.yaml) and used as the morph definition directly, bypassing tags config.
+window.setEmotion = function (tagOrMorphs) {
+  const morphs = typeof tagOrMorphs === 'string' ? (_tagsConfig[tagOrMorphs] ?? {}) : (tagOrMorphs ?? {});
+  emotionDriver.setMorphs(morphs);
 };
 
 // Called by app.js after it resolves the backend port and fetches /model-config.
@@ -255,6 +278,7 @@ window.initAvatar = function (config, port) {
   jawAxis     = config.jawAxis     ?? 'x';
   minJawAngle = config.minJawAngle ?? 0;
   maxJawAngle = config.maxJawAngle ?? 0.15;
+  _emotionRampDuration = config.maxEnvelopeDuration ?? 0.3;
 
   if (config.blink) {
     compositor.register('blink', new BlinkDriver(config.blink), 'override');
