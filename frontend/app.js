@@ -429,7 +429,8 @@ async function takeScreenshot() {
     const path = await invoke("take_screenshot");
     send({ type: "frame_ready", path });
   } catch (e) {
-    console.error("[screenshot]", e);
+    console.error("[screenshot] take_screenshot failed:", e);
+    setPhase(`Error: screenshot failed: ${e}`, "none");
   }
 }
 

@@ -65,9 +65,15 @@ fn restart_backend(
     let port = state.port;
     let inner = Arc::clone(&state.process.inner);
     let uv = install.uv_path.clone();
-    let backend_dir = install.backend_dir.clone();
     state.process.kill();
-    tauri::async_runtime::spawn(spawn_and_monitor_backend(app, port, uv, backend_dir, inner));
+    tauri::async_runtime::spawn(async move {
+        // Re-run setup (which retries `uv sync` if `.venv` is missing or
+        // incomplete) rather than assuming the previous install is intact —
+        // a crashed backend often means the venv itself is broken.
+        if let Some(backend_dir) = resolve_backend_dir(&app, &uv).await {
+            spawn_and_monitor_backend(app, port, uv, backend_dir, inner).await;
+        }
+    });
 }
 
 // ── Screenshot ───────────────────────────────────────────────────────────────
@@ -80,25 +86,31 @@ fn take_screenshot(
     let slot = state.frame_slot.fetch_xor(1, Ordering::Relaxed);
     let dest = state.frames_dir.join(format!("frame_{slot}.png"));
 
-    if state.is_wsl {
-        let exe = locate_screenshot_exe(&app);
-        let win_dest = wslpath_to_windows(&dest)?;
-        let status = Command::new(&exe)
-            .arg(&win_dest)
-            .status()
-            .map_err(|e| format!("screenshot.exe failed to start: {e}"))?;
-        if !status.success() {
-            return Err(format!("screenshot.exe exited with {:?}", status.code()));
+    let result = (|| -> Result<String, String> {
+        if state.is_wsl {
+            let exe = locate_screenshot_exe(&app);
+            let win_dest = wslpath_to_windows(&dest)?;
+            let status = Command::new(&exe)
+                .arg(&win_dest)
+                .status()
+                .map_err(|e| format!("screenshot.exe failed to start: {e}"))?;
+            if !status.success() {
+                return Err(format!("screenshot.exe exited with {:?}", status.code()));
+            }
+        } else {
+            use screenshots::Screen;
+            let screens = Screen::all().map_err(|e| format!("screen enumeration failed: {e}"))?;
+            let screen = screens.into_iter().next().ok_or("no screens found")?;
+            let image = screen.capture().map_err(|e| format!("capture failed: {e}"))?;
+            image.save(&dest).map_err(|e| format!("save failed: {e}"))?;
         }
-    } else {
-        use screenshots::Screen;
-        let screens = Screen::all().map_err(|e| format!("screen enumeration failed: {e}"))?;
-        let screen = screens.into_iter().next().ok_or("no screens found")?;
-        let image = screen.capture().map_err(|e| format!("capture failed: {e}"))?;
-        image.save(&dest).map_err(|e| format!("save failed: {e}"))?;
-    }
+        Ok(dest.to_string_lossy().into_owned())
+    })();
 
-    Ok(dest.to_string_lossy().into_owned())
+    if let Err(msg) = &result {
+        log::error!("take_screenshot (slot {slot}) failed: {msg}");
+    }
+    result
 }
 
 // ── Port discovery ────────────────────────────────────────────────────────────
@@ -575,10 +587,29 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> Result<std::pa
         match sync_cmd.status() {
             Ok(s) if s.success() => log::info!("Python environment ready."),
             Ok(s) => {
-                log::error!("`uv sync` failed (exit code {:?})", s.code());
                 // Remove the partial venv so the next launch retries rather
                 // than silently using an incomplete environment.
                 let _ = std::fs::remove_dir_all(backend_dir.join(".venv"));
+                // Also clear the managed Python cache: a corrupt interpreter
+                // (e.g. an interrupted extraction) makes `uv sync` fail with
+                // "Could not find a suitable Python executable" every time,
+                // since uv finds and reuses the broken install without
+                // re-validating it. Removing it forces a clean re-download
+                // on the next attempt instead of looping on the same error.
+                #[cfg(target_os = "windows")]
+                if let Ok(local) = std::env::var("LOCALAPPDATA") {
+                    let py_dir = std::path::Path::new(&local).join("uv").join("python");
+                    log::info!("Clearing managed Python cache at {} …", py_dir.display());
+                    let _ = std::fs::remove_dir_all(py_dir);
+                }
+                let msg = format!(
+                    "Setup failed: `uv sync` failed (exit code {:?}). See {}",
+                    s.code(),
+                    backend_dir.join("uv-sync.log").display()
+                );
+                log::error!("{msg}");
+                let _ = app.emit("setup_progress", &msg);
+                return Err(msg);
             }
             Err(e) => {
                 let hint = av_blocked_hint(&e).map(|h| format!(" {h}")).unwrap_or_default();
@@ -592,6 +623,25 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> Result<std::pa
     }
 
     Ok(backend_dir)
+}
+
+/// Runs `setup_backend` (which may run `uv sync`) on a blocking thread and
+/// returns the resulting directory, or `None` if setup failed — in which
+/// case `backend_crashed` has already been emitted.
+async fn resolve_backend_dir(
+    handle: &tauri::AppHandle,
+    uv: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let h = handle.clone();
+    let uv_bg = uv.to_path_buf();
+    match tokio::task::spawn_blocking(move || setup_backend(&h, &uv_bg)).await {
+        Ok(Ok(dir)) => Some(dir),
+        Ok(Err(msg)) => {
+            let _ = handle.emit("backend_crashed", msg);
+            None
+        }
+        Err(_) => Some(get_backend_dir(handle)),
+    }
 }
 
 // ── Health polling ────────────────────────────────────────────────────────────
@@ -809,19 +859,9 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 // setup_backend may run `uv sync`, which can take minutes on
                 // first launch — must not run on the event loop thread.
-                let h = handle.clone();
-                let uv_bg = uv.clone();
-                let backend_dir = match tokio::task::spawn_blocking(move || {
-                    setup_backend(&h, &uv_bg)
-                })
-                .await
-                {
-                    Ok(Ok(dir)) => dir,
-                    Ok(Err(msg)) => {
-                        let _ = handle.emit("backend_crashed", msg);
-                        return;
-                    }
-                    Err(_) => get_backend_dir(&handle),
+                let backend_dir = match resolve_backend_dir(&handle, &uv).await {
+                    Some(dir) => dir,
+                    None => return,
                 };
 
                 // CUDA upgrade detection — non-macOS only.
