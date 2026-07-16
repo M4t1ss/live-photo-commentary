@@ -381,6 +381,63 @@ fn av_blocked_hint(e: &std::io::Error) -> Option<&'static str> {
     None
 }
 
+/// Renames broken managed Python installations so uv skips them and downloads
+/// a clean copy on the next sync attempt.
+///
+/// A healthy install has `Lib/` (install_only format) or a `python3*.zip`
+/// alongside `python.exe`.  If neither exists the extraction was interrupted
+/// (e.g. Defender scanned files mid-write) and the install is unusable.
+///
+/// `std::fs::rename` succeeds even when DLL files inside the directory are
+/// locked by a running process, unlike `remove_dir_all` which returns
+/// ERROR_ACCESS_DENIED on locked files.  Renaming the directory makes uv
+/// treat it as absent and triggers a fresh download on the next launch.
+#[cfg(target_os = "windows")]
+fn quarantine_broken_python_installs(python_dir: &std::path::Path) {
+    let entries = match std::fs::read_dir(python_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !path.is_dir()
+            || !name_str.starts_with("cpython-")
+            || name_str.contains("-broken")
+        {
+            continue;
+        }
+        if !path.join("python.exe").exists() {
+            continue;
+        }
+        let has_lib = path.join("Lib").exists();
+        let has_stdlib_zip = std::fs::read_dir(&path)
+            .ok()
+            .map(|d| {
+                d.flatten().any(|e| {
+                    let n = e.file_name();
+                    let s = n.to_string_lossy();
+                    s.starts_with("python3") && s.ends_with(".zip")
+                })
+            })
+            .unwrap_or(false);
+        if !has_lib && !has_stdlib_zip {
+            let broken_name = format!("{}-broken", name_str);
+            let broken = python_dir.join(&broken_name);
+            log::warn!(
+                "Python install at {} is missing stdlib (no Lib/ or python3*.zip) — \
+                 renaming to {} so uv downloads a clean copy on the next launch.",
+                path.display(),
+                broken_name,
+            );
+            if let Err(e) = std::fs::rename(&path, &broken) {
+                log::error!("Failed to quarantine broken Python install: {e}");
+            }
+        }
+    }
+}
+
 /// Returns a hint string when a process exits very shortly after spawning.
 /// An immediate exit is a common pattern when AV software terminates a
 /// process as it launches.
@@ -554,6 +611,15 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> Result<std::pa
             }
         }
 
+        // Quarantine any broken Python installs before sync so uv downloads a
+        // clean copy instead of looping on a corrupt interpreter.  Rename
+        // works even when DLL files are held open by a running process.
+        #[cfg(target_os = "windows")]
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let py_dir = std::path::Path::new(&local).join("uv").join("python");
+            quarantine_broken_python_installs(&py_dir);
+        }
+
         log::info!("Running `uv sync` in {} …", backend_dir.display());
         let _ = app.emit("setup_progress", "Setting up Python environment…");
 
@@ -590,17 +656,13 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> Result<std::pa
                 // Remove the partial venv so the next launch retries rather
                 // than silently using an incomplete environment.
                 let _ = std::fs::remove_dir_all(backend_dir.join(".venv"));
-                // Also clear the managed Python cache: a corrupt interpreter
-                // (e.g. an interrupted extraction) makes `uv sync` fail with
-                // "Could not find a suitable Python executable" every time,
-                // since uv finds and reuses the broken install without
-                // re-validating it. Removing it forces a clean re-download
-                // on the next attempt instead of looping on the same error.
+                // Quarantine the broken Python install (if any) so the next
+                // launch downloads a fresh copy.  `remove_dir_all` silently
+                // fails when DLL files are locked; rename works in that case.
                 #[cfg(target_os = "windows")]
                 if let Ok(local) = std::env::var("LOCALAPPDATA") {
                     let py_dir = std::path::Path::new(&local).join("uv").join("python");
-                    log::info!("Clearing managed Python cache at {} …", py_dir.display());
-                    let _ = std::fs::remove_dir_all(py_dir);
+                    quarantine_broken_python_installs(&py_dir);
                 }
                 let msg = format!(
                     "Setup failed: `uv sync` failed (exit code {:?}). See {}",

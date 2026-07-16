@@ -7,6 +7,10 @@ from pathlib import Path
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    # Piped stdout/stderr fall back to the legacy console codepage (e.g. cp932),
+    # which can't encode arbitrary VLM output (non-Latin scripts, emoji, etc.).
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from contextlib import asynccontextmanager
 
