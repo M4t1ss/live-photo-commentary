@@ -217,6 +217,7 @@ function connectWebSocket() {
     setRunning(false);
     checkReady();
     setPhase("Initializing…", "up");
+    initAvatarOnce();
   });
 
   ws.addEventListener("message", (event) => {
@@ -288,6 +289,9 @@ function handleMessage(data) {
 
     case "ready_state":
       backendReady = data.ready;
+      if (typeof data.running === "boolean" && data.running !== running) {
+        setRunning(data.running);
+      }
       checkReady();
       break;
 
@@ -754,18 +758,20 @@ async function main() {
     cudaDismissBtn.disabled = false;
   });
 
-  // Fetch model config and init avatar only once the backend is confirmed
-  // ready. Registering before invoke("get_backend_port") ensures the event
-  // is never missed even when the backend starts very quickly.
-  const unlistenReady = await listen("backend_ready", async () => {
-    unlistenReady();
-    const modelCfg = await fetch(`http://127.0.0.1:${port}/model-config`).then(r => r.json()).catch(() => ({}));
-    window.initLipSync?.(modelCfg);
-    window.initAvatar?.(modelCfg, port);
-  });
-
   port = await invoke("get_backend_port");
   connectWebSocket();
+}
+
+// Fetch model config and init avatar once the WebSocket confirms the backend
+// is up. Guarded to run only once — a WS reconnect (e.g. after a network
+// blip) shouldn't reload the avatar model.
+let _avatarInitStarted = false;
+async function initAvatarOnce() {
+  if (_avatarInitStarted) return;
+  _avatarInitStarted = true;
+  const modelCfg = await fetch(`http://127.0.0.1:${port}/model-config`).then(r => r.json()).catch(() => ({}));
+  window.initLipSync?.(modelCfg);
+  window.initAvatar?.(modelCfg, port);
 }
 
 main();

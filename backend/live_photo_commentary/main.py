@@ -49,6 +49,7 @@ async def _send_ready_state() -> None:
         "ready": _vlm_ready and _tts_ready,
         "vlm": _vlm_ready,
         "tts": _tts_ready,
+        "running": pipeline.running if pipeline is not None else False,
     })
 
 
@@ -307,6 +308,7 @@ async def get_model_config():
         "tags": raw.get("tags", {}),
         "idleAnimation": raw.get("animations", {}).get("idle"),
         "talkingAnimation": raw.get("animations", {}).get("talking"),
+        "lighting": raw.get("lighting"),
     }
 
 

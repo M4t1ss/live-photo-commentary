@@ -709,7 +709,10 @@ async fn spawn_and_monitor_backend(
     cmd.env("PYTHONUNBUFFERED", "1");
     cmd.env("LPC_FRAMES_DIR", backend_dir.join("frames"));
 
-    // Point the backend at the bundled models directory if present.
+    // Point the backend at the bundled models directory (release only).
+    // In debug mode the backend's default ../models already points at the
+    // project-root models/ directory that developers edit directly.
+    #[cfg(not(debug_assertions))]
     if let Ok(resource_dir) = handle.path().resource_dir() {
         let models_dir = resource_dir.join("resources").join("models");
         if models_dir.exists() {

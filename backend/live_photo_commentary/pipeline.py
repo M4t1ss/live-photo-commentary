@@ -91,6 +91,10 @@ class Pipeline:
     def frame_path(self) -> Path | None:
         return self._frame_path
 
+    @property
+    def running(self) -> bool:
+        return self._auto_loop_running
+
     def chunk_path(self, index: int) -> Path | None:
         return self._audio_chunks.get(index)
 

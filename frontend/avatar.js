@@ -10,13 +10,6 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 500);
 
-scene.add(new THREE.AmbientLight(0xffffff, 1.0));
-const keyLight = new THREE.DirectionalLight(0xfff4e0, 2.5);
-keyLight.position.set(1, 2, 3);
-scene.add(keyLight);
-const fillLight = new THREE.DirectionalLight(0xd0e8ff, 0.8);
-fillLight.position.set(-2, 0.5, -1);
-scene.add(fillLight);
 
 const clock = new THREE.Clock();
 let mixer = null;
@@ -316,6 +309,25 @@ window.initAvatar = function (config, port) {
   minJawAngle = config.minJawAngle ?? 0;
   maxJawAngle = config.maxJawAngle ?? 0.15;
   _emotionRampDuration = config.maxEnvelopeDuration ?? 0.3;
+
+  const lightDefs = config.lighting ?? [
+    { type: 'ambient',     color: '#ffffff', intensity: 1.0 },
+    { type: 'directional', color: '#fff4e0', intensity: 2.5, position: [1,  2,  3] },
+    { type: 'directional', color: '#d0e8ff', intensity: 0.8, position: [-2, 0.5, -1] },
+  ];
+  for (const def of lightDefs) {
+    let light;
+    if (def.type === 'ambient') {
+      light = new THREE.AmbientLight(def.color ?? '#ffffff', def.intensity ?? 1.0);
+    } else if (def.type === 'directional') {
+      light = new THREE.DirectionalLight(def.color ?? '#ffffff', def.intensity ?? 1.0);
+      if (def.position) light.position.set(...def.position);
+    } else {
+      console.warn(`[avatar] unknown light type: ${def.type}`);
+      continue;
+    }
+    scene.add(light);
+  }
 
   if (config.blink) {
     compositor.register('blink', new BlinkDriver(config.blink), 'override');
