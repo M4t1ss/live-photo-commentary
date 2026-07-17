@@ -1,4 +1,5 @@
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_window_state::WindowExt;
@@ -64,9 +65,52 @@ fn restart_backend(
     let port = state.port;
     let inner = Arc::clone(&state.process.inner);
     let uv = install.uv_path.clone();
-    let backend_dir = install.backend_dir.clone();
     state.process.kill();
-    tauri::async_runtime::spawn(spawn_and_monitor_backend(app, port, uv, backend_dir, inner));
+    tauri::async_runtime::spawn(async move {
+        // Re-run setup (which retries `uv sync` if `.venv` is missing or
+        // incomplete) rather than assuming the previous install is intact —
+        // a crashed backend often means the venv itself is broken.
+        if let Some(backend_dir) = resolve_backend_dir(&app, &uv).await {
+            spawn_and_monitor_backend(app, port, uv, backend_dir, inner).await;
+        }
+    });
+}
+
+// ── Screenshot ───────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn take_screenshot(
+    app: tauri::AppHandle,
+    state: State<'_, ScreenshotState>,
+) -> Result<String, String> {
+    let slot = state.frame_slot.fetch_xor(1, Ordering::Relaxed);
+    let dest = state.frames_dir.join(format!("frame_{slot}.png"));
+
+    let result = (|| -> Result<String, String> {
+        if state.is_wsl {
+            let exe = locate_screenshot_exe(&app);
+            let win_dest = wslpath_to_windows(&dest)?;
+            let status = Command::new(&exe)
+                .arg(&win_dest)
+                .status()
+                .map_err(|e| format!("screenshot.exe failed to start: {e}"))?;
+            if !status.success() {
+                return Err(format!("screenshot.exe exited with {:?}", status.code()));
+            }
+        } else {
+            use screenshots::Screen;
+            let screens = Screen::all().map_err(|e| format!("screen enumeration failed: {e}"))?;
+            let screen = screens.into_iter().next().ok_or("no screens found")?;
+            let image = screen.capture().map_err(|e| format!("capture failed: {e}"))?;
+            image.save(&dest).map_err(|e| format!("save failed: {e}"))?;
+        }
+        Ok(dest.to_string_lossy().into_owned())
+    })();
+
+    if let Err(msg) = &result {
+        log::error!("take_screenshot (slot {slot}) failed: {msg}");
+    }
+    result
 }
 
 // ── Port discovery ────────────────────────────────────────────────────────────
@@ -157,6 +201,45 @@ fn update_pyproject_for_cuda(backend_dir: &std::path::Path, cu_index: &str) -> s
 struct InstallState {
     uv_path: std::path::PathBuf,
     backend_dir: std::path::PathBuf,
+}
+
+struct ScreenshotState {
+    frames_dir: std::path::PathBuf,
+    frame_slot: AtomicUsize,
+    is_wsl: bool,
+}
+
+fn detect_wsl() -> bool {
+    std::fs::read_to_string("/proc/version")
+        .map(|v| v.to_lowercase().contains("microsoft"))
+        .unwrap_or(false)
+}
+
+fn locate_screenshot_exe(app: &tauri::AppHandle) -> std::path::PathBuf {
+    if cfg!(debug_assertions) {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("CARGO_MANIFEST_DIR has no parent")
+            .join("screenshot.exe")
+    } else {
+        app.path()
+            .resource_dir()
+            .expect("resource dir unavailable")
+            .join("resources")
+            .join("screenshot.exe")
+    }
+}
+
+fn wslpath_to_windows(path: &std::path::Path) -> Result<String, String> {
+    let out = Command::new("wslpath")
+        .arg("-w")
+        .arg(path)
+        .output()
+        .map_err(|e| format!("wslpath failed: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("wslpath error: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// Isolated directory for the CUDA venv — always in AppData, never the source
@@ -296,6 +379,63 @@ fn av_blocked_hint(e: &std::io::Error) -> Option<&'static str> {
     }
     let _ = e;
     None
+}
+
+/// Renames broken managed Python installations so uv skips them and downloads
+/// a clean copy on the next sync attempt.
+///
+/// A healthy install has `Lib/` (install_only format) or a `python3*.zip`
+/// alongside `python.exe`.  If neither exists the extraction was interrupted
+/// (e.g. Defender scanned files mid-write) and the install is unusable.
+///
+/// `std::fs::rename` succeeds even when DLL files inside the directory are
+/// locked by a running process, unlike `remove_dir_all` which returns
+/// ERROR_ACCESS_DENIED on locked files.  Renaming the directory makes uv
+/// treat it as absent and triggers a fresh download on the next launch.
+#[cfg(target_os = "windows")]
+fn quarantine_broken_python_installs(python_dir: &std::path::Path) {
+    let entries = match std::fs::read_dir(python_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !path.is_dir()
+            || !name_str.starts_with("cpython-")
+            || name_str.contains("-broken")
+        {
+            continue;
+        }
+        if !path.join("python.exe").exists() {
+            continue;
+        }
+        let has_lib = path.join("Lib").exists();
+        let has_stdlib_zip = std::fs::read_dir(&path)
+            .ok()
+            .map(|d| {
+                d.flatten().any(|e| {
+                    let n = e.file_name();
+                    let s = n.to_string_lossy();
+                    s.starts_with("python3") && s.ends_with(".zip")
+                })
+            })
+            .unwrap_or(false);
+        if !has_lib && !has_stdlib_zip {
+            let broken_name = format!("{}-broken", name_str);
+            let broken = python_dir.join(&broken_name);
+            log::warn!(
+                "Python install at {} is missing stdlib (no Lib/ or python3*.zip) — \
+                 renaming to {} so uv downloads a clean copy on the next launch.",
+                path.display(),
+                broken_name,
+            );
+            if let Err(e) = std::fs::rename(&path, &broken) {
+                log::error!("Failed to quarantine broken Python install: {e}");
+            }
+        }
+    }
 }
 
 /// Returns a hint string when a process exits very shortly after spawning.
@@ -471,6 +611,15 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> Result<std::pa
             }
         }
 
+        // Quarantine any broken Python installs before sync so uv downloads a
+        // clean copy instead of looping on a corrupt interpreter.  Rename
+        // works even when DLL files are held open by a running process.
+        #[cfg(target_os = "windows")]
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let py_dir = std::path::Path::new(&local).join("uv").join("python");
+            quarantine_broken_python_installs(&py_dir);
+        }
+
         log::info!("Running `uv sync` in {} …", backend_dir.display());
         let _ = app.emit("setup_progress", "Setting up Python environment…");
 
@@ -504,10 +653,25 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> Result<std::pa
         match sync_cmd.status() {
             Ok(s) if s.success() => log::info!("Python environment ready."),
             Ok(s) => {
-                log::error!("`uv sync` failed (exit code {:?})", s.code());
                 // Remove the partial venv so the next launch retries rather
                 // than silently using an incomplete environment.
                 let _ = std::fs::remove_dir_all(backend_dir.join(".venv"));
+                // Quarantine the broken Python install (if any) so the next
+                // launch downloads a fresh copy.  `remove_dir_all` silently
+                // fails when DLL files are locked; rename works in that case.
+                #[cfg(target_os = "windows")]
+                if let Ok(local) = std::env::var("LOCALAPPDATA") {
+                    let py_dir = std::path::Path::new(&local).join("uv").join("python");
+                    quarantine_broken_python_installs(&py_dir);
+                }
+                let msg = format!(
+                    "Setup failed: `uv sync` failed (exit code {:?}). See {}",
+                    s.code(),
+                    backend_dir.join("uv-sync.log").display()
+                );
+                log::error!("{msg}");
+                let _ = app.emit("setup_progress", &msg);
+                return Err(msg);
             }
             Err(e) => {
                 let hint = av_blocked_hint(&e).map(|h| format!(" {h}")).unwrap_or_default();
@@ -521,6 +685,25 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> Result<std::pa
     }
 
     Ok(backend_dir)
+}
+
+/// Runs `setup_backend` (which may run `uv sync`) on a blocking thread and
+/// returns the resulting directory, or `None` if setup failed — in which
+/// case `backend_crashed` has already been emitted.
+async fn resolve_backend_dir(
+    handle: &tauri::AppHandle,
+    uv: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let h = handle.clone();
+    let uv_bg = uv.to_path_buf();
+    match tokio::task::spawn_blocking(move || setup_backend(&h, &uv_bg)).await {
+        Ok(Ok(dir)) => Some(dir),
+        Ok(Err(msg)) => {
+            let _ = handle.emit("backend_crashed", msg);
+            None
+        }
+        Err(_) => Some(get_backend_dir(handle)),
+    }
 }
 
 // ── Health polling ────────────────────────────────────────────────────────────
@@ -586,8 +769,12 @@ async fn spawn_and_monitor_backend(
     // Disable Python's output buffering so backend.log captures crashes that
     // happen before the process has a chance to flush its write buffer.
     cmd.env("PYTHONUNBUFFERED", "1");
+    cmd.env("LPC_FRAMES_DIR", backend_dir.join("frames"));
 
-    // Point the backend at the bundled models directory if present.
+    // Point the backend at the bundled models directory (release only).
+    // In debug mode the backend's default ../models already points at the
+    // project-root models/ directory that developers edit directly.
+    #[cfg(not(debug_assertions))]
     if let Ok(resource_dir) = handle.path().resource_dir() {
         let models_dir = resource_dir.join("resources").join("models");
         if models_dir.exists() {
@@ -712,6 +899,14 @@ pub fn run() {
                 backend_dir: backend_dir.clone(),
             });
 
+            let frames_dir = backend_dir.join("frames");
+            let _ = std::fs::create_dir_all(&frames_dir);
+            app.manage(ScreenshotState {
+                frames_dir,
+                frame_slot: AtomicUsize::new(0),
+                is_wsl: detect_wsl(),
+            });
+
             // Pre-allocate BackendState with the chosen port; the child process
             // handle starts as None and is filled in once the background task
             // spawns the backend (after uv sync completes).
@@ -729,19 +924,9 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 // setup_backend may run `uv sync`, which can take minutes on
                 // first launch — must not run on the event loop thread.
-                let h = handle.clone();
-                let uv_bg = uv.clone();
-                let backend_dir = match tokio::task::spawn_blocking(move || {
-                    setup_backend(&h, &uv_bg)
-                })
-                .await
-                {
-                    Ok(Ok(dir)) => dir,
-                    Ok(Err(msg)) => {
-                        let _ = handle.emit("backend_crashed", msg);
-                        return;
-                    }
-                    Err(_) => get_backend_dir(&handle),
+                let backend_dir = match resolve_backend_dir(&handle, &uv).await {
+                    Some(dir) => dir,
+                    None => return,
                 };
 
                 // CUDA upgrade detection — non-macOS only.
@@ -767,6 +952,7 @@ pub fn run() {
             get_backend_port,
             install_cuda_torch,
             restart_backend,
+            take_screenshot,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

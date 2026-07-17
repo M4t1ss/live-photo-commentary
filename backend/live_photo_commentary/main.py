@@ -7,6 +7,10 @@ from pathlib import Path
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    # Piped stdout/stderr fall back to the legacy console codepage (e.g. cp932),
+    # which can't encode arbitrary VLM output (non-Latin scripts, emoji, etc.).
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from contextlib import asynccontextmanager
 
@@ -14,8 +18,9 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from . import config
+from . import config, prompts
 from .pipeline import Pipeline
+from .prompts import DEFAULT_NAME as _DEFAULT_PROMPTSET
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +53,7 @@ async def _send_ready_state() -> None:
         "ready": _vlm_ready and _tts_ready,
         "vlm": _vlm_ready,
         "tts": _tts_ready,
+        "running": pipeline.running if pipeline is not None else False,
     })
 
 
@@ -71,6 +77,26 @@ _VLM_CATALOGUE = [
 ]
 
 
+def _free_describer(describer) -> None:
+    """Drop a describer's model/processor and force the GPU memory to be released
+    before the next model loads, since accelerate's automatic device placement can
+    otherwise offload part of the new model to cpu/disk if it still sees the old
+    model's memory as in use."""
+    if describer is None:
+        return
+    for attr in ("model", "processor", "tokenizer"):
+        if hasattr(describer, attr):
+            setattr(describer, attr, None)
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
 def _make_describer(on_progress=None):
     cfg = config.get()
     if cfg.vlm_provider == "local":
@@ -82,6 +108,23 @@ def _make_describer(on_progress=None):
         from .remote_describer import RemoteDescriber
         describer = RemoteDescriber(provider=cfg.vlm_provider, model_id=cfg.vlm_model)
     return describer
+
+
+def _load_tag_names() -> list[str]:
+    yaml_path = config.get().model_dir / "model.yaml"
+    if not yaml_path.exists():
+        return []
+    with open(yaml_path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    return list(raw.get("tags", {}).keys())
+
+
+def _apply_promptset(name: str) -> None:
+    """Update the live describer's prompt fields without reloading the model."""
+    if pipeline is not None and pipeline.describer is not None:
+        fields = prompts.substitute_tags(prompts.load(name), _load_tag_names())
+        for k, v in fields.items():
+            setattr(pipeline.describer, k, v)
 
 
 def _make_synthesizer():
@@ -139,12 +182,22 @@ async def _download_with_progress(model_id: str) -> str:
 async def _reinit_describer() -> None:
     global _vlm_ready
     assert pipeline is not None
-    pipeline.describer = None
     _model_errors.pop("vlm", None)
     _vlm_ready = False
     await _send({"type": "model_loading", "model": "vlm"})
     await _send_ready_state()
     try:
+        # Detach the current describer. This blocks (off the event loop thread)
+        # until any in-flight generation using it has actually finished, then
+        # frees it, so the new model never loads while the old one is still
+        # holding GPU memory (see take_describer_for_reinit / _free_describer).
+        if pipeline.describer is not None:
+            await _send({"type": "load_progress", "message": "Waiting for current generation to finish…"})
+        old_describer = await asyncio.to_thread(pipeline.take_describer_for_reinit)
+        if old_describer is not None:
+            await _send({"type": "load_progress", "message": "Releasing previous model…"})
+            await asyncio.to_thread(_free_describer, old_describer)
+
         cfg = config.get()
         loop = asyncio.get_running_loop()
 
@@ -155,6 +208,7 @@ async def _reinit_describer() -> None:
             model_id = cfg.vlm_model or "microsoft/Phi-4-multimodal-instruct"
             _model_local_dirs[model_id] = await _download_with_progress(model_id)
         pipeline.describer = await asyncio.to_thread(_make_describer, _progress)
+        _apply_promptset(config.get().active_promptset)
         log.info("Describer ready")
         _vlm_ready = True
         await _send({"type": "model_ready", "model": "vlm"})
@@ -203,6 +257,7 @@ def _suppress_pipe_reset(loop, context):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pipeline
+    prompts.set_dir(Path("prompts"))
     loop = asyncio.get_running_loop()
     if sys.platform == "win32":
         loop.set_exception_handler(_suppress_pipe_reset)
@@ -254,6 +309,10 @@ async def get_model_config():
         "maxEnvelopeDuration": raw.get("max_envelope_duration", 0.3),
         "visemeMap": raw.get("viseme_map", {}),
         "blink": raw.get("blink"),
+        "tags": raw.get("tags", {}),
+        "idleAnimation": raw.get("animations", {}).get("idle"),
+        "talkingAnimation": raw.get("animations", {}).get("talking"),
+        "lighting": raw.get("lighting"),
     }
 
 
@@ -289,6 +348,13 @@ async def websocket_endpoint(ws: WebSocket):
     for msg in _model_errors.values():
         await _send({"type": "error", "message": msg})
     asyncio.create_task(_send_models())
+    active = config.get().active_promptset
+    await _send({
+        "type": "promptset_loaded",
+        "name": active,
+        "fields": prompts.load(active),
+        "names": prompts.list_names(),
+    })
     try:
         while True:
             data = await ws.receive_json()
@@ -317,9 +383,52 @@ async def websocket_endpoint(ws: WebSocket):
                 case "stop_cycle":
                     if pipeline is not None:
                         await pipeline.stop_loop()
-                case "take_screenshot":
+                case "frame_ready":
                     if pipeline is not None:
-                        pipeline.on_take_screenshot()
+                        pipeline.on_frame_ready(data.get("path", ""))
+                case "list_promptsets":
+                    await _send({"type": "promptsets", "names": prompts.list_names()})
+                case "load_promptset":
+                    name = (data.get("name") or "").strip() or _DEFAULT_PROMPTSET
+                    fields = prompts.load(name)
+                    config.apply({"active_promptset": name})
+                    await asyncio.to_thread(config.persist, Path(".env"))
+                    _apply_promptset(name)
+                    if pipeline is not None and pipeline.describer is not None:
+                        pipeline.describer.reset()
+                    await _send({
+                        "type": "promptset_loaded",
+                        "name": name,
+                        "fields": fields,
+                        "names": prompts.list_names(),
+                    })
+                case "save_promptset":
+                    name = (data.get("name") or "").strip()
+                    if not name or name == _DEFAULT_PROMPTSET:
+                        await _send({"type": "error", "message": "Cannot save as 'default'"})
+                    else:
+                        prompts.save(name, data.get("fields", {}))
+                        if name == config.get().active_promptset:
+                            _apply_promptset(name)
+                        await _send({"type": "promptsets", "names": prompts.list_names()})
+                case "delete_promptset":
+                    name = (data.get("name") or "").strip()
+                    if not name or name == _DEFAULT_PROMPTSET:
+                        await _send({"type": "error", "message": "Cannot delete 'default'"})
+                    else:
+                        was_active = config.get().active_promptset == name
+                        prompts.delete(name)
+                        if was_active:
+                            config.apply({"active_promptset": _DEFAULT_PROMPTSET})
+                            await asyncio.to_thread(config.persist, Path(".env"))
+                            _apply_promptset(_DEFAULT_PROMPTSET)
+                        active = config.get().active_promptset
+                        await _send({
+                            "type": "promptset_loaded",
+                            "name": active,
+                            "fields": prompts.load(active),
+                            "names": prompts.list_names(),
+                        })
     except WebSocketDisconnect:
         pass
     finally:

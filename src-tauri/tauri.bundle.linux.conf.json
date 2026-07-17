@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "resources": [
+      "resources/uv-*",
+      "resources/backend/**/*",
+      "resources/models/model.*",
+      "resources/screenshot.exe"
+    ]
+  }
+}

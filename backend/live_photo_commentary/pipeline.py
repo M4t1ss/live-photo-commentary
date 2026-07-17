@@ -4,6 +4,8 @@ import threading
 from pathlib import Path
 from tempfile import mkdtemp
 
+from PIL import Image
+
 from . import config
 
 _SENTINEL = object()
@@ -15,7 +17,6 @@ class Pipeline:
         self.synthesizer = None
 
         self._tmp_dir = Path(mkdtemp(prefix="lpc_"))
-        self._frame_slot = -1
         self._frame_path: Path | None = None
         self._prev_img = None
         self._audio_chunks: dict[int, Path] = {}
@@ -25,32 +26,43 @@ class Pipeline:
 
         self._auto_loop_running = False
         self._auto_loop_task: asyncio.Task | None = None
-        self._take_screenshot: asyncio.Event | None = None  # created on attach()
+        self._frame_q: asyncio.Queue | None = None  # created on start_loop()
 
         self._generation: int = 0
         self._vlm_q: queue.Queue = queue.Queue(maxsize=1)
         self._tts_q: queue.Queue = queue.Queue(maxsize=1)
+        self._describer_lock = threading.Lock()
 
         threading.Thread(target=self._vlm_worker, daemon=True).start()
         threading.Thread(target=self._tts_worker, daemon=True).start()
 
+    def take_describer_for_reinit(self):
+        """Atomically detach the current describer so it's safe to free.
+
+        Uses the same lock the VLM worker holds while calling the describer, so
+        this blocks until any in-flight generation has actually finished before
+        handing the (now-detached) describer back to the caller for cleanup.
+        """
+        with self._describer_lock:
+            old = self.describer
+            self.describer = None
+            return old
+
     def attach(self, broadcast_fn) -> None:
         self._broadcast_fn = broadcast_fn
 
-    async def trigger(self) -> None:
-        from .screenshot import screenshot
-
+    async def trigger(self, path: str) -> None:
         prev_img = self._prev_img
 
-        # Alternate between two file slots so the HTTP endpoint never serves a
-        # file that is being overwritten.
-        new_slot = 0 if self._frame_slot != 0 else 1
-        new_path = self._tmp_dir / f"frame_{new_slot}.png"
-        img = await asyncio.to_thread(screenshot, new_path)
+        def _load():
+            img = Image.open(path)
+            img.load()
+            return img
+
+        img = await asyncio.to_thread(_load)
 
         self._prev_img = img
-        self._frame_path = new_path
-        self._frame_slot = new_slot
+        self._frame_path = Path(path)
 
         if self._broadcast_fn:
             await self._broadcast_fn({"type": "frame", "url": "/frame/current"})
@@ -65,7 +77,8 @@ class Pipeline:
                 if diff < cfg.difference_threshold:
                     if self._broadcast_fn:
                         await self._broadcast_fn({"type": "skipped", "diff": round(diff, 6)})
-                    self.on_take_screenshot()  # unblock the loop so it retries
+                    # Ask JS to take another screenshot so the loop can retry.
+                    self._send({"type": "take_screenshot"})
                     return
 
         try:
@@ -78,6 +91,10 @@ class Pipeline:
     def frame_path(self) -> Path | None:
         return self._frame_path
 
+    @property
+    def running(self) -> bool:
+        return self._auto_loop_running
+
     def chunk_path(self, index: int) -> Path | None:
         return self._audio_chunks.get(index)
 
@@ -86,10 +103,7 @@ class Pipeline:
             return
         self._auto_loop_running = True
         self._loop = asyncio.get_running_loop()
-        self._take_screenshot = asyncio.Event()
-        if self._take_screenshot:
-            self._take_screenshot.clear()
-        await self.trigger()
+        self._frame_q = asyncio.Queue()
         self._auto_loop_task = asyncio.create_task(self._auto_loop())
 
     async def stop_loop(self) -> None:
@@ -99,21 +113,19 @@ class Pipeline:
             self._auto_loop_task.cancel()
             self._auto_loop_task = None
 
-    def on_take_screenshot(self) -> None:
-        if self._loop and self._take_screenshot:
-            self._loop.call_soon_threadsafe(self._take_screenshot.set)
+    def on_frame_ready(self, path: str) -> None:
+        if self._loop and self._frame_q:
+            self._loop.call_soon_threadsafe(self._frame_q.put_nowait, path)
 
     async def _auto_loop(self) -> None:
-        if self._loop and self._take_screenshot:
-            while self._auto_loop_running:
-                await self._take_screenshot.wait()
-                self._take_screenshot.clear()
-                if not self._auto_loop_running:
-                    break
-                try:
-                    await self.trigger()
-                except Exception as exc:
-                    self._send({"type": "error", "message": f"Cycle error: {exc}"})
+        while self._auto_loop_running:
+            path = await self._frame_q.get()
+            if not self._auto_loop_running:
+                break
+            try:
+                await self.trigger(path)
+            except Exception as exc:
+                self._send({"type": "error", "message": f"Cycle error: {exc}"})
 
     def _send(self, data: dict) -> None:
         if self._loop and self._broadcast_fn:
@@ -130,16 +142,19 @@ class Pipeline:
             gen, curr_img, prev_img = item
             if gen != self._generation:
                 continue
-            describer = self.describer
-            if describer is None:
-                self._send({"type": "error", "message": "No VLM configured"})
-                continue
-            describer.max_history_size = config.get().max_history_size
-            try:
-                text = describer(curr_img, prev_img)
-            except Exception as exc:
-                self._send({"type": "error", "message": f"VLM error: {exc}"})
-                continue
+            with self._describer_lock:
+                describer = self.describer
+                if describer is None:
+                    self._send({"type": "error", "message": "No VLM configured"})
+                    continue
+                describer.max_history_size = config.get().max_history_size
+                try:
+                    text = describer(curr_img, prev_img)
+                except Exception as exc:
+                    self._send({"type": "error", "message": f"VLM error: {exc}"})
+                    continue
+                finally:
+                    describer = None
             if gen != self._generation:
                 continue
             try:
@@ -174,6 +189,10 @@ class Pipeline:
                         {"text": seg, "time": t}
                         for seg, t in zip(subtitle_segments, [0.0] + sub_times)
                     ]
+                    tags = [
+                        {"name": name, "time": round(t, 4)}
+                        for name, t in mark_timings if name != "sub"
+                    ]
                     self._send({
                         "type": "chunk",
                         "index": i,
@@ -181,6 +200,7 @@ class Pipeline:
                         "audio_url": f"/audio/chunk/{i}",
                         "phonemes": [[ph, round(t, 4)] for ph, t in chunk_phonemes],
                         "subtitles": subtitles,
+                        "tags": tags,
                     })
                 else:
                     self._send({"type": "tts_done"})
@@ -201,5 +221,3 @@ class Pipeline:
     def cleanup(self) -> None:
         import shutil
         shutil.rmtree(self._tmp_dir, ignore_errors=True)
-
-

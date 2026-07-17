@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     elevenlabs_api_key: str | None = None
     model_dir: Path = Path("../models")
+    active_promptset: str = "default"
 
 
 _API_KEY_FIELDS = frozenset({"gemini_api_key", "openai_api_key", "elevenlabs_api_key"})

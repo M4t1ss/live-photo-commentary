@@ -33,6 +33,7 @@ const cudaInstallBtn     = document.getElementById("cuda-install-btn");
 const cudaDismissBtn     = document.getElementById("cuda-dismiss-btn");
 const splashEl           = document.getElementById("splash");
 const splashStatusEl     = document.getElementById("splash-status");
+const splashRestartBtn   = document.getElementById("splash-restart-btn");
 const leftPanelEl        = document.getElementById("left-panel");
 const subtitlePanelEl    = document.getElementById("subtitle-panel");
 const subtitleRowDivider = document.getElementById("subtitle-row-divider");
@@ -41,6 +42,17 @@ const cfgBgColor         = document.getElementById("cfg-bg-color");
 const cfgBgPreview       = document.getElementById("cfg-bg-preview");
 const cfgFgColor         = document.getElementById("cfg-fg-color");
 const cfgFgPreview       = document.getElementById("cfg-fg-preview");
+const cfgPromptset       = document.getElementById("cfg-promptset");
+const promptsetComboBtn  = document.getElementById("promptset-combo-btn");
+const promptsetDropdown  = document.getElementById("promptset-dropdown");
+const promptsetLoad      = document.getElementById("promptset-load");
+const promptsetSave      = document.getElementById("promptset-save");
+const promptsetDelete    = document.getElementById("promptset-delete");
+const cfgSystemPrompt    = document.getElementById("cfg-system-prompt");
+const cfgPromptText      = document.getElementById("cfg-prompt");
+const cfgFirstPrompt     = document.getElementById("cfg-first-prompt");
+const cfgHistoryPrompt   = document.getElementById("cfg-history-prompt");
+const cfgCompactPrompt   = document.getElementById("cfg-compact-prompt");
 
 // --- App state ---
 let volume = parseFloat(localStorage.getItem("lpc_volume") ?? "1");
@@ -57,6 +69,8 @@ let fgColor = localStorage.getItem("lpc_fg_color") ?? "#ffffff";
 let currentConfig = {};
 let vlmCatalogue = [];
 let ttsVoices = [];
+let promptsetNames = [];
+let currentPromptsetName = "default";
 
 let currentFrameUrl = null;
 
@@ -100,6 +114,10 @@ let _subtitles = null;
 let _subtitleIdx = 0;
 let _subtitleTimer = null;
 
+// Emotion tag scheduling state (tags persist across chunks of one speech act)
+let _tags = [];
+let _tagIdx = 0;
+
 function setSubtitleText(text) {
   subtitleEl.textContent = text;
   subtitlePanelEl.textContent = text;
@@ -111,17 +129,24 @@ function _clearSubtitleTimer() {
 
 function _startSubtitleTimer() {
   _clearSubtitleTimer();
-  if (!_subtitles || _subtitles.length <= 1) return;
+  if ((!_subtitles || _subtitles.length <= 1) && _tags.length === 0) return;
   _subtitleTimer = setInterval(() => {
-    if (!currentAudio || !_subtitles) return;
+    if (!currentAudio) return;
     const t = currentAudio.currentTime;
-    let idx = 0;
-    for (let i = _subtitles.length - 1; i > 0; i--) {
-      if (_subtitles[i].time <= t) { idx = i; break; }
+    if (_subtitles) {
+      let idx = 0;
+      for (let i = _subtitles.length - 1; i > 0; i--) {
+        if (_subtitles[i].time <= t) { idx = i; break; }
+      }
+      if (idx !== _subtitleIdx) {
+        _subtitleIdx = idx;
+        if (subtitlesVisible) setSubtitleText(_subtitles[idx].text);
+      }
     }
-    if (idx !== _subtitleIdx) {
-      _subtitleIdx = idx;
-      if (subtitlesVisible) setSubtitleText(_subtitles[idx].text);
+    // Emotion tags hold until replaced, so just apply each in order as its time passes.
+    while (_tagIdx < _tags.length && _tags[_tagIdx].time <= t) {
+      window.setEmotion?.(_tags[_tagIdx].name);
+      _tagIdx++;
     }
   }, 50);
 }
@@ -192,6 +217,7 @@ function connectWebSocket() {
     setRunning(false);
     checkReady();
     setPhase("Initializing…", "up");
+    initAvatarOnce();
   });
 
   ws.addEventListener("message", (event) => {
@@ -244,6 +270,10 @@ function handleMessage(data) {
       }
       break;
 
+    case "take_screenshot":
+      if (running) takeScreenshot();
+      break;
+
     case "skipped":
       setPhase(`Skipped  Δ=${data.diff}`, "none");
       break;
@@ -259,6 +289,9 @@ function handleMessage(data) {
 
     case "ready_state":
       backendReady = data.ready;
+      if (typeof data.running === "boolean" && data.running !== running) {
+        setRunning(data.running);
+      }
       checkReady();
       break;
 
@@ -305,6 +338,22 @@ function handleMessage(data) {
       modelsReceived = true;
       checkReady();
       break;
+
+    case "promptset_loaded":
+      currentPromptsetName = data.name;
+      if (data.names) { promptsetNames = data.names; }
+      cfgPromptset.value     = data.name;
+      cfgSystemPrompt.value  = data.fields?.system_prompt ?? "";
+      cfgPromptText.value    = data.fields?.prompt ?? "";
+      cfgFirstPrompt.value   = data.fields?.first_prompt ?? "";
+      cfgHistoryPrompt.value = data.fields?.history_prompt ?? "";
+      cfgCompactPrompt.value = data.fields?.compact_prompt ?? "";
+      _updatePromptsetBtns();
+      break;
+
+    case "promptsets":
+      promptsetNames = data.names ?? [];
+      break;
   }
 }
 
@@ -321,15 +370,19 @@ function resetAudio() {
   _clearSubtitleTimer();
   _subtitles = null;
   _subtitleIdx = 0;
+  _tags = [];
+  _tagIdx = 0;
   window.setLipSyncData?.([], null);
+  window.setEmotion?.(null);
 }
 
-function enqueueChunk({ audio_url, text, phonemes, subtitles }) {
+function enqueueChunk({ audio_url, text, phonemes, subtitles, tags }) {
   audioQueue.push({
     audio_url,
     text,
     timeline: buildTimeline(phonemes ?? []),
     subtitles: subtitles ?? [{ text, time: 0 }],
+    tags: tags ?? [],
   });
   if (!isPlaying) playNext();
 }
@@ -341,14 +394,19 @@ function playNext() {
     currentAudio = null;
     _subtitles = null;
     _subtitleIdx = 0;
+    _tags = [];
+    _tagIdx = 0;
     window.setLipSyncData?.([], null);
+    window.setEmotion?.(null);
     if (ttsAllReceived) sendSpeechEnded();
     return;
   }
   isPlaying = true;
-  const { audio_url, text, timeline, subtitles } = audioQueue.shift();
+  const { audio_url, text, timeline, subtitles, tags } = audioQueue.shift();
   _subtitles = subtitles;
   _subtitleIdx = 0;
+  _tags = tags;
+  _tagIdx = 0;
   if (subtitlesVisible) setSubtitleText(subtitles[0].text);
   const audio = new Audio(`http://127.0.0.1:${port}${audio_url}`);
   audio.volume = volume;
@@ -366,8 +424,18 @@ function sendSpeechEnded() {
   const delayMs = (currentConfig.pre_screenshot_delay ?? 2.0) * 1000;
   setPhase("Screenshot in", "down", delayMs);
   setTimeout(() => {
-    if (running) send({ type: "take_screenshot" });
+    if (running) takeScreenshot();
   }, delayMs);
+}
+
+async function takeScreenshot() {
+  try {
+    const path = await invoke("take_screenshot");
+    send({ type: "frame_ready", path });
+  } catch (e) {
+    console.error("[screenshot] take_screenshot failed:", e);
+    setPhase(`Error: screenshot failed: ${e}`, "none");
+  }
 }
 
 // --- Controls ---
@@ -394,7 +462,9 @@ startStopBtn.addEventListener("click", () => {
     setPhase("Screenshot in", "down", delayMs);
     _startCycleTimer = setTimeout(() => {
       _startCycleTimer = null;
-      if (running) send({ type: "start_cycle" });
+      if (!running) return;
+      send({ type: "start_cycle" });
+      takeScreenshot();
     }, delayMs);
   }
 });
@@ -412,7 +482,18 @@ modalCancel.addEventListener("click", closeModal);
 modalOverlay.addEventListener("click", (e) => { if (e.target === modalOverlay) closeModal(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
 
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b === btn));
+    document.getElementById("tab-general").classList.toggle("hidden", btn.dataset.tab !== "general");
+    document.getElementById("tab-prompts").classList.toggle("hidden", btn.dataset.tab !== "prompts");
+  });
+});
+
 function openModal() {
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === "general"));
+  document.getElementById("tab-general").classList.remove("hidden");
+  document.getElementById("tab-prompts").classList.add("hidden");
   populateModal();
   modalOverlay.classList.remove("hidden");
 }
@@ -456,6 +537,8 @@ function populateModal() {
   openaiKeyInput.value    = "";
   elevenlabsKeyInput.value = "";
   cfgSubtitleMode.checked = subtitleMode === "separated";
+  cfgPromptset.value = currentPromptsetName;
+  _updatePromptsetBtns();
   cfgBgColor.value = bgColor;
   cfgBgPreview.style.background = bgColor;
   cfgFgColor.value = fgColor;
@@ -508,6 +591,15 @@ modalOk.addEventListener("click", () => {
   if (openaiKeyInput.value)     updates.openai_api_key     = openaiKeyInput.value;
   if (elevenlabsKeyInput.value) updates.elevenlabs_api_key = elevenlabsKeyInput.value;
 
+  // Changing the VLM or TTS model tears down and rebuilds it on the backend,
+  // so a running cycle would hit a "no model configured" error mid-flight.
+  // Stop first (full UI reset included) so the change lands on an idle app.
+  const modelChanged =
+    updates.vlm_provider !== currentConfig.vlm_provider ||
+    updates.vlm_model !== currentConfig.vlm_model ||
+    updates.tts_voice !== currentConfig.tts_voice;
+  if (modelChanged) stopCycle();
+
   setVolume(parseFloat(volumeInput.value), true);
 
   const newMode = cfgSubtitleMode.checked ? "separated" : "overlay";
@@ -532,6 +624,77 @@ function capitalize(s) {
   return s ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
+// --- Promptset combobox ---
+function _openPromptsetDropdown() {
+  const current = cfgPromptset.value.trim();
+  promptsetDropdown.innerHTML = "";
+  for (const name of promptsetNames) {
+    const li = document.createElement("li");
+    li.textContent = name;
+    if (name === current) li.classList.add("combo-selected");
+    li.addEventListener("mousedown", (e) => {
+      e.preventDefault(); // keep focus on input
+      cfgPromptset.value = name;
+      _closePromptsetDropdown();
+      _updatePromptsetBtns();
+    });
+    promptsetDropdown.appendChild(li);
+  }
+  promptsetDropdown.classList.remove("hidden");
+}
+
+function _closePromptsetDropdown() {
+  promptsetDropdown.classList.add("hidden");
+}
+
+promptsetComboBtn.addEventListener("click", () => {
+  if (promptsetDropdown.classList.contains("hidden")) {
+    _openPromptsetDropdown();
+    cfgPromptset.focus();
+  } else {
+    _closePromptsetDropdown();
+  }
+});
+
+document.addEventListener("mousedown", (e) => {
+  if (!e.target.closest("#promptset-combo")) _closePromptsetDropdown();
+});
+
+function _updatePromptsetBtns() {
+  const isDefault = cfgPromptset.value.trim() === "default";
+  promptsetSave.disabled   = isDefault;
+  promptsetDelete.disabled = isDefault;
+}
+
+cfgPromptset.addEventListener("input", _updatePromptsetBtns);
+
+promptsetLoad.addEventListener("click", () => {
+  const name = cfgPromptset.value.trim() || "default";
+  send({ type: "load_promptset", name });
+});
+
+promptsetSave.addEventListener("click", () => {
+  const name = cfgPromptset.value.trim();
+  if (!name || name === "default") return;
+  send({
+    type: "save_promptset",
+    name,
+    fields: {
+      system_prompt:  cfgSystemPrompt.value,
+      prompt:         cfgPromptText.value,
+      first_prompt:   cfgFirstPrompt.value,
+      history_prompt: cfgHistoryPrompt.value,
+      compact_prompt: cfgCompactPrompt.value,
+    },
+  });
+});
+
+promptsetDelete.addEventListener("click", () => {
+  const name = cfgPromptset.value.trim();
+  if (!name || name === "default") return;
+  send({ type: "delete_promptset", name });
+});
+
 // --- CUDA upgrade banner ---
 let pendingCuIndex = null;
 
@@ -546,6 +709,12 @@ cudaDismissBtn.addEventListener("click", () => {
   cudaBanner.classList.add("hidden");
 });
 
+splashRestartBtn.addEventListener("click", () => {
+  splashRestartBtn.classList.add("hidden");
+  setPhase("Restarting…", "up");
+  invoke("restart_backend");
+});
+
 // --- Init ---
 async function main() {
   setPhase("Starting up…", "up");
@@ -555,13 +724,14 @@ async function main() {
   // invoke is still pending.
   await listen("setup_progress", ({ payload }) => setPhase(payload, "up"));
   await listen("backend_crashed", ({ payload }) => {
-    dismissSplash();
     setRunning(false);
     configReceived = false;
     modelsReceived = false;
     backendReady   = false;
     checkReady();
+    showSplash();
     setPhase(payload || "Backend crashed", "none");
+    splashRestartBtn.classList.remove("hidden");
   });
 
   // cuda_upgrade_available fires right after uv sync (before uvicorn even
@@ -588,18 +758,20 @@ async function main() {
     cudaDismissBtn.disabled = false;
   });
 
-  // Fetch model config and init avatar only once the backend is confirmed
-  // ready. Registering before invoke("get_backend_port") ensures the event
-  // is never missed even when the backend starts very quickly.
-  const unlistenReady = await listen("backend_ready", async () => {
-    unlistenReady();
-    const modelCfg = await fetch(`http://127.0.0.1:${port}/model-config`).then(r => r.json()).catch(() => ({}));
-    window.initLipSync?.(modelCfg);
-    window.initAvatar?.(modelCfg, port);
-  });
-
   port = await invoke("get_backend_port");
   connectWebSocket();
+}
+
+// Fetch model config and init avatar once the WebSocket confirms the backend
+// is up. Guarded to run only once — a WS reconnect (e.g. after a network
+// blip) shouldn't reload the avatar model.
+let _avatarInitStarted = false;
+async function initAvatarOnce() {
+  if (_avatarInitStarted) return;
+  _avatarInitStarted = true;
+  const modelCfg = await fetch(`http://127.0.0.1:${port}/model-config`).then(r => r.json()).catch(() => ({}));
+  window.initLipSync?.(modelCfg);
+  window.initAvatar?.(modelCfg, port);
 }
 
 main();

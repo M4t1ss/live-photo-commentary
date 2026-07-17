@@ -10,16 +10,10 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 500);
 
-scene.add(new THREE.AmbientLight(0xffffff, 1.0));
-const keyLight = new THREE.DirectionalLight(0xfff4e0, 2.5);
-keyLight.position.set(1, 2, 3);
-scene.add(keyLight);
-const fillLight = new THREE.DirectionalLight(0xd0e8ff, 0.8);
-fillLight.position.set(-2, 0.5, -1);
-scene.add(fillLight);
 
 const clock = new THREE.Clock();
 let mixer = null;
+let animDriver = null;
 
 // Model state — populated by initAvatar after the GLB loads.
 const morphMeshes = new Map();  // Map<Mesh, morphTargetDictionary>
@@ -29,6 +23,8 @@ let jawRestAngle = 0;
 let minJawAngle  = 0;
 let maxJawAngle  = 0.15;
 let _visemeMap   = {};   // phoneme → {morph: value, ...}; used by showPhoneme
+let _tagsConfig  = {};   // tag name → {morph: value, ...}; used by setEmotion
+let _emotionRampDuration = 0.3;  // seconds for a full 0→1 emotion sweep; reuses maxEnvelopeDuration
 
 // Scroll-wheel zoom — 0 = full body, 1 = head shot.
 let zoomT = 0;
@@ -157,11 +153,69 @@ class BlinkDriver {
   }
 }
 
-// Stub — drives emotion-based morph shapes. Registered with 'add' blend so
-// emotion contributions stack on top of lip sync without zeroing it.
+// Drives emotion tag morph shapes. Registered with 'add' blend so emotion
+// contributions stack on top of lip sync without zeroing it. Values ramp
+// linearly toward the active tag's target instead of snapping, at the same
+// rate as the lip sync envelope (a full 0→1 sweep takes _emotionRampDuration).
 class EmotionDriver {
-  tick(_delta) { return { morphs: {} }; }
-  setEmotion(_emotion) {}
+  constructor() {
+    this._current = {};   // morph name → current (animated) value
+    this._target  = {};   // morph name → target value from the active tag
+  }
+
+  setMorphs(morphs) {
+    this._target = morphs ?? {};
+  }
+
+  tick(delta) {
+    const step = _emotionRampDuration > 0 ? delta / _emotionRampDuration : Infinity;
+    const keys = new Set([...Object.keys(this._current), ...Object.keys(this._target)]);
+    for (const key of keys) {
+      const from = this._current[key] ?? 0;
+      const to   = this._target[key] ?? 0;
+      if (from === to) continue;
+      const diff = to - from;
+      const next = Math.abs(diff) <= step ? to : from + Math.sign(diff) * step;
+      if (next === 0) delete this._current[key];
+      else this._current[key] = next;
+    }
+    return { morphs: this._current };
+  }
+}
+
+// Crossfades between an idle and a talking body animation clip on the mixer.
+// Both clips loop continuously; setTalking() smoothly fades weight from one
+// to the other rather than snapping, using three.js's own fadeIn/fadeOut.
+class AnimationDriver {
+  constructor(mixer, idleClip, talkingClip, blendDuration = 0.4) {
+    this._blendDuration = blendDuration;
+    this._talking = false;
+
+    this._idleAction    = idleClip    ? mixer.clipAction(idleClip)    : null;
+    this._talkingAction = talkingClip ? mixer.clipAction(talkingClip) : null;
+
+    if (this._idleAction) {
+      this._idleAction.setLoop(THREE.LoopRepeat, Infinity);
+      this._idleAction.play();
+    }
+    if (this._talkingAction) {
+      this._talkingAction.setLoop(THREE.LoopRepeat, Infinity);
+      this._talkingAction.setEffectiveWeight(0);
+      this._talkingAction.play();
+    }
+  }
+
+  setTalking(talking) {
+    if (talking === this._talking) return;
+    this._talking = talking;
+    if (!this._idleAction || !this._talkingAction) return;
+
+    const [from, to] = talking
+      ? [this._idleAction, this._talkingAction]
+      : [this._talkingAction, this._idleAction];
+    from.fadeOut(this._blendDuration);
+    to.reset().setEffectiveWeight(1).fadeIn(this._blendDuration).play();
+  }
 }
 
 // ── Animation compositor ──────────────────────────────────────────────────────
@@ -235,18 +289,45 @@ const emotionDriver = compositor.register('emotion', new EmotionDriver(), 'add')
 // Called by app.js when a new audio chunk starts playing.
 window.setLipSyncData = function (timeline, audio) {
   lipSyncDriver.setData(timeline, audio);
+  animDriver?.setTalking(!!audio);
 };
 
-window.setEmotion = function (emotion) {
-  emotionDriver.setEmotion(emotion);
+// Called by app.js when a {tag} mark's time is reached, or with null/undefined
+// to clear back to no emotion override (e.g. when speech ends).
+// A plain object is also accepted (e.g. from the console while tuning
+// model.yaml) and used as the morph definition directly, bypassing tags config.
+window.setEmotion = function (tagOrMorphs) {
+  const morphs = typeof tagOrMorphs === 'string' ? (_tagsConfig[tagOrMorphs] ?? {}) : (tagOrMorphs ?? {});
+  emotionDriver.setMorphs(morphs);
 };
 
 // Called by app.js after it resolves the backend port and fetches /model-config.
 window.initAvatar = function (config, port) {
   _visemeMap  = config.visemeMap   ?? {};
+  _tagsConfig = config.tags        ?? {};
   jawAxis     = config.jawAxis     ?? 'x';
   minJawAngle = config.minJawAngle ?? 0;
   maxJawAngle = config.maxJawAngle ?? 0.15;
+  _emotionRampDuration = config.maxEnvelopeDuration ?? 0.3;
+
+  const lightDefs = config.lighting ?? [
+    { type: 'ambient',     color: '#ffffff', intensity: 1.0 },
+    { type: 'directional', color: '#fff4e0', intensity: 2.5, position: [1,  2,  3] },
+    { type: 'directional', color: '#d0e8ff', intensity: 0.8, position: [-2, 0.5, -1] },
+  ];
+  for (const def of lightDefs) {
+    let light;
+    if (def.type === 'ambient') {
+      light = new THREE.AmbientLight(def.color ?? '#ffffff', def.intensity ?? 1.0);
+    } else if (def.type === 'directional') {
+      light = new THREE.DirectionalLight(def.color ?? '#ffffff', def.intensity ?? 1.0);
+      if (def.position) light.position.set(...def.position);
+    } else {
+      console.warn(`[avatar] unknown light type: ${def.type}`);
+      continue;
+    }
+    scene.add(light);
+  }
 
   if (config.blink) {
     compositor.register('blink', new BlinkDriver(config.blink), 'override');
@@ -273,7 +354,11 @@ window.initAvatar = function (config, port) {
 
     if (gltf.animations.length > 0) {
       mixer = new THREE.AnimationMixer(model);
-      // mixer.clipAction(gltf.animations[0]).play();
+      const idleClip    = THREE.AnimationClip.findByName(gltf.animations, config.idleAnimation ?? 'Idle_Loop RT');
+      const talkingClip = THREE.AnimationClip.findByName(gltf.animations, config.talkingAnimation ?? 'Idle_Talking_Loop RT');
+      if (!idleClip) console.warn(`[avatar] idle animation "${config.idleAnimation}" not found in model`);
+      if (!talkingClip) console.warn(`[avatar] talking animation "${config.talkingAnimation}" not found in model`);
+      animDriver = new AnimationDriver(mixer, idleClip, talkingClip);
     }
 
     const jawBoneName = config.jawBone ?? 'CC_Base_JawRoot';
