@@ -23,6 +23,13 @@ let jawAxis      = 'x';
 let jawRestAngle = 0;
 let minJawAngle  = 0;
 let maxJawAngle  = 0.15;
+
+// Head look-at-camera state — see _computeSwingClampedLookAt / _updateHeadTracking.
+let headBone            = null;
+let maxHeadAngle        = 0.5;
+let headRestLocalQuat   = null;  // bind-pose local quaternion (relative to parent)
+let headBindWorldQuat   = null;  // bind-pose world quaternion
+let headBindForwardWorld = null; // world-space direction the bind pose faced (toward camera)
 let _visemeMap   = {};   // phoneme → {morph: value, ...}; used by showPhoneme
 let _tagsConfig  = {};   // tag name → {morph: value, ...}; used by setEmotion
 let _emotionRampDuration = 0.3;  // seconds for a full 0→1 emotion sweep; reuses maxEnvelopeDuration
@@ -278,6 +285,39 @@ class AnimationCompositor {
   }
 }
 
+// ── Head look-at-camera ───────────────────────────────────────────────────────
+// Computes a local quaternion that re-aims a bone's known-good bind-pose
+// forward direction at a world-space target, clamped to a maximum swing angle
+// away from the bone's neutral orientation relative to its current parent.
+// Bone-agnostic so the same helper can later drive neck/eye bones too.
+function _computeSwingClampedLookAt(bone, restLocalQuat, bindForwardWorld, bindWorldQuat, targetWorldPos, maxAngle) {
+  const boneWorldPos = new THREE.Vector3();
+  bone.getWorldPosition(boneWorldPos);
+  const desiredForwardWorld = targetWorldPos.clone().sub(boneWorldPos).normalize();
+
+  const deltaQuat = new THREE.Quaternion().setFromUnitVectors(bindForwardWorld, desiredForwardWorld);
+  const desiredWorldQuat = deltaQuat.multiply(bindWorldQuat);
+
+  const parentWorldQuat = new THREE.Quaternion();
+  bone.parent.getWorldQuaternion(parentWorldQuat);
+  const desiredLocalQuat = parentWorldQuat.invert().multiply(desiredWorldQuat);
+
+  const swingQuat = restLocalQuat.clone().invert().multiply(desiredLocalQuat);
+  const angle = 2 * Math.acos(Math.min(1, Math.abs(swingQuat.w)));
+  const clampedSwing = angle > maxAngle
+    ? new THREE.Quaternion().identity().slerp(swingQuat, maxAngle / angle)
+    : swingQuat;
+
+  return restLocalQuat.clone().multiply(clampedSwing);
+}
+
+function _updateHeadTracking() {
+  if (!headBone) return;
+  headBone.quaternion.copy(_computeSwingClampedLookAt(
+    headBone, headRestLocalQuat, headBindForwardWorld, headBindWorldQuat, camera.position, maxHeadAngle
+  ));
+}
+
 // ── Singleton instances ───────────────────────────────────────────────────────
 
 const compositor    = new AnimationCompositor();
@@ -309,6 +349,7 @@ window.initAvatar = function (config, port) {
   jawAxis     = config.jawAxis     ?? 'x';
   minJawAngle = config.minJawAngle ?? 0;
   maxJawAngle = config.maxJawAngle ?? 0.15;
+  maxHeadAngle = config.maxHeadAngle ?? 0.5;
   _emotionRampDuration = config.maxEnvelopeDuration ?? 0.3;
 
   const lightDefs = config.lighting ?? [
@@ -373,6 +414,7 @@ window.initAvatar = function (config, port) {
     }
 
     const jawBoneName = config.jawBone ?? 'CC_Base_JawRoot';
+    const headBoneName = config.headBone ?? null;
     model.traverse(node => {
       if (node.isMesh && node.morphTargetDictionary && node.morphTargetInfluences) {
         morphMeshes.set(node, node.morphTargetDictionary);
@@ -380,6 +422,15 @@ window.initAvatar = function (config, port) {
       if (node.name === jawBoneName) {
         jawBone = node;
         jawRestAngle = node.rotation[jawAxis] ?? 0;
+      }
+      if (headBoneName && node.name === headBoneName) {
+        headBone = node;
+        headRestLocalQuat = node.quaternion.clone();
+        headBindWorldQuat = new THREE.Quaternion();
+        node.getWorldQuaternion(headBindWorldQuat);
+        const headWorldPos = new THREE.Vector3();
+        node.getWorldPosition(headWorldPos);
+        headBindForwardWorld = camera.position.clone().sub(headWorldPos).normalize();
       }
     });
   }, undefined, (err) => console.error('[avatar] model load failed', err));
@@ -404,6 +455,7 @@ resize();
 function _tick() {
   const delta = clock.getDelta();
   if (mixer) mixer.update(delta);
+  _updateHeadTracking();
   compositor.tick(delta);
   renderer.render(scene, camera);
 }

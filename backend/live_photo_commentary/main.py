@@ -306,6 +306,8 @@ async def get_model_config():
         "jawAxis": raw.get("jaw_axis", "x"),
         "minJawAngle": raw.get("min_jaw_angle", 0.0),
         "maxJawAngle": raw.get("max_jaw_angle", 0.15),
+        "headBone": raw.get("head_bone"),
+        "maxHeadAngle": raw.get("max_head_angle", 0.5),
         "maxEnvelopeDuration": raw.get("max_envelope_duration", 0.3),
         "visemeMap": raw.get("viseme_map", {}),
         "blink": raw.get("blink"),
