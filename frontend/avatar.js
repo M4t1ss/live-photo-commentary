@@ -23,6 +23,16 @@ let jawAxis      = 'x';
 let jawRestAngle = 0;
 let minJawAngle  = 0;
 let maxJawAngle  = 0.15;
+
+// Gaze-tracking (look-at-camera) state — see _computeSwingClampedLookAt /
+// _updateGazeTracking. Bones are re-aimed at the camera in this order, neck
+// first, so each bone's parent-space math sees its parent's already-applied
+// correction — eyes only pick up the remaining angle neck+head couldn't
+// reach within their own swing limits.
+const GAZE_BONE_KEYS = ['neck', 'head', 'leftEye', 'rightEye'];
+const GAZE_DEFAULT_MAX_ANGLE = { neck: 0.3, head: 0.5, leftEye: 0.15, rightEye: 0.15 };
+let _gazeChain = []; // [{ bone, restLocalQuat, bindWorldQuat, bindForwardWorld, maxAngle }, ...]
+
 let _visemeMap   = {};   // phoneme → {morph: value, ...}; used by showPhoneme
 let _tagsConfig  = {};   // tag name → {morph: value, ...}; used by setEmotion
 let _emotionRampDuration = 0.3;  // seconds for a full 0→1 emotion sweep; reuses maxEnvelopeDuration
@@ -32,13 +42,30 @@ let zoomT = 0;
 let _fullBodyCam = null;
 let _headShotCam = null;
 
+// Right-click + drag orbit — yaw/pitch offset applied on top of the
+// zoom-driven camera position. No panning: the focus is always the avatar.
+let orbitYaw   = 0;
+let orbitPitch = 0;
+let _orbiting  = false; // true from right-mousedown until the resulting contextmenu event is consumed
+const ORBIT_SPEED = 0.005; // radians per pixel dragged
+const ORBIT_PITCH_LIMIT = Math.PI / 2 - 0.05; // clamp just short of straight up/down
+
 function _applyZoom() {
   if (!_fullBodyCam) return;
   const s = zoomT * zoomT * (3 - 2 * zoomT);  // smoothstep
   const camY  = _fullBodyCam.camY  + s * (_headShotCam.camY  - _fullBodyCam.camY);
   const camZ  = _fullBodyCam.camZ  + s * (_headShotCam.camZ  - _fullBodyCam.camZ);
   const lookY = _fullBodyCam.lookY + s * (_headShotCam.lookY - _fullBodyCam.lookY);
-  camera.position.set(0, camY, camZ);
+
+  // Re-express the zoom-driven position in spherical terms around the look
+  // target, then add the orbit yaw/pitch offset on top.
+  const r     = Math.hypot(camZ, camY - lookY);
+  const pitch = Math.atan2(camY - lookY, camZ) + orbitPitch;
+  camera.position.set(
+    r * Math.cos(pitch) * Math.sin(orbitYaw),
+    lookY + r * Math.sin(pitch),
+    r * Math.cos(pitch) * Math.cos(orbitYaw)
+  );
   camera.lookAt(0, lookY, 0);
 }
 
@@ -47,6 +74,39 @@ canvas.addEventListener('wheel', (e) => {
   zoomT = Math.max(0, Math.min(1, zoomT - e.deltaY * 0.001));
   _applyZoom();
 }, { passive: false });
+
+// Suppressed at the document level (not just on canvas) so releasing the
+// right button outside the avatar pane — another panel, or outside the
+// window — doesn't pop the native context menu there instead.
+document.addEventListener('contextmenu', (e) => {
+  if (!_orbiting) return;
+  e.preventDefault();
+  _orbiting = false;
+});
+
+canvas.addEventListener('mousedown', (e) => {
+  if (e.button !== 2) return;
+  e.preventDefault();
+  _orbiting = true;
+  let lastX = e.clientX;
+  let lastY = e.clientY;
+
+  function onMove(e) {
+    orbitYaw   -= (e.clientX - lastX) * ORBIT_SPEED;
+    orbitPitch  = Math.max(-ORBIT_PITCH_LIMIT, Math.min(ORBIT_PITCH_LIMIT, orbitPitch + (e.clientY - lastY) * ORBIT_SPEED));
+    lastX = e.clientX;
+    lastY = e.clientY;
+    _applyZoom();
+  }
+
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+});
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -278,6 +338,43 @@ class AnimationCompositor {
   }
 }
 
+// ── Gaze tracking (look-at-camera) ──────────────────────────────────────────────
+// Computes a local quaternion that re-aims a bone's known-good bind-pose
+// forward direction at a world-space target, clamped to a maximum swing angle
+// away from the bone's neutral orientation relative to its current parent.
+// Bone-agnostic — drives neck, head, and each eye via the same math.
+function _computeSwingClampedLookAt(bone, restLocalQuat, bindForwardWorld, bindWorldQuat, targetWorldPos, maxAngle) {
+  const boneWorldPos = new THREE.Vector3();
+  bone.getWorldPosition(boneWorldPos);
+  const desiredForwardWorld = targetWorldPos.clone().sub(boneWorldPos).normalize();
+
+  const deltaQuat = new THREE.Quaternion().setFromUnitVectors(bindForwardWorld, desiredForwardWorld);
+  const desiredWorldQuat = deltaQuat.multiply(bindWorldQuat);
+
+  const parentWorldQuat = new THREE.Quaternion();
+  bone.parent.getWorldQuaternion(parentWorldQuat);
+  const desiredLocalQuat = parentWorldQuat.invert().multiply(desiredWorldQuat);
+
+  const swingQuat = restLocalQuat.clone().invert().multiply(desiredLocalQuat);
+  const angle = 2 * Math.acos(Math.min(1, Math.abs(swingQuat.w)));
+  const clampedSwing = angle > maxAngle
+    ? new THREE.Quaternion().identity().slerp(swingQuat, maxAngle / angle)
+    : swingQuat;
+
+  return restLocalQuat.clone().multiply(clampedSwing);
+}
+
+// Re-aims each configured gaze bone in chain order (neck → head → eyes), so
+// eyes only pick up whatever angle neck+head couldn't reach within their own
+// swing limits.
+function _updateGazeTracking() {
+  for (const g of _gazeChain) {
+    g.bone.quaternion.copy(_computeSwingClampedLookAt(
+      g.bone, g.restLocalQuat, g.bindForwardWorld, g.bindWorldQuat, camera.position, g.maxAngle
+    ));
+  }
+}
+
 // ── Singleton instances ───────────────────────────────────────────────────────
 
 const compositor    = new AnimationCompositor();
@@ -373,6 +470,23 @@ window.initAvatar = function (config, port) {
     }
 
     const jawBoneName = config.jawBone ?? 'CC_Base_JawRoot';
+
+    // config.{key}Bone / config.max{Key}Angle for each gaze-tracking bone —
+    // e.g. neckBone/maxNeckAngle, leftEyeBone (shared maxEyeAngle with rightEye).
+    const gazeBoneNames = {
+      neck:     config.neckBone     ?? null,
+      head:     config.headBone     ?? null,
+      leftEye:  config.leftEyeBone  ?? null,
+      rightEye: config.rightEyeBone ?? null,
+    };
+    const gazeMaxAngles = {
+      neck:     config.maxNeckAngle ?? GAZE_DEFAULT_MAX_ANGLE.neck,
+      head:     config.maxHeadAngle ?? GAZE_DEFAULT_MAX_ANGLE.head,
+      leftEye:  config.maxEyeAngle  ?? GAZE_DEFAULT_MAX_ANGLE.leftEye,
+      rightEye: config.maxEyeAngle  ?? GAZE_DEFAULT_MAX_ANGLE.rightEye,
+    };
+    const gazeBonesByKey = {};
+
     model.traverse(node => {
       if (node.isMesh && node.morphTargetDictionary && node.morphTargetInfluences) {
         morphMeshes.set(node, node.morphTargetDictionary);
@@ -381,7 +495,23 @@ window.initAvatar = function (config, port) {
         jawBone = node;
         jawRestAngle = node.rotation[jawAxis] ?? 0;
       }
+      for (const key of GAZE_BONE_KEYS) {
+        if (gazeBoneNames[key] && node.name === gazeBoneNames[key]) {
+          const bindWorldQuat = new THREE.Quaternion();
+          node.getWorldQuaternion(bindWorldQuat);
+          const worldPos = new THREE.Vector3();
+          node.getWorldPosition(worldPos);
+          gazeBonesByKey[key] = {
+            bone: node,
+            restLocalQuat: node.quaternion.clone(),
+            bindWorldQuat,
+            bindForwardWorld: camera.position.clone().sub(worldPos).normalize(),
+            maxAngle: gazeMaxAngles[key],
+          };
+        }
+      }
     });
+    _gazeChain = GAZE_BONE_KEYS.map(key => gazeBonesByKey[key]).filter(Boolean);
   }, undefined, (err) => console.error('[avatar] model load failed', err));
 };
 
@@ -404,6 +534,7 @@ resize();
 function _tick() {
   const delta = clock.getDelta();
   if (mixer) mixer.update(delta);
+  _updateGazeTracking();
   compositor.tick(delta);
   renderer.render(scene, camera);
 }
