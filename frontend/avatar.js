@@ -43,6 +43,7 @@ let _headShotCam = null;
 // zoom-driven camera position. No panning: the focus is always the avatar.
 let orbitYaw   = 0;
 let orbitPitch = 0;
+let _orbiting  = false; // true from right-mousedown until the resulting contextmenu event is consumed
 const ORBIT_SPEED = 0.005; // radians per pixel dragged
 const ORBIT_PITCH_LIMIT = Math.PI / 2 - 0.05; // clamp just short of straight up/down
 
@@ -71,11 +72,19 @@ canvas.addEventListener('wheel', (e) => {
   _applyZoom();
 }, { passive: false });
 
-canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+// Suppressed at the document level (not just on canvas) so releasing the
+// right button outside the avatar pane — another panel, or outside the
+// window — doesn't pop the native context menu there instead.
+document.addEventListener('contextmenu', (e) => {
+  if (!_orbiting) return;
+  e.preventDefault();
+  _orbiting = false;
+});
 
 canvas.addEventListener('mousedown', (e) => {
   if (e.button !== 2) return;
   e.preventDefault();
+  _orbiting = true;
   let lastX = e.clientX;
   let lastY = e.clientY;
 
