@@ -39,13 +39,29 @@ let zoomT = 0;
 let _fullBodyCam = null;
 let _headShotCam = null;
 
+// Right-click + drag orbit — yaw/pitch offset applied on top of the
+// zoom-driven camera position. No panning: the focus is always the avatar.
+let orbitYaw   = 0;
+let orbitPitch = 0;
+const ORBIT_SPEED = 0.005; // radians per pixel dragged
+const ORBIT_PITCH_LIMIT = Math.PI / 2 - 0.05; // clamp just short of straight up/down
+
 function _applyZoom() {
   if (!_fullBodyCam) return;
   const s = zoomT * zoomT * (3 - 2 * zoomT);  // smoothstep
   const camY  = _fullBodyCam.camY  + s * (_headShotCam.camY  - _fullBodyCam.camY);
   const camZ  = _fullBodyCam.camZ  + s * (_headShotCam.camZ  - _fullBodyCam.camZ);
   const lookY = _fullBodyCam.lookY + s * (_headShotCam.lookY - _fullBodyCam.lookY);
-  camera.position.set(0, camY, camZ);
+
+  // Re-express the zoom-driven position in spherical terms around the look
+  // target, then add the orbit yaw/pitch offset on top.
+  const r     = Math.hypot(camZ, camY - lookY);
+  const pitch = Math.atan2(camY - lookY, camZ) + orbitPitch;
+  camera.position.set(
+    r * Math.cos(pitch) * Math.sin(orbitYaw),
+    lookY + r * Math.sin(pitch),
+    r * Math.cos(pitch) * Math.cos(orbitYaw)
+  );
   camera.lookAt(0, lookY, 0);
 }
 
@@ -54,6 +70,31 @@ canvas.addEventListener('wheel', (e) => {
   zoomT = Math.max(0, Math.min(1, zoomT - e.deltaY * 0.001));
   _applyZoom();
 }, { passive: false });
+
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+canvas.addEventListener('mousedown', (e) => {
+  if (e.button !== 2) return;
+  e.preventDefault();
+  let lastX = e.clientX;
+  let lastY = e.clientY;
+
+  function onMove(e) {
+    orbitYaw   -= (e.clientX - lastX) * ORBIT_SPEED;
+    orbitPitch  = Math.max(-ORBIT_PITCH_LIMIT, Math.min(ORBIT_PITCH_LIMIT, orbitPitch + (e.clientY - lastY) * ORBIT_SPEED));
+    lastX = e.clientX;
+    lastY = e.clientY;
+    _applyZoom();
+  }
+
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+});
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
