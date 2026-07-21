@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { VRMLoaderPlugin } from '@pixiv/three-vrm';
 
 const canvas = document.getElementById('avatar-canvas');
 
@@ -332,9 +333,19 @@ window.initAvatar = function (config, port) {
   if (config.blink) {
     compositor.register('blink', new BlinkDriver(config.blink), 'override');
   }
+  
+  let currentVrm = null;
 
-  new GLTFLoader().load(`http://127.0.0.1:${port}/model`, (gltf) => {
-    const model = gltf.scene;
+  const loader = new GLTFLoader();
+  loader.register((parser) => new VRMLoaderPlugin(parser));
+  loader.load(`http://127.0.0.1:${port}/model`, (gltf) => {
+    // const model = gltf.scene;
+    const vrm = gltf.userData.vrm;
+    window.gltf = gltf;
+    let model = vrm ? vrm.scene : gltf.scene;
+    if (vrm) {
+      vrm.scene.rotation.y = Math.PI;
+    }
 
     // Center horizontally, feet at y=0.
     const box    = new THREE.Box3().setFromObject(model);
