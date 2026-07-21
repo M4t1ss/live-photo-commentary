@@ -30,7 +30,7 @@ let maxJawAngle  = 0.15;
 // correction — eyes only pick up the remaining angle neck+head couldn't
 // reach within their own swing limits.
 const GAZE_BONE_KEYS = ['neck', 'head', 'leftEye', 'rightEye'];
-const GAZE_DEFAULT_MAX_ANGLE = { neck: 0.3, head: 0.5, leftEye: 0.4, rightEye: 0.4 };
+const GAZE_DEFAULT_MAX_ANGLE = { neck: 0.3, head: 0.5, leftEye: 0.15, rightEye: 0.15 };
 let _gazeChain = []; // [{ bone, restLocalQuat, bindWorldQuat, bindForwardWorld, maxAngle }, ...]
 
 let _visemeMap   = {};   // phoneme → {morph: value, ...}; used by showPhoneme
