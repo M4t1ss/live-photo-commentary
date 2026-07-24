@@ -22,7 +22,6 @@ const diffMeasureSelect  = document.getElementById("cfg-diff-measure");
 const maxHistoryInput    = document.getElementById("cfg-max-history");
 const geminiKeyInput     = document.getElementById("cfg-gemini-key");
 const openaiKeyInput     = document.getElementById("cfg-openai-key");
-const elevenlabsKeyInput = document.getElementById("cfg-elevenlabs-key");
 const volumeInput        = document.getElementById("cfg-volume");
 const volumePctEl        = document.getElementById("cfg-volume-pct");
 const barVolumeInput     = document.getElementById("bar-volume");
@@ -80,10 +79,15 @@ let modelsReceived = false;
 let backendReady    = false;
 
 function checkReady() {
-  const ready = configReceived && modelsReceived && backendReady;
+  // Settings must stay reachable even if the VLM/TTS model failed to load
+  // (e.g. missing API key or dependency), so the user can fix the config —
+  // only the connection to the backend process itself gates the splash/settings.
+  const connected = configReceived && modelsReceived;
+  const ready = connected && backendReady;
   startStopBtn.disabled = !ready;
-  settingsBtn.disabled  = !ready;
-  if (ready && !running) { setPhase("Idle", "none"); dismissSplash(); }
+  settingsBtn.disabled  = !connected;
+  if (connected) dismissSplash();
+  if (ready && !running) setPhase("Idle", "none");
 }
 
 function setRunning(value) {
@@ -535,7 +539,6 @@ function populateModal() {
   maxHistoryInput.value   = currentConfig.max_history_size ?? 0;
   geminiKeyInput.value    = "";
   openaiKeyInput.value    = "";
-  elevenlabsKeyInput.value = "";
   cfgSubtitleMode.checked = subtitleMode === "separated";
   cfgPromptset.value = currentPromptsetName;
   _updatePromptsetBtns();
@@ -587,9 +590,8 @@ modalOk.addEventListener("click", () => {
     difference_measure: diffMeasureSelect.value || "mse",
     max_history_size: parseInt(maxHistoryInput.value, 10) || 0,
   };
-  if (geminiKeyInput.value)     updates.gemini_api_key     = geminiKeyInput.value;
-  if (openaiKeyInput.value)     updates.openai_api_key     = openaiKeyInput.value;
-  if (elevenlabsKeyInput.value) updates.elevenlabs_api_key = elevenlabsKeyInput.value;
+  if (geminiKeyInput.value) updates.gemini_api_key = geminiKeyInput.value;
+  if (openaiKeyInput.value) updates.openai_api_key = openaiKeyInput.value;
 
   // Changing the VLM or TTS model tears down and rebuilds it on the backend,
   // so a running cycle would hit a "no model configured" error mid-flight.
