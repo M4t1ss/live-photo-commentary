@@ -106,7 +106,8 @@ def _make_describer(on_progress=None):
         describer = LocalDescriber(model_id=path, on_progress=on_progress)
     else:
         from .remote_describer import RemoteDescriber
-        describer = RemoteDescriber(provider=cfg.vlm_provider, model_id=cfg.vlm_model)
+        api_key = {"gemini": cfg.gemini_api_key, "openai": cfg.openai_api_key}.get(cfg.vlm_provider)
+        describer = RemoteDescriber(provider=cfg.vlm_provider, model_id=cfg.vlm_model, api_key=api_key)
     return describer
 
 
@@ -375,7 +376,11 @@ async def websocket_endpoint(ws: WebSocket):
                     if data.get("persist"):
                         await asyncio.to_thread(config.persist, Path(".env"))
                     if pipeline is not None:
-                        if old.vlm_provider != new.vlm_provider or old.vlm_model != new.vlm_model:
+                        api_key_changed = (
+                            (new.vlm_provider == "gemini" and old.gemini_api_key != new.gemini_api_key)
+                            or (new.vlm_provider == "openai" and old.openai_api_key != new.openai_api_key)
+                        )
+                        if old.vlm_provider != new.vlm_provider or old.vlm_model != new.vlm_model or api_key_changed:
                             asyncio.create_task(_reinit_describer())
                         if old.tts_voice != new.tts_voice:
                             asyncio.create_task(_reinit_synthesizer())
