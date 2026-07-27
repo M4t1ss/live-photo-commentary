@@ -87,7 +87,11 @@ function checkReady() {
   startStopBtn.disabled = !ready;
   settingsBtn.disabled  = !connected;
   if (connected) dismissSplash();
-  if (ready && !running) setPhase("Idle", "none");
+  if (ready && !running) {
+    setPhase("Idle", "none");
+  } else if (connected && !running && !currentConfig.vlm_provider) {
+    setPhase("Select a VLM model in Settings", "none");
+  }
 }
 
 function setRunning(value) {
@@ -301,6 +305,7 @@ function handleMessage(data) {
 
     case "model_loading":
       if (!running) setPhase("Initializing…", "up");
+      checkReady();
       break;
 
     case "load_progress":

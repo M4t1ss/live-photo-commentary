@@ -100,8 +100,7 @@ def _free_describer(describer) -> None:
 def _make_describer(on_progress=None):
     cfg = config.get()
     if cfg.vlm_provider == "local":
-        model_id = cfg.vlm_model or "google/gemma-4-E2B-it"
-        path = _model_local_dirs.get(model_id, model_id)
+        path = _model_local_dirs.get(cfg.vlm_model, cfg.vlm_model)
         from .local_describer import LocalDescriber
         describer = LocalDescriber(model_id=path, on_progress=on_progress)
     else:
@@ -185,6 +184,12 @@ async def _reinit_describer() -> None:
     assert pipeline is not None
     _model_errors.pop("vlm", None)
     _vlm_ready = False
+    cfg = config.get()
+    if not cfg.vlm_provider or not cfg.vlm_model:
+        # Fresh install / no model chosen yet — don't download or connect to
+        # anything until the user picks one in Settings and saves.
+        await _send_ready_state()
+        return
     await _send({"type": "model_loading", "model": "vlm"})
     await _send_ready_state()
     try:
@@ -199,15 +204,13 @@ async def _reinit_describer() -> None:
             await _send({"type": "load_progress", "message": "Releasing previous model…"})
             await asyncio.to_thread(_free_describer, old_describer)
 
-        cfg = config.get()
         loop = asyncio.get_running_loop()
 
         def _progress(msg):
             _send_threadsafe(msg, loop)
 
         if cfg.vlm_provider == "local":
-            model_id = cfg.vlm_model or "microsoft/Phi-4-multimodal-instruct"
-            _model_local_dirs[model_id] = await _download_with_progress(model_id)
+            _model_local_dirs[cfg.vlm_model] = await _download_with_progress(cfg.vlm_model)
         pipeline.describer = await asyncio.to_thread(_make_describer, _progress)
         _apply_promptset(config.get().active_promptset)
         log.info("Describer ready")

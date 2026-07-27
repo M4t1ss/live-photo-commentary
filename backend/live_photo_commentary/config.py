@@ -10,8 +10,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    vlm_provider: str = "local"
-    vlm_model: str | None = "apple/FastVLM-0.5B"
+    vlm_provider: str | None = None
+    vlm_model: str | None = None
     tts_voice: str = "af_heart"
     pre_screenshot_delay: float = 2.0
     difference_threshold: float = 0.0
