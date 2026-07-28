@@ -229,6 +229,18 @@ body {
   border-radius: 3px;
 }
 
+#diff-info {
+  font-size: 12px;
+  font-family: monospace;
+  color: #aaa;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+#diff-value {
+  cursor: pointer;
+}
+
 /* Modal */
 #modal-overlay {
   position: fixed;

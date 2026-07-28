@@ -48,6 +48,7 @@
     <div id="right-panel">
       <img id="current-frame" class="hidden" alt="Current frame" />
       <img id="prev-frame" class="hidden" alt="Previous frame" />
+      <div id="diff-info" class="hidden"></div>
       <div id="status-bar">
         <span id="status-phase">Idle</span>
         <span id="status-timer"></span>
@@ -142,7 +143,14 @@
         <label>Measure
           <select id="cfg-diff-measure">
             <option value="mse">MSE</option>
-            <option value="mae">MAE</option>
+            <option value="ssim">SSIM</option>
+            <option value="average_hash">Average hash</option>
+            <option value="phash">Perceptual hash</option>
+            <option value="phash_simple">Perceptual hash (simple)</option>
+            <option value="dhash">Difference hash</option>
+            <option value="dhash_vertical">Difference hash (vertical)</option>
+            <option value="whash">Wavelet hash</option>
+            <option value="colorhash">Color hash</option>
           </select>
         </label>
       </section>

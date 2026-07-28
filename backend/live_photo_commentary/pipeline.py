@@ -19,6 +19,7 @@ class Pipeline:
         self._tmp_dir = Path(mkdtemp(prefix="lpc_"))
         self._frame_path: Path | None = None
         self._prev_img = None
+        self._last_rejected = False
         self._audio_chunks: dict[int, Path] = {}
 
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -64,9 +65,8 @@ class Pipeline:
         self._prev_img = img
         self._frame_path = Path(path)
 
-        if self._broadcast_fn:
-            await self._broadcast_fn({"type": "frame", "url": "/frame/current"})
-
+        diff = None
+        accepted = True
         if prev_img is not None:
             cfg = config.get()
             if cfg.difference_threshold > 0:
@@ -74,12 +74,27 @@ class Pipeline:
                 diff = await asyncio.to_thread(
                     difference, img, prev_img, cfg.difference_measure
                 )
-                if diff < cfg.difference_threshold:
-                    if self._broadcast_fn:
-                        await self._broadcast_fn({"type": "skipped", "diff": round(diff, 6)})
-                    # Ask JS to take another screenshot so the loop can retry.
-                    self._send({"type": "take_screenshot"})
-                    return
+                accepted = diff >= cfg.difference_threshold
+
+        # Only push the displayed frame into "previous" when the currently
+        # shown frame was itself accepted; consecutive rejections (and the
+        # accepted frame that ends a rejection streak) replace it in place.
+        push = not self._last_rejected
+        self._last_rejected = not accepted
+
+        if self._broadcast_fn:
+            frame_msg = {"type": "frame", "url": "/frame/current", "push": push}
+            if diff is not None:
+                frame_msg["diff"] = round(diff, 6)
+                frame_msg["measure"] = cfg.difference_measure
+            await self._broadcast_fn(frame_msg)
+
+        if not accepted:
+            if self._broadcast_fn:
+                await self._broadcast_fn({"type": "skipped", "diff": round(diff, 6)})
+            # Ask JS to take another screenshot so the loop can retry.
+            self._send({"type": "take_screenshot"})
+            return
 
         try:
             self._vlm_q.put_nowait((self._generation, img, prev_img))

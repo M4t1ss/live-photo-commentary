@@ -6,6 +6,13 @@ const startStopBtn       = document.getElementById("start-stop");
 const settingsBtn        = document.getElementById("settings-btn");
 const currentFrameEl     = document.getElementById("current-frame");
 const prevFrameEl        = document.getElementById("prev-frame");
+const diffInfoEl         = document.getElementById("diff-info");
+
+diffInfoEl.addEventListener("click", (e) => {
+  if (e.target.id === "diff-value") {
+    navigator.clipboard.writeText(e.target.textContent);
+  }
+});
 const subtitleEl         = document.getElementById("subtitle");
 const toggleSubtitleBtn  = document.getElementById("toggle-subtitle");
 const statusPhaseEl      = document.getElementById("status-phase");
@@ -254,13 +261,19 @@ function handleMessage(data) {
   switch (data.type) {
     case "frame": {
       const newUrl = `http://127.0.0.1:${port}${data.url}?t=${Date.now()}`;
-      if (currentFrameUrl) {
+      if (data.push && currentFrameUrl) {
         prevFrameEl.src = currentFrameUrl;
         prevFrameEl.classList.remove("hidden");
       }
       currentFrameUrl = newUrl;
       currentFrameEl.src = newUrl;
       currentFrameEl.classList.remove("hidden");
+      if (data.diff !== undefined) {
+        diffInfoEl.innerHTML = `${data.measure.toUpperCase()}  Δ=<span id="diff-value" title="Click to copy">${data.diff}</span>`;
+        diffInfoEl.classList.remove("hidden");
+      } else {
+        diffInfoEl.classList.add("hidden");
+      }
       firstChunkReceived = false;
       resetAudio();
       setPhase("Describing…", "up");
