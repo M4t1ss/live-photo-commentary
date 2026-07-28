@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin } from '@pixiv/three-vrm';
+import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation';
 
 const canvas = document.getElementById('avatar-canvas');
 
@@ -13,8 +14,11 @@ const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 500);
 
 
 const clock = new THREE.Clock();
-let mixer = null;
-let animDriver = null;
+let mixer         = null;
+let channelMixer  = null;
+let currentVrm    = null;
+let _idleClips    = [];
+let _talkingClips = [];
 
 // Model state — populated by initAvatar after the GLB loads.
 const morphMeshes = new Map();  // Map<Mesh, morphTargetDictionary>
@@ -244,38 +248,99 @@ class EmotionDriver {
   }
 }
 
-// Crossfades between an idle and a talking body animation clip on the mixer.
-// Both clips loop continuously; setTalking() smoothly fades weight from one
-// to the other rather than snapping, using three.js's own fadeIn/fadeOut.
-class AnimationDriver {
-  constructor(mixer, idleClip, talkingClip, blendDuration = 0.4) {
-    this._blendDuration = blendDuration;
-    this._talking = false;
+// Generic multi-channel animation mixer. Each named channel holds a clip pool
+// and a single active Three.js action. Channels fade in/out independently;
+// channels that reach weight 0 are removed on the next cleanup() call.
+//
+// Three.js weight note: effectiveWeight = action.weight * interpolant.
+// fadeIn/fadeOut only move the interpolant (0→1 or 1→0). action.weight must
+// be 1 for the fade to actually reach full strength. setEffectiveWeight(0)
+// would zero the product permanently — never use it before fadeIn.
+class ChannelMixer {
+  constructor(mixer) {
+    this._mixer    = mixer;
+    this._channels = new Map(); // name → { clips, action, targetWeight, blendDuration }
+    mixer.addEventListener('loop', e => this._onLoop(e));
+  }
 
-    this._idleAction    = idleClip    ? mixer.clipAction(idleClip)    : null;
-    this._talkingAction = talkingClip ? mixer.clipAction(talkingClip) : null;
+  // Start or fade in a named channel. If already active, only the clip pool
+  // is updated. If it was stopping, the fade is reversed.
+  play(name, clips, { blendDuration = 0.4 } = {}) {
+    if (!clips.length) return;
+    const existing = this._channels.get(name);
 
-    if (this._idleAction) {
-      this._idleAction.setLoop(THREE.LoopRepeat, Infinity);
-      this._idleAction.play();
+    if (existing) {
+      existing.clips = clips;
+      if (existing.targetWeight > 0) return;
+      // Was stopping — reverse the fade
+      existing.targetWeight = 1;
+      existing.action.stopFading();
+      existing.action.enabled = true;
+      existing.action.setEffectiveWeight(1).play();
+      return;
     }
-    if (this._talkingAction) {
-      this._talkingAction.setLoop(THREE.LoopRepeat, Infinity);
-      this._talkingAction.setEffectiveWeight(0);
-      this._talkingAction.play();
+
+    const clip = this._pickRandom(clips);
+    const action = this._mixer.clipAction(clip);
+    action.enabled = true;
+    action.setLoop(THREE.LoopRepeat, Infinity);
+
+    // If other channels are active, fade in so we don't pop. Otherwise start
+    // immediately — avoids a T-pose flash while the fade-in ramps up.
+    const hasOtherActive = [...this._channels.values()].some(ch => ch.targetWeight > 0);
+    if (hasOtherActive) {
+      action.setEffectiveWeight(1).fadeIn(blendDuration).play();
+    } else {
+      action.setEffectiveWeight(1).play();
+    }
+    this._channels.set(name, { clips, action, targetWeight: 1, blendDuration });
+  }
+
+  // Fade out a named channel. It is removed from the state map once Three.js
+  // disables the action (see cleanup()).
+  stop(name, { blendDuration } = {}) {
+    const ch = this._channels.get(name);
+    if (!ch || ch.targetWeight === 0) return;
+    ch.action.fadeOut(blendDuration ?? ch.blendDuration);
+    ch.targetWeight = 0;
+  }
+
+  // Must be called every frame after mixer.update(). Removes channels whose
+  // fadeOut has completed (Three.js sets action.enabled = false when weight
+  // reaches 0 — more reliable than polling getEffectiveWeight()).
+  cleanup() {
+    for (const [name, ch] of this._channels) {
+      if (ch.targetWeight === 0 && !ch.action.enabled) {
+        ch.action.stop();
+        this._channels.delete(name);
+      }
     }
   }
 
-  setTalking(talking) {
-    if (talking === this._talking) return;
-    this._talking = talking;
-    if (!this._idleAction || !this._talkingAction) return;
+  _pickRandom(clips) {
+    return clips[Math.floor(Math.random() * clips.length)];
+  }
 
-    const [from, to] = talking
-      ? [this._idleAction, this._talkingAction]
-      : [this._talkingAction, this._idleAction];
-    from.fadeOut(this._blendDuration);
-    to.reset().setEffectiveWeight(1).fadeIn(this._blendDuration).play();
+  _onLoop(e) {
+    for (const [, ch] of this._channels) {
+      if (e.action === ch.action && ch.targetWeight > 0) {
+        this._swapClip(ch);
+        return;
+      }
+    }
+  }
+
+  // Crossfade to a randomly-picked clip from the channel's pool.
+  // setEffectiveWeight(1) sets weight=1 before fadeIn so the interpolant
+  // (0→1) actually reaches full strength: 1 * (0→1) = 0→1.
+  _swapClip(ch) {
+    const newClip = this._pickRandom(ch.clips);
+    if (!newClip || newClip === ch.action.getClip()) return;
+    const newAct = this._mixer.clipAction(newClip);
+    newAct.enabled = true;
+    newAct.setLoop(THREE.LoopRepeat, Infinity).setEffectiveWeight(1).fadeIn(ch.blendDuration).play();
+    ch.action.fadeOut(ch.blendDuration);
+    ch.action = newAct;
   }
 }
 
@@ -387,7 +452,15 @@ const emotionDriver = compositor.register('emotion', new EmotionDriver(), 'add')
 // Called by app.js when a new audio chunk starts playing.
 window.setLipSyncData = function (timeline, audio) {
   lipSyncDriver.setData(timeline, audio);
-  animDriver?.setTalking(!!audio);
+  if (channelMixer) {
+    if (audio && _talkingClips.length) {
+      channelMixer.play('talking', _talkingClips);
+      channelMixer.stop('idle');
+    } else {
+      channelMixer.play('idle', _idleClips);
+      channelMixer.stop('talking');
+    }
+  }
 };
 
 // Called by app.js when a {tag} mark's time is reached, or with null/undefined
@@ -398,6 +471,47 @@ window.setEmotion = function (tagOrMorphs) {
   const morphs = typeof tagOrMorphs === 'string' ? (_tagsConfig[tagOrMorphs] ?? {}) : (tagOrMorphs ?? {});
   emotionDriver.setMorphs(morphs);
 };
+
+// Resolves an animation clip by name: if nameOrPath ends in ".vrma", loads the
+// file from the backend and converts it via createVRMAnimationClip; otherwise
+// looks up the clip by name inside the already-loaded gltf.animations array.
+function _resolveAnimClip(nameOrPath, port, gltf, vrm) {
+  if (!nameOrPath) return Promise.resolve(null);
+  if (nameOrPath.endsWith('.vrma')) {
+    if (!vrm) {
+      console.warn('[avatar] VRMA animations require a VRM model; skipping', nameOrPath);
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      const vrmaLoader = new GLTFLoader();
+      vrmaLoader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+      vrmaLoader.load(
+        `http://127.0.0.1:${port}/animation/${encodeURIComponent(nameOrPath)}`,
+        (vrmaGltf) => {
+          const vrmAnimation = vrmaGltf.userData.vrmAnimations?.[0];
+          if (!vrmAnimation) {
+            console.warn(`[avatar] no VRM animation found in ${nameOrPath}`);
+            resolve(null);
+          } else {
+            resolve(createVRMAnimationClip(vrmAnimation, vrm));
+          }
+        },
+        undefined,
+        (err) => { console.warn(`[avatar] failed to load ${nameOrPath}:`, err); resolve(null); }
+      );
+    });
+  }
+  const clip = THREE.AnimationClip.findByName(gltf.animations, nameOrPath);
+  if (!clip) console.warn(`[avatar] animation "${nameOrPath}" not found in model`);
+  return Promise.resolve(clip);
+}
+
+// Normalises a single name or list of names, loads all clips, returns the array.
+async function _resolveAnimClips(namesOrPaths, port, gltf, vrm) {
+  const names = Array.isArray(namesOrPaths) ? namesOrPaths : (namesOrPaths ? [namesOrPaths] : []);
+  const clips = await Promise.all(names.map(n => _resolveAnimClip(n, port, gltf, vrm)));
+  return clips.filter(Boolean);
+}
 
 // Called by app.js after it resolves the backend port and fetches /model-config.
 window.initAvatar = function (config, port) {
@@ -431,18 +545,15 @@ window.initAvatar = function (config, port) {
     compositor.register('blink', new BlinkDriver(config.blink), 'override');
   }
   
-  let currentVrm = null;
-
   const loader = new GLTFLoader();
   loader.register((parser) => new VRMLoaderPlugin(parser));
-  loader.load(`http://127.0.0.1:${port}/model`, (gltf) => {
+  loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+  loader.load(`http://127.0.0.1:${port}/model`, async (gltf) => {
     // const model = gltf.scene;
     const vrm = gltf.userData.vrm;
+    currentVrm = vrm;
     window.gltf = gltf;
     let model = vrm ? vrm.scene : gltf.scene;
-    if (vrm) {
-      vrm.scene.rotation.y = Math.PI;
-    }
 
     // Center horizontally, feet at y=0.
     const box    = new THREE.Box3().setFromObject(model);
@@ -460,14 +571,13 @@ window.initAvatar = function (config, port) {
     _fullBodyCam = { camY: size.y * 0.50, camZ: dist,        lookY: size.y * 0.50 };
     _headShotCam = { camY: size.y * 0.90, camZ: dist * 0.18, lookY: size.y * 0.90 };
 
-    if (gltf.animations.length > 0) {
-      mixer = new THREE.AnimationMixer(model);
-      const idleClip    = THREE.AnimationClip.findByName(gltf.animations, config.idleAnimation ?? 'Idle_Loop RT');
-      const talkingClip = THREE.AnimationClip.findByName(gltf.animations, config.talkingAnimation ?? 'Idle_Talking_Loop RT');
-      if (!idleClip) console.warn(`[avatar] idle animation "${config.idleAnimation}" not found in model`);
-      if (!talkingClip) console.warn(`[avatar] talking animation "${config.talkingAnimation}" not found in model`);
-      animDriver = new AnimationDriver(mixer, idleClip, talkingClip);
-    }
+    mixer = new THREE.AnimationMixer(model);
+    [_idleClips, _talkingClips] = await Promise.all([
+      _resolveAnimClips(config.idleAnimation, port, gltf, vrm),
+      _resolveAnimClips(config.talkingAnimation, port, gltf, vrm),
+    ]);
+    channelMixer = new ChannelMixer(mixer);
+    if (_idleClips.length) channelMixer.play('idle', _idleClips);
 
     const jawBoneName = config.jawBone ?? 'CC_Base_JawRoot';
 
@@ -534,6 +644,8 @@ resize();
 function _tick() {
   const delta = clock.getDelta();
   if (mixer) mixer.update(delta);
+  channelMixer?.cleanup();
+  if (currentVrm) currentVrm.update(delta);
   _updateGazeTracking();
   compositor.tick(delta);
   renderer.render(scene, camera);

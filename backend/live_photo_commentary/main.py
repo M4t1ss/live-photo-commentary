@@ -335,6 +335,15 @@ async def get_model():
     return FileResponse(str(model_path), media_type="model/gltf-binary")
 
 
+@app.get("/animation/{filename}")
+async def get_animation(filename: str):
+    safe_name = Path(filename).name
+    anim_path = config.get().model_dir / "animations" / safe_name
+    if not anim_path.exists():
+        raise HTTPException(status_code=404, detail="Animation not found")
+    return FileResponse(str(anim_path), media_type="model/gltf-binary")
+
+
 async def _send_models() -> None:
     from .synthesizers.kokoro import KokoroSynthesizer
     try:

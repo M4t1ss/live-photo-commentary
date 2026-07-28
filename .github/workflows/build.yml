@@ -122,6 +122,7 @@ jobs:
 
       # Copy model.glb / model.yaml into resources/ if present in the repo.
       # Models are not committed at the moment; set up dummies if so.
+      # Animations are copied if present (also not committed).
       - name: Copy model files into resources (if present)
         shell: bash
         run: |
@@ -131,6 +132,11 @@ jobs:
           else
             touch src-tauri/resources/models/model.glb
             touch src-tauri/resources/models/model.yaml
+          fi
+          if [ -d models/animations ]; then
+            mkdir -p src-tauri/resources/models/animations
+            find models/animations -maxdepth 1 -name '*.vrma' \
+              -exec cp {} src-tauri/resources/models/animations/ \;
           fi
 
       # Cache the cargo-tauri binary so it is only compiled on first run.
