@@ -46,7 +46,7 @@
     </div>
     <div id="divider"></div>
     <div id="right-panel">
-      <img id="current-frame" alt="Current frame" />
+      <img id="current-frame" class="hidden" alt="Current frame" />
       <img id="prev-frame" class="hidden" alt="Previous frame" />
       <div id="status-bar">
         <span id="status-phase">Idle</span>
@@ -64,6 +64,7 @@
         <button class="tab-btn" data-tab="prompts">Prompts</button>
       </div>
 
+      <div id="modal-body">
       <div id="tab-general">
       <section>
         <h3>Vision model</h3>
@@ -115,20 +116,20 @@
         <label>Background
           <div class="color-row">
             <div class="color-preview" id="cfg-bg-preview"></div>
-            <input type="text" id="cfg-bg-color" maxlength="7" placeholder="#000000" spellcheck="false" />
+            <input type="text" id="cfg-bg-color" class="mono" maxlength="7" placeholder="#000000" spellcheck="false" />
           </div>
         </label>
         <label>Subtitle color
           <div class="color-row">
             <div class="color-preview" id="cfg-fg-preview"></div>
-            <input type="text" id="cfg-fg-color" maxlength="7" placeholder="#ffffff" spellcheck="false" />
+            <input type="text" id="cfg-fg-color" class="mono" maxlength="7" placeholder="#ffffff" spellcheck="false" />
           </div>
         </label>
       </section>
 
       <section>
         <h3>Timing</h3>
-        <label>Pre-screenshot delay (s)
+        <label>Screenshot delay (s)
           <input type="number" id="cfg-pre-screenshot-delay" step="0.5" min="0" />
         </label>
       </section>
@@ -189,6 +190,7 @@
           <label class="prompt-label"><span>Compact prompt</span><textarea id="cfg-compact-prompt" rows="3"></textarea></label>
         </section>
       </div><!-- #tab-prompts -->
+      </div><!-- #modal-body -->
 
       <div id="modal-buttons">
         <button id="modal-cancel">Cancel</button>

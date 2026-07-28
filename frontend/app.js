@@ -260,6 +260,7 @@ function handleMessage(data) {
       }
       currentFrameUrl = newUrl;
       currentFrameEl.src = newUrl;
+      currentFrameEl.classList.remove("hidden");
       firstChunkReceived = false;
       resetAudio();
       setPhase("Describing…", "up");
