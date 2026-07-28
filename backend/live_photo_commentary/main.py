@@ -57,24 +57,13 @@ async def _send_ready_state() -> None:
     })
 
 
-_VLM_CATALOGUE = [
-    # Cloud
-    {"provider": "gemini", "model_id": "gemini-2.0-flash-exp"},
-    {"provider": "gemini", "model_id": "gemini-2.5-flash-lite-preview-06-17"},
-    {"provider": "openai",  "model_id": "gpt-4o"},
-    {"provider": "openai",  "model_id": "gpt-4o-mini"},
-    # Local
-    {"provider": "local", "model_id": "microsoft/Phi-4-multimodal-instruct"},
-    {"provider": "local", "model_id": "google/gemma-3-4b-it"},
-    {"provider": "local", "model_id": "google/gemma-3-12b-it"},
-    {"provider": "local", "model_id": "google/gemma-4-E4B-it"},
-    {"provider": "local", "model_id": "google/gemma-4-E2B-it"},
-    {"provider": "local", "model_id": "Qwen/Qwen2.5-VL-3B-Instruct"},
-    {"provider": "local", "model_id": "Qwen/Qwen2.5-VL-7B-Instruct"},
-    {"provider": "local", "model_id": "apple/FastVLM-0.5B"},
-    {"provider": "local", "model_id": "apple/FastVLM-1.5B"},
-    {"provider": "local", "model_id": "apple/FastVLM-7B"},
-]
+def _load_vlm_catalogue() -> list[dict]:
+    path = Path(__file__).parent / "vlm_models.yaml"
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+_VLM_CATALOGUE = _load_vlm_catalogue()
 
 
 def _free_describer(describer) -> None:
