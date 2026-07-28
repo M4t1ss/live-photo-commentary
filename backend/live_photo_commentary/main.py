@@ -57,7 +57,7 @@ async def _send_ready_state() -> None:
     })
 
 
-def _load_vlm_catalogue() -> list[dict]:
+def _load_vlm_catalogue() -> dict[str, list[str]]:
     path = Path(__file__).parent / "vlm_models.yaml"
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)

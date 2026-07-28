@@ -13,9 +13,13 @@ const statusTimerEl      = document.getElementById("status-timer");
 const modalOverlay       = document.getElementById("modal-overlay");
 const modalCancel        = document.getElementById("modal-cancel");
 const modalOk            = document.getElementById("modal-ok");
-const vlmSelect          = document.getElementById("cfg-vlm");
+const vlmProviderSelect  = document.getElementById("cfg-vlm-provider");
+const vlmModelInput      = document.getElementById("cfg-vlm-model");
+const vlmModelCombo      = document.getElementById("vlm-model-combo");
+const vlmModelDropdown   = document.getElementById("vlm-model-dropdown");
 const ttsVoiceInput      = document.getElementById("cfg-tts-voice");
-const ttsVoiceDatalist   = document.getElementById("tts-voice-list");
+const ttsVoiceCombo      = document.getElementById("tts-voice-combo");
+const ttsVoiceDropdown   = document.getElementById("tts-voice-dropdown");
 const preScreenshotInput    = document.getElementById("cfg-pre-screenshot-delay");
 const diffThreshInput    = document.getElementById("cfg-diff-threshold");
 const diffMeasureSelect  = document.getElementById("cfg-diff-measure");
@@ -66,7 +70,7 @@ let subtitleMode = localStorage.getItem("lpc_subtitle_mode") ?? "overlay";
 let bgColor = localStorage.getItem("lpc_bg_color") ?? "#000000";
 let fgColor = localStorage.getItem("lpc_fg_color") ?? "#ffffff";
 let currentConfig = {};
-let vlmCatalogue = [];
+let vlmCatalogue = {};
 let ttsVoices = [];
 let promptsetNames = [];
 let currentPromptsetName = "default";
@@ -342,7 +346,7 @@ function handleMessage(data) {
       break;
 
     case "models":
-      vlmCatalogue = data.vlm ?? [];
+      vlmCatalogue = data.vlm ?? {};
       ttsVoices = (data.tts ?? []).map((t) => t.voice);
       modelsReceived = true;
       checkReady();
@@ -512,27 +516,9 @@ function closeModal() {
 }
 
 function populateModal() {
-  vlmSelect.innerHTML = "";
-  let vlmMatched = false;
-  for (const entry of vlmCatalogue) {
-    const opt = document.createElement("option");
-    opt.value = `${entry.provider}|${entry.model_id}`;
-    opt.textContent = `${capitalize(entry.provider)}: ${entry.model_id}`;
-    if (!vlmMatched) {
-      const providerMatch = currentConfig.vlm_provider === entry.provider;
-      const modelMatch = !currentConfig.vlm_model || currentConfig.vlm_model === entry.model_id;
-      if (providerMatch && modelMatch) { opt.selected = true; vlmMatched = true; }
-    }
-    vlmSelect.appendChild(opt);
-  }
-  if (!vlmMatched && vlmSelect.options.length > 0) vlmSelect.options[0].selected = true;
+  vlmProviderSelect.value = currentConfig.vlm_provider || "gemini";
+  vlmModelInput.value = currentConfig.vlm_model || (vlmCatalogue[vlmProviderSelect.value] ?? [])[0] || "";
 
-  ttsVoiceDatalist.innerHTML = "";
-  for (const voice of ttsVoices) {
-    const opt = document.createElement("option");
-    opt.value = voice;
-    ttsVoiceDatalist.appendChild(opt);
-  }
   ttsVoiceInput.value = currentConfig.tts_voice ?? "af_heart";
 
   volumeInput.value = volume;
@@ -552,6 +538,64 @@ function populateModal() {
   cfgFgColor.value = fgColor;
   cfgFgPreview.style.background = fgColor;
 }
+
+vlmProviderSelect.addEventListener("change", () => {
+  vlmModelInput.value = (vlmCatalogue[vlmProviderSelect.value] ?? [])[0] ?? "";
+});
+
+// A combobox that filters its list while typing, shows the full list on focus,
+// and snaps to the top filtered match on blur/Tab unless the user picked an
+// item from the list explicitly (picking a shorter candidate that is itself a
+// substring of a later one, e.g. "gpt-4o" vs "gpt-4o-mini", would otherwise get
+// silently overwritten by the substring match on blur).
+function _initCombo(inputEl, dropdownEl, wrapperEl, getCandidates) {
+  let explicitlySelected = false;
+
+  function filteredCandidates() {
+    const typed = inputEl.value.trim().toLowerCase();
+    const all = getCandidates();
+    return typed ? all.filter((c) => c.toLowerCase().includes(typed)) : all;
+  }
+
+  function render(candidates) {
+    dropdownEl.innerHTML = "";
+    for (const candidate of candidates) {
+      const li = document.createElement("li");
+      li.textContent = candidate;
+      if (candidate === inputEl.value) li.classList.add("combo-selected");
+      li.addEventListener("mousedown", (e) => {
+        e.preventDefault(); // keep focus on input
+        inputEl.value = candidate;
+        explicitlySelected = true;
+        dropdownEl.classList.add("hidden");
+      });
+      dropdownEl.appendChild(li);
+    }
+    dropdownEl.classList.toggle("hidden", candidates.length === 0);
+  }
+
+  inputEl.addEventListener("focus", () => render(getCandidates()));
+
+  inputEl.addEventListener("input", () => {
+    explicitlySelected = false;
+    render(filteredCandidates());
+  });
+
+  inputEl.addEventListener("blur", () => {
+    if (!explicitlySelected) {
+      const candidates = filteredCandidates();
+      if (candidates.length > 0) inputEl.value = candidates[0];
+    }
+    dropdownEl.classList.add("hidden");
+  });
+
+  document.addEventListener("mousedown", (e) => {
+    if (!wrapperEl.contains(e.target)) dropdownEl.classList.add("hidden");
+  });
+}
+
+_initCombo(vlmModelInput, vlmModelDropdown, vlmModelCombo, () => vlmCatalogue[vlmProviderSelect.value] ?? []);
+_initCombo(ttsVoiceInput, ttsVoiceDropdown, ttsVoiceCombo, () => ttsVoices);
 
 function setVolume(v, save = false) {
   volume = v;
@@ -585,10 +629,9 @@ barMuteBtn.addEventListener("click", () => {
 });
 
 modalOk.addEventListener("click", () => {
-  const [provider, model_id] = (vlmSelect.value || "").split("|");
   const updates = {
-    vlm_provider: provider || "gemini",
-    vlm_model: model_id || null,
+    vlm_provider: vlmProviderSelect.value || "gemini",
+    vlm_model: vlmModelInput.value.trim() || null,
     tts_voice: ttsVoiceInput.value.trim() || "af_heart",
     pre_screenshot_delay: parseFloat(preScreenshotInput.value) || 2.0,
     difference_threshold: parseFloat(diffThreshInput.value) || 0.0,
@@ -626,10 +669,6 @@ modalOk.addEventListener("click", () => {
   send({ type: "set_config", data: updates, persist: true });
   closeModal();
 });
-
-function capitalize(s) {
-  return s ? s[0].toUpperCase() + s.slice(1) : s;
-}
 
 // --- Promptset combobox ---
 function _openPromptsetDropdown() {

@@ -381,7 +381,9 @@ body {
 
 #promptset-combo-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-#promptset-dropdown {
+.combo { position: relative; }
+
+.combo-dropdown {
   position: absolute;
   top: 100%;
   left: 0;
@@ -398,15 +400,15 @@ body {
   padding: 2px 0;
 }
 
-#promptset-dropdown li {
+.combo-dropdown li {
   padding: 6px 10px;
   font-size: 13px;
   cursor: pointer;
   color: var(--text);
 }
 
-#promptset-dropdown li:hover { background: var(--border); }
-#promptset-dropdown li.combo-selected { color: var(--accent); }
+.combo-dropdown li:hover { background: var(--border); }
+.combo-dropdown li.combo-selected { color: var(--accent); }
 
 #promptset-btns {
   display: flex;

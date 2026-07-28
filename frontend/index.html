@@ -67,15 +67,29 @@
       <div id="tab-general">
       <section>
         <h3>Vision model</h3>
-        <label>Model <select id="cfg-vlm"></select></label>
+        <label>Provider
+          <select id="cfg-vlm-provider">
+            <option value="gemini">Gemini</option>
+            <option value="openai">OpenAI</option>
+            <option value="local">Local</option>
+          </select>
+        </label>
+        <label>Model
+          <div class="combo" id="vlm-model-combo">
+            <input id="cfg-vlm-model" type="text" placeholder="model id" autocomplete="off" spellcheck="false" />
+            <ul id="vlm-model-dropdown" class="combo-dropdown hidden"></ul>
+          </div>
+        </label>
       </section>
 
       <section>
         <h3>Voice</h3>
         <label>Voice
-          <input id="cfg-tts-voice" list="tts-voice-list"
-                 placeholder='af_heart  or  {"af_nicole":0.8,"jf_alpha":0.2}' />
-          <datalist id="tts-voice-list"></datalist>
+          <div class="combo" id="tts-voice-combo">
+            <input id="cfg-tts-voice" type="text"
+                   placeholder='af_heart  or  {"af_nicole":0.8,"jf_alpha":0.2}' autocomplete="off" spellcheck="false" />
+            <ul id="tts-voice-dropdown" class="combo-dropdown hidden"></ul>
+          </div>
         </label>
       </section>
 
@@ -158,7 +172,7 @@
             <div id="promptset-combo">
               <input id="cfg-promptset" type="text" placeholder="default" autocomplete="off" spellcheck="false" />
               <button id="promptset-combo-btn" tabindex="-1">&#9662;</button>
-              <ul id="promptset-dropdown" class="hidden"></ul>
+              <ul id="promptset-dropdown" class="combo-dropdown hidden"></ul>
             </div>
             <div id="promptset-btns">
               <button id="promptset-load">Load</button>
