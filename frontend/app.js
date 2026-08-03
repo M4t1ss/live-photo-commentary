@@ -297,7 +297,13 @@ function handleMessage(data) {
       break;
 
     case "take_screenshot":
-      if (running) takeScreenshot();
+      if (running) {
+        const delayMs = (currentConfig.pre_screenshot_delay ?? 2.0) * 1000;
+        setPhase("Screenshot in", "down", delayMs);
+        setTimeout(() => {
+          if (running) takeScreenshot();
+        }, delayMs);
+      }
       break;
 
     case "skipped":
