@@ -201,7 +201,8 @@ fn update_pyproject_for_cuda(backend_dir: &std::path::Path, cu_index: &str) -> s
                 let t = l.trim();
                 !t.is_empty() && !t.starts_with("torch ") && !t.starts_with("torchvision ")
             })
-            .map(String::from)
+            // vendor/ is relative to backend/; rewrite for backend-cuda/ (its sibling).
+            .map(|l| l.replace("\"vendor/", "\"../backend/vendor/"))
             .collect()
     } else {
         vec![]
