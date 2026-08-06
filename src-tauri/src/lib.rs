@@ -186,15 +186,45 @@ fn detect_cuda_index() -> Option<&'static str> {
 fn update_pyproject_for_cuda(backend_dir: &std::path::Path, cu_index: &str) -> std::io::Result<()> {
     let path = backend_dir.join("pyproject.toml");
     let mut content = std::fs::read_to_string(&path)?;
-    // Strip any previously appended CUDA block so re-runs are idempotent.
+
+    // Preserve non-torch entries from any existing [tool.uv.sources] block
+    // (e.g. the pyopenjtalk vendor-path entry added by the build scripts).
+    let preserved: Vec<String> = if let Some(pos) = content.find("\n[tool.uv.sources]") {
+        let tail = &content[pos + 1..]; // skip the leading '\n'
+        let body_start = tail.find('\n').map(|p| p + 1).unwrap_or(tail.len());
+        let body = &tail[body_start..];
+        // Section ends at the next TOML table header ('[' at start of a line).
+        let body_end = body.find("\n[").map(|p| p + 1).unwrap_or(body.len());
+        body[..body_end]
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                !t.is_empty() && !t.starts_with("torch ") && !t.starts_with("torchvision ")
+            })
+            .map(String::from)
+            .collect()
+    } else {
+        vec![]
+    };
+
+    // Strip the old block so re-runs are idempotent.
     if let Some(pos) = content.find("\n[tool.uv.sources]") {
         content.truncate(pos);
     }
+
     let idx = format!("pytorch-{cu_index}");
     let platform = "sys_platform == 'win32' or sys_platform == 'linux'";
     content.push_str(&format!(
-        "\n[tool.uv.sources]\ntorch       = [{{ index = \"{idx}\", marker = \"{platform}\" }}]\ntorchvision = [{{ index = \"{idx}\", marker = \"{platform}\" }}]\n\n[[tool.uv.index]]\nname = \"{idx}\"\nurl  = \"https://download.pytorch.org/whl/{cu_index}\"\nexplicit = true\n"
+        "\n[tool.uv.sources]\ntorch       = [{{ index = \"{idx}\", marker = \"{platform}\" }}]\ntorchvision = [{{ index = \"{idx}\", marker = \"{platform}\" }}]\n"
     ));
+    for line in &preserved {
+        content.push_str(line);
+        content.push('\n');
+    }
+    content.push_str(&format!(
+        "\n[[tool.uv.index]]\nname = \"{idx}\"\nurl  = \"https://download.pytorch.org/whl/{cu_index}\"\nexplicit = true\n"
+    ));
+
     std::fs::write(path, content)
 }
 
