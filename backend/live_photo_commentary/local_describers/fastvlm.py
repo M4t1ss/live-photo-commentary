@@ -1,3 +1,4 @@
+import logging
 import re
 
 import torch
@@ -5,20 +6,23 @@ from transformers import AutoModelForCausalLM
 
 from ..local_describer import LocalDescriber
 
+log = logging.getLogger(__name__)
+
 
 class FastVLMLocalDescriber(LocalDescriber):
     uses_processor = False
     IMAGE_TOKEN_INDEX = -200
 
     def _create_model(self, quantization_config, attn_implementation, device):
-        return AutoModelForCausalLM.from_pretrained(
-            self.model_id,
-            device_map="cuda" if device == "cuda" and not self.device_param else None,
-            trust_remote_code=True,
-            quantization_config=quantization_config,
-            torch_dtype=torch.float16 if device in ("cuda", "mps") else torch.float32,
-            attn_implementation=attn_implementation,
-        )
+        model_kwargs = {
+            "device_map": "cuda" if device == "cuda" and not self.device_param else None,
+            "trust_remote_code": True,
+            "quantization_config": quantization_config,
+            "torch_dtype": torch.float16 if device in ("cuda", "mps") else torch.float32,
+            "attn_implementation": attn_implementation,
+        } | self.model_kwargs
+        log.info("model_kwargs: %s", model_kwargs)
+        return AutoModelForCausalLM.from_pretrained(self.model_id, **model_kwargs)
 
     def build_messages(self, user_prompt, images=None, system_prompt=None):
         user_prompt = re.sub(r'<\|image_\d+\|>', '<image>', user_prompt)

@@ -72,10 +72,10 @@ class Describer(ABC):
 
         if local:
             from .local_describer import LocalDescriber
-            return LocalDescriber(**kwargs)
+            return LocalDescriber.__new__(LocalDescriber, **kwargs)
         else:
             from .remote_describer import RemoteDescriber
-            return RemoteDescriber(**kwargs)
+            return RemoteDescriber.__new__(RemoteDescriber, **kwargs)
 
     def __init__(self,
                  system_prompt=DEFAULT_SYSTEM_PROMPT,
