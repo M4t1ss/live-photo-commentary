@@ -10,7 +10,8 @@
     "imports": {
       "three": "https://esm.sh/three@0.176.0",
       "three/addons/": "https://esm.sh/three@0.176.0/examples/jsm/",
-      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js"
+      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js",
+      "@pixiv/three-vrm-animation": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm-animation@3/lib/three-vrm-animation.module.min.js"
     }
   }
   </script>
@@ -45,8 +46,9 @@
     </div>
     <div id="divider"></div>
     <div id="right-panel">
-      <img id="current-frame" alt="Current frame" />
+      <img id="current-frame" class="hidden" alt="Current frame" />
       <img id="prev-frame" class="hidden" alt="Previous frame" />
+      <div id="diff-info" class="hidden"></div>
       <div id="status-bar">
         <span id="status-phase">Idle</span>
         <span id="status-timer"></span>
@@ -63,23 +65,34 @@
         <button class="tab-btn" data-tab="prompts">Prompts</button>
       </div>
 
+      <div id="modal-body">
       <div id="tab-general">
       <section>
         <h3>Vision model</h3>
-        <label>Model <select id="cfg-vlm"></select></label>
-      </section>
-
-      <section>
-        <h3>Voice</h3>
-        <label>Voice
-          <input id="cfg-tts-voice" list="tts-voice-list"
-                 placeholder='af_heart  or  {"af_nicole":0.8,"jf_alpha":0.2}' />
-          <datalist id="tts-voice-list"></datalist>
+        <label>Provider
+          <select id="cfg-vlm-provider">
+            <option value="gemini">Gemini</option>
+            <option value="openai">OpenAI</option>
+            <option value="local">Local</option>
+          </select>
+        </label>
+        <label>Model
+          <div class="combo" id="vlm-model-combo">
+            <input id="cfg-vlm-model" type="text" placeholder="model id" autocomplete="off" spellcheck="false" />
+            <ul id="vlm-model-dropdown" class="combo-dropdown hidden"></ul>
+          </div>
         </label>
       </section>
 
       <section>
         <h3>Audio</h3>
+        <label>Voice
+          <div class="combo" id="tts-voice-combo">
+            <input id="cfg-tts-voice" type="text"
+                   placeholder='af_heart  or  {"af_nicole":0.8,"jf_alpha":0.2}' autocomplete="off" spellcheck="false" />
+            <ul id="tts-voice-dropdown" class="combo-dropdown hidden"></ul>
+          </div>
+        </label>
         <label>Volume
           <div id="volume-row">
             <input type="range" id="cfg-volume" min="0" max="1" step="0.05" />
@@ -89,31 +102,27 @@
       </section>
 
       <section>
-        <h3>Subtitles</h3>
+        <h3>Appearance</h3>
+        <label>Background
+          <div class="color-row">
+            <div class="color-preview" id="cfg-bg-preview"></div>
+            <input type="text" id="cfg-bg-color" class="mono" maxlength="7" placeholder="#000000" spellcheck="false" />
+          </div>
+        </label>
+        <label>Subtitle color
+          <div class="color-row">
+            <div class="color-preview" id="cfg-fg-preview"></div>
+            <input type="text" id="cfg-fg-color" class="mono" maxlength="7" placeholder="#ffffff" spellcheck="false" />
+          </div>
+        </label>
         <label>Separated subtitles
           <input type="checkbox" id="cfg-subtitle-mode" />
         </label>
       </section>
 
       <section>
-        <h3>Appearance</h3>
-        <label>Background
-          <div class="color-row">
-            <div class="color-preview" id="cfg-bg-preview"></div>
-            <input type="text" id="cfg-bg-color" maxlength="7" placeholder="#000000" spellcheck="false" />
-          </div>
-        </label>
-        <label>Subtitle color
-          <div class="color-row">
-            <div class="color-preview" id="cfg-fg-preview"></div>
-            <input type="text" id="cfg-fg-color" maxlength="7" placeholder="#ffffff" spellcheck="false" />
-          </div>
-        </label>
-      </section>
-
-      <section>
         <h3>Timing</h3>
-        <label>Pre-screenshot delay (s)
+        <label>Screenshot delay (s)
           <input type="number" id="cfg-pre-screenshot-delay" step="0.5" min="0" />
         </label>
       </section>
@@ -126,7 +135,14 @@
         <label>Measure
           <select id="cfg-diff-measure">
             <option value="mse">MSE</option>
-            <option value="mae">MAE</option>
+            <option value="ssim">SSIM</option>
+            <option value="average_hash">Average hash</option>
+            <option value="phash">Perceptual hash</option>
+            <option value="phash_simple">Perceptual hash (simple)</option>
+            <option value="dhash">Difference hash</option>
+            <option value="dhash_vertical">Difference hash (vertical)</option>
+            <option value="whash">Wavelet hash</option>
+            <option value="colorhash">Color hash</option>
           </select>
         </label>
       </section>
@@ -146,9 +162,6 @@
         <label>OpenAI
           <input type="password" id="cfg-openai-key" placeholder="unchanged" autocomplete="off" />
         </label>
-        <label>ElevenLabs
-          <input type="password" id="cfg-elevenlabs-key" placeholder="unchanged" autocomplete="off" />
-        </label>
       </section>
 
       </div><!-- #tab-general -->
@@ -160,7 +173,7 @@
             <div id="promptset-combo">
               <input id="cfg-promptset" type="text" placeholder="default" autocomplete="off" spellcheck="false" />
               <button id="promptset-combo-btn" tabindex="-1">&#9662;</button>
-              <ul id="promptset-dropdown" class="hidden"></ul>
+              <ul id="promptset-dropdown" class="combo-dropdown hidden"></ul>
             </div>
             <div id="promptset-btns">
               <button id="promptset-load">Load</button>
@@ -177,6 +190,7 @@
           <label class="prompt-label"><span>Compact prompt</span><textarea id="cfg-compact-prompt" rows="3"></textarea></label>
         </section>
       </div><!-- #tab-prompts -->
+      </div><!-- #modal-body -->
 
       <div id="modal-buttons">
         <button id="modal-cancel">Cancel</button>

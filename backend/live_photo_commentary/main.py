@@ -57,24 +57,13 @@ async def _send_ready_state() -> None:
     })
 
 
-_VLM_CATALOGUE = [
-    # Cloud
-    {"provider": "gemini", "model_id": "gemini-2.0-flash-exp"},
-    {"provider": "gemini", "model_id": "gemini-2.5-flash-lite-preview-06-17"},
-    {"provider": "openai",  "model_id": "gpt-4o"},
-    {"provider": "openai",  "model_id": "gpt-4o-mini"},
-    # Local
-    {"provider": "local", "model_id": "microsoft/Phi-4-multimodal-instruct"},
-    {"provider": "local", "model_id": "google/gemma-3-4b-it"},
-    {"provider": "local", "model_id": "google/gemma-3-12b-it"},
-    {"provider": "local", "model_id": "google/gemma-4-E4B-it"},
-    {"provider": "local", "model_id": "google/gemma-4-E2B-it"},
-    {"provider": "local", "model_id": "Qwen/Qwen2.5-VL-3B-Instruct"},
-    {"provider": "local", "model_id": "Qwen/Qwen2.5-VL-7B-Instruct"},
-    {"provider": "local", "model_id": "apple/FastVLM-0.5B"},
-    {"provider": "local", "model_id": "apple/FastVLM-1.5B"},
-    {"provider": "local", "model_id": "apple/FastVLM-7B"},
-]
+def _load_vlm_catalogue() -> dict[str, list[str]]:
+    path = Path(__file__).parent / "vlm_models.yaml"
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+_VLM_CATALOGUE = _load_vlm_catalogue()
 
 
 def _free_describer(describer) -> None:
@@ -100,13 +89,13 @@ def _free_describer(describer) -> None:
 def _make_describer(on_progress=None):
     cfg = config.get()
     if cfg.vlm_provider == "local":
-        model_id = cfg.vlm_model or "google/gemma-4-E2B-it"
-        path = _model_local_dirs.get(model_id, model_id)
+        path = _model_local_dirs.get(cfg.vlm_model, cfg.vlm_model)
         from .local_describer import LocalDescriber
         describer = LocalDescriber(model_id=path, on_progress=on_progress)
     else:
         from .remote_describer import RemoteDescriber
-        describer = RemoteDescriber(provider=cfg.vlm_provider, model_id=cfg.vlm_model)
+        api_key = {"gemini": cfg.gemini_api_key, "openai": cfg.openai_api_key}.get(cfg.vlm_provider)
+        describer = RemoteDescriber(provider=cfg.vlm_provider, model_id=cfg.vlm_model, api_key=api_key)
     return describer
 
 
@@ -184,6 +173,12 @@ async def _reinit_describer() -> None:
     assert pipeline is not None
     _model_errors.pop("vlm", None)
     _vlm_ready = False
+    cfg = config.get()
+    if not cfg.vlm_provider or not cfg.vlm_model:
+        # Fresh install / no model chosen yet — don't download or connect to
+        # anything until the user picks one in Settings and saves.
+        await _send_ready_state()
+        return
     await _send({"type": "model_loading", "model": "vlm"})
     await _send_ready_state()
     try:
@@ -198,15 +193,13 @@ async def _reinit_describer() -> None:
             await _send({"type": "load_progress", "message": "Releasing previous model…"})
             await asyncio.to_thread(_free_describer, old_describer)
 
-        cfg = config.get()
         loop = asyncio.get_running_loop()
 
         def _progress(msg):
             _send_threadsafe(msg, loop)
 
         if cfg.vlm_provider == "local":
-            model_id = cfg.vlm_model or "microsoft/Phi-4-multimodal-instruct"
-            _model_local_dirs[model_id] = await _download_with_progress(model_id)
+            _model_local_dirs[cfg.vlm_model] = await _download_with_progress(cfg.vlm_model)
         pipeline.describer = await asyncio.to_thread(_make_describer, _progress)
         _apply_promptset(config.get().active_promptset)
         log.info("Describer ready")
@@ -306,6 +299,13 @@ async def get_model_config():
         "jawAxis": raw.get("jaw_axis", "x"),
         "minJawAngle": raw.get("min_jaw_angle", 0.0),
         "maxJawAngle": raw.get("max_jaw_angle", 0.15),
+        "neckBone": raw.get("neck_bone"),
+        "maxNeckAngle": raw.get("max_neck_angle", 0.3),
+        "headBone": raw.get("head_bone"),
+        "maxHeadAngle": raw.get("max_head_angle", 0.5),
+        "leftEyeBone": raw.get("left_eye_bone"),
+        "rightEyeBone": raw.get("right_eye_bone"),
+        "maxEyeAngle": raw.get("max_eye_angle", 0.4),
         "maxEnvelopeDuration": raw.get("max_envelope_duration", 0.3),
         "visemeMap": raw.get("viseme_map", {}),
         "blink": raw.get("blink"),
@@ -322,6 +322,15 @@ async def get_model():
     if not model_path.exists():
         raise HTTPException(status_code=404, detail="Model not found")
     return FileResponse(str(model_path), media_type="model/gltf-binary")
+
+
+@app.get("/animation/{filename}")
+async def get_animation(filename: str):
+    safe_name = Path(filename).name
+    anim_path = config.get().model_dir / "animations" / safe_name
+    if not anim_path.exists():
+        raise HTTPException(status_code=404, detail="Animation not found")
+    return FileResponse(str(anim_path), media_type="model/gltf-binary")
 
 
 async def _send_models() -> None:
@@ -368,7 +377,11 @@ async def websocket_endpoint(ws: WebSocket):
                     if data.get("persist"):
                         await asyncio.to_thread(config.persist, Path(".env"))
                     if pipeline is not None:
-                        if old.vlm_provider != new.vlm_provider or old.vlm_model != new.vlm_model:
+                        api_key_changed = (
+                            (new.vlm_provider == "gemini" and old.gemini_api_key != new.gemini_api_key)
+                            or (new.vlm_provider == "openai" and old.openai_api_key != new.openai_api_key)
+                        )
+                        if old.vlm_provider != new.vlm_provider or old.vlm_model != new.vlm_model or api_key_changed:
                             asyncio.create_task(_reinit_describer())
                         if old.tts_voice != new.tts_voice:
                             asyncio.create_task(_reinit_synthesizer())

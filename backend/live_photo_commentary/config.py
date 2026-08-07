@@ -10,8 +10,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    vlm_provider: str = "local"
-    vlm_model: str | None = "apple/FastVLM-0.5B"
+    vlm_provider: str | None = None
+    vlm_model: str | None = None
     tts_voice: str = "af_heart"
     pre_screenshot_delay: float = 2.0
     difference_threshold: float = 0.0
@@ -20,12 +20,11 @@ class Settings(BaseSettings):
     subtitle_max_chars: int = 60
     gemini_api_key: str | None = None
     openai_api_key: str | None = None
-    elevenlabs_api_key: str | None = None
     model_dir: Path = Path("../models")
     active_promptset: str = "default"
 
 
-_API_KEY_FIELDS = frozenset({"gemini_api_key", "openai_api_key", "elevenlabs_api_key"})
+_API_KEY_FIELDS = frozenset({"gemini_api_key", "openai_api_key"})
 
 _settings = Settings()
 

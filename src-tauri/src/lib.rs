@@ -27,12 +27,9 @@ impl BackendProcess {
             if let Some(mut child) = guard.take() {
                 #[cfg(target_os = "windows")]
                 {
-                    use std::os::windows::process::CommandExt;
-                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-                    let _ = Command::new("taskkill")
-                        .args(["/F", "/T", "/PID", &child.id().to_string()])
-                        .creation_flags(CREATE_NO_WINDOW)
-                        .status();
+                    let mut cmd = Command::new("taskkill");
+                    no_window(cmd.args(["/F", "/T", "/PID", &child.id().to_string()]));
+                    let _ = cmd.status();
                 }
                 #[cfg(not(target_os = "windows"))]
                 let _ = child.kill();
@@ -141,12 +138,7 @@ fn pytorch_cuda_index(major: u32, minor: u32) -> Option<&'static str> {
 #[cfg(not(target_os = "macos"))]
 fn detect_cuda_index() -> Option<&'static str> {
     let mut cmd = Command::new("nvidia-smi");
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    no_window(&mut cmd);
     let output = cmd.stdout(Stdio::piped()).stderr(Stdio::null()).output().ok()?;
     if !output.status.success() {
         return None;
@@ -186,15 +178,46 @@ fn detect_cuda_index() -> Option<&'static str> {
 fn update_pyproject_for_cuda(backend_dir: &std::path::Path, cu_index: &str) -> std::io::Result<()> {
     let path = backend_dir.join("pyproject.toml");
     let mut content = std::fs::read_to_string(&path)?;
-    // Strip any previously appended CUDA block so re-runs are idempotent.
+
+    // Preserve non-torch entries from any existing [tool.uv.sources] block
+    // (e.g. the pyopenjtalk vendor-path entry added by the build scripts).
+    let preserved: Vec<String> = if let Some(pos) = content.find("\n[tool.uv.sources]") {
+        let tail = &content[pos + 1..]; // skip the leading '\n'
+        let body_start = tail.find('\n').map(|p| p + 1).unwrap_or(tail.len());
+        let body = &tail[body_start..];
+        // Section ends at the next TOML table header ('[' at start of a line).
+        let body_end = body.find("\n[").map(|p| p + 1).unwrap_or(body.len());
+        body[..body_end]
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                !t.is_empty() && !t.starts_with("torch ") && !t.starts_with("torchvision ")
+            })
+            // vendor/ is relative to backend/; rewrite for backend-cuda/ (its sibling).
+            .map(|l| l.replace("\"vendor/", "\"../backend/vendor/"))
+            .collect()
+    } else {
+        vec![]
+    };
+
+    // Strip the old block so re-runs are idempotent.
     if let Some(pos) = content.find("\n[tool.uv.sources]") {
         content.truncate(pos);
     }
+
     let idx = format!("pytorch-{cu_index}");
     let platform = "sys_platform == 'win32' or sys_platform == 'linux'";
     content.push_str(&format!(
-        "\n[tool.uv.sources]\ntorch       = [{{ index = \"{idx}\", marker = \"{platform}\" }}]\ntorchvision = [{{ index = \"{idx}\", marker = \"{platform}\" }}]\n\n[[tool.uv.index]]\nname = \"{idx}\"\nurl  = \"https://download.pytorch.org/whl/{cu_index}\"\nexplicit = true\n"
+        "\n[tool.uv.sources]\ntorch       = [{{ index = \"{idx}\", marker = \"{platform}\" }}]\ntorchvision = [{{ index = \"{idx}\", marker = \"{platform}\" }}]\n"
     ));
+    for line in &preserved {
+        content.push_str(line);
+        content.push('\n');
+    }
+    content.push_str(&format!(
+        "\n[[tool.uv.index]]\nname = \"{idx}\"\nurl  = \"https://download.pytorch.org/whl/{cu_index}\"\nexplicit = true\n"
+    ));
+
     std::fs::write(path, content)
 }
 
@@ -251,25 +274,25 @@ fn get_cuda_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
         .join("backend-cuda")
 }
 
+fn python_in_venv(venv: &std::path::Path) -> std::path::PathBuf {
+    if cfg!(target_os = "windows") {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python")
+    }
+}
+
 /// Returns the Python executable to use for uvicorn:
 /// the CUDA venv if installed, otherwise the regular venv.
 fn get_python_exe(
     cuda_dir: &std::path::Path,
     backend_dir: &std::path::Path,
 ) -> std::path::PathBuf {
-    let cuda_python = if cfg!(target_os = "windows") {
-        cuda_dir.join(".venv").join("Scripts").join("python.exe")
-    } else {
-        cuda_dir.join(".venv").join("bin").join("python")
-    };
+    let cuda_python = python_in_venv(&cuda_dir.join(".venv"));
     if cuda_dir.join(".cuda_torch").exists() && cuda_python.exists() {
         return cuda_python;
     }
-    if cfg!(target_os = "windows") {
-        backend_dir.join(".venv").join("Scripts").join("python.exe")
-    } else {
-        backend_dir.join(".venv").join("bin").join("python")
-    }
+    python_in_venv(&backend_dir.join(".venv"))
 }
 
 #[tauri::command]
@@ -312,15 +335,10 @@ async fn install_cuda_torch(
             "--reinstall-package", "torch",
             "--reinstall-package", "torchvision",
         ])
-        .current_dir(&cuda_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        .current_dir(&cuda_dir);
+        let (out, err) = log_to_file(&cuda_dir.join("uv-sync.log"));
+        cmd.stdout(out).stderr(err);
+        no_window(&mut cmd);
         cmd.status()
     })
     .await
@@ -359,6 +377,30 @@ fn uv_command(uv: &std::path::Path) -> Command {
     {
         Command::new(uv)
     }
+}
+
+// ── Process helpers ───────────────────────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Suppresses the console window for a spawned child process on Windows.
+/// No-op on other platforms.
+fn no_window(_cmd: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        _cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
+/// Opens `path` as a combined stdout+stderr log file.
+/// Falls back to null handles if the file cannot be created.
+fn log_to_file(path: &std::path::Path) -> (Stdio, Stdio) {
+    std::fs::File::create(path)
+        .ok()
+        .and_then(|f| f.try_clone().ok().map(|c| (Stdio::from(f), Stdio::from(c))))
+        .unwrap_or_else(|| (Stdio::null(), Stdio::null()))
 }
 
 // ── Antivirus detection helpers ───────────────────────────────────────────────
@@ -435,6 +477,14 @@ fn quarantine_broken_python_installs(python_dir: &std::path::Path) {
                 log::error!("Failed to quarantine broken Python install: {e}");
             }
         }
+    }
+}
+
+fn quarantine_local_python() {
+    #[cfg(target_os = "windows")]
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let py_dir = std::path::Path::new(&local).join("uv").join("python");
+        quarantine_broken_python_installs(&py_dir);
     }
 }
 
@@ -614,11 +664,7 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> Result<std::pa
         // Quarantine any broken Python installs before sync so uv downloads a
         // clean copy instead of looping on a corrupt interpreter.  Rename
         // works even when DLL files are held open by a running process.
-        #[cfg(target_os = "windows")]
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            let py_dir = std::path::Path::new(&local).join("uv").join("python");
-            quarantine_broken_python_installs(&py_dir);
-        }
+        quarantine_local_python();
 
         log::info!("Running `uv sync` in {} …", backend_dir.display());
         let _ = app.emit("setup_progress", "Setting up Python environment…");
@@ -634,20 +680,10 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> Result<std::pa
 
         // In release: suppress console window on Windows, redirect output to a
         // log file so failures are diagnosable without attaching a debugger.
-        #[cfg(target_os = "windows")]
         if !cfg!(debug_assertions) {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            sync_cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        if !cfg!(debug_assertions) {
-            if let Ok(log_file) = std::fs::File::create(backend_dir.join("uv-sync.log")) {
-                if let Ok(log_clone) = log_file.try_clone() {
-                    sync_cmd
-                        .stdout(Stdio::from(log_file))
-                        .stderr(Stdio::from(log_clone));
-                }
-            }
+            no_window(&mut sync_cmd);
+            let (out, err) = log_to_file(&backend_dir.join("uv-sync.log"));
+            sync_cmd.stdout(out).stderr(err);
         }
 
         match sync_cmd.status() {
@@ -659,11 +695,7 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> Result<std::pa
                 // Quarantine the broken Python install (if any) so the next
                 // launch downloads a fresh copy.  `remove_dir_all` silently
                 // fails when DLL files are locked; rename works in that case.
-                #[cfg(target_os = "windows")]
-                if let Ok(local) = std::env::var("LOCALAPPDATA") {
-                    let py_dir = std::path::Path::new(&local).join("uv").join("python");
-                    quarantine_broken_python_installs(&py_dir);
-                }
+                quarantine_local_python();
                 let msg = format!(
                     "Setup failed: `uv sync` failed (exit code {:?}). See {}",
                     s.code(),
@@ -798,13 +830,9 @@ async fn spawn_and_monitor_backend(
             log_file.map(Stdio::from).unwrap_or_else(Stdio::null)
         });
 
-    // On Windows release builds, set CREATE_NO_WINDOW so the OS
-    // doesn't open a console window for the child process.
-    #[cfg(target_os = "windows")]
+    // Suppress the console window in release builds.
     if !cfg!(debug_assertions) {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        no_window(&mut cmd);
     }
 
     let child = match cmd.spawn() {

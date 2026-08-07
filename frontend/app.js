@@ -6,6 +6,13 @@ const startStopBtn       = document.getElementById("start-stop");
 const settingsBtn        = document.getElementById("settings-btn");
 const currentFrameEl     = document.getElementById("current-frame");
 const prevFrameEl        = document.getElementById("prev-frame");
+const diffInfoEl         = document.getElementById("diff-info");
+
+diffInfoEl.addEventListener("click", (e) => {
+  if (e.target.id === "diff-value") {
+    navigator.clipboard.writeText(e.target.textContent);
+  }
+});
 const subtitleEl         = document.getElementById("subtitle");
 const toggleSubtitleBtn  = document.getElementById("toggle-subtitle");
 const statusPhaseEl      = document.getElementById("status-phase");
@@ -13,16 +20,19 @@ const statusTimerEl      = document.getElementById("status-timer");
 const modalOverlay       = document.getElementById("modal-overlay");
 const modalCancel        = document.getElementById("modal-cancel");
 const modalOk            = document.getElementById("modal-ok");
-const vlmSelect          = document.getElementById("cfg-vlm");
+const vlmProviderSelect  = document.getElementById("cfg-vlm-provider");
+const vlmModelInput      = document.getElementById("cfg-vlm-model");
+const vlmModelCombo      = document.getElementById("vlm-model-combo");
+const vlmModelDropdown   = document.getElementById("vlm-model-dropdown");
 const ttsVoiceInput      = document.getElementById("cfg-tts-voice");
-const ttsVoiceDatalist   = document.getElementById("tts-voice-list");
+const ttsVoiceCombo      = document.getElementById("tts-voice-combo");
+const ttsVoiceDropdown   = document.getElementById("tts-voice-dropdown");
 const preScreenshotInput    = document.getElementById("cfg-pre-screenshot-delay");
 const diffThreshInput    = document.getElementById("cfg-diff-threshold");
 const diffMeasureSelect  = document.getElementById("cfg-diff-measure");
 const maxHistoryInput    = document.getElementById("cfg-max-history");
 const geminiKeyInput     = document.getElementById("cfg-gemini-key");
 const openaiKeyInput     = document.getElementById("cfg-openai-key");
-const elevenlabsKeyInput = document.getElementById("cfg-elevenlabs-key");
 const volumeInput        = document.getElementById("cfg-volume");
 const volumePctEl        = document.getElementById("cfg-volume-pct");
 const barVolumeInput     = document.getElementById("bar-volume");
@@ -67,7 +77,7 @@ let subtitleMode = localStorage.getItem("lpc_subtitle_mode") ?? "overlay";
 let bgColor = localStorage.getItem("lpc_bg_color") ?? "#000000";
 let fgColor = localStorage.getItem("lpc_fg_color") ?? "#ffffff";
 let currentConfig = {};
-let vlmCatalogue = [];
+let vlmCatalogue = {};
 let ttsVoices = [];
 let promptsetNames = [];
 let currentPromptsetName = "default";
@@ -80,10 +90,19 @@ let modelsReceived = false;
 let backendReady    = false;
 
 function checkReady() {
-  const ready = configReceived && modelsReceived && backendReady;
+  // Settings must stay reachable even if the VLM/TTS model failed to load
+  // (e.g. missing API key or dependency), so the user can fix the config —
+  // only the connection to the backend process itself gates the splash/settings.
+  const connected = configReceived && modelsReceived;
+  const ready = connected && backendReady;
   startStopBtn.disabled = !ready;
-  settingsBtn.disabled  = !ready;
-  if (ready && !running) { setPhase("Idle", "none"); dismissSplash(); }
+  settingsBtn.disabled  = !connected;
+  if (connected) dismissSplash();
+  if (ready && !running) {
+    setPhase("Idle", "none");
+  } else if (connected && !running && !currentConfig.vlm_provider) {
+    setPhase("Select a VLM model in Settings", "none");
+  }
 }
 
 function setRunning(value) {
@@ -242,12 +261,19 @@ function handleMessage(data) {
   switch (data.type) {
     case "frame": {
       const newUrl = `http://127.0.0.1:${port}${data.url}?t=${Date.now()}`;
-      if (currentFrameUrl) {
+      if (data.push && currentFrameUrl) {
         prevFrameEl.src = currentFrameUrl;
         prevFrameEl.classList.remove("hidden");
       }
       currentFrameUrl = newUrl;
       currentFrameEl.src = newUrl;
+      currentFrameEl.classList.remove("hidden");
+      if (data.diff !== undefined) {
+        diffInfoEl.innerHTML = `${data.measure.toUpperCase()}  Δ=<span id="diff-value" title="Click to copy">${data.diff}</span>`;
+        diffInfoEl.classList.remove("hidden");
+      } else {
+        diffInfoEl.classList.add("hidden");
+      }
       firstChunkReceived = false;
       resetAudio();
       setPhase("Describing…", "up");
@@ -271,7 +297,13 @@ function handleMessage(data) {
       break;
 
     case "take_screenshot":
-      if (running) takeScreenshot();
+      if (running) {
+        const delayMs = (currentConfig.pre_screenshot_delay ?? 2.0) * 1000;
+        setPhase("Screenshot in", "down", delayMs);
+        setTimeout(() => {
+          if (running) takeScreenshot();
+        }, delayMs);
+      }
       break;
 
     case "skipped":
@@ -297,6 +329,7 @@ function handleMessage(data) {
 
     case "model_loading":
       if (!running) setPhase("Initializing…", "up");
+      checkReady();
       break;
 
     case "load_progress":
@@ -333,7 +366,7 @@ function handleMessage(data) {
       break;
 
     case "models":
-      vlmCatalogue = data.vlm ?? [];
+      vlmCatalogue = data.vlm ?? {};
       ttsVoices = (data.tts ?? []).map((t) => t.voice);
       modelsReceived = true;
       checkReady();
@@ -503,27 +536,9 @@ function closeModal() {
 }
 
 function populateModal() {
-  vlmSelect.innerHTML = "";
-  let vlmMatched = false;
-  for (const entry of vlmCatalogue) {
-    const opt = document.createElement("option");
-    opt.value = `${entry.provider}|${entry.model_id}`;
-    opt.textContent = `${capitalize(entry.provider)}: ${entry.model_id}`;
-    if (!vlmMatched) {
-      const providerMatch = currentConfig.vlm_provider === entry.provider;
-      const modelMatch = !currentConfig.vlm_model || currentConfig.vlm_model === entry.model_id;
-      if (providerMatch && modelMatch) { opt.selected = true; vlmMatched = true; }
-    }
-    vlmSelect.appendChild(opt);
-  }
-  if (!vlmMatched && vlmSelect.options.length > 0) vlmSelect.options[0].selected = true;
+  vlmProviderSelect.value = currentConfig.vlm_provider || "gemini";
+  vlmModelInput.value = currentConfig.vlm_model || (vlmCatalogue[vlmProviderSelect.value] ?? [])[0] || "";
 
-  ttsVoiceDatalist.innerHTML = "";
-  for (const voice of ttsVoices) {
-    const opt = document.createElement("option");
-    opt.value = voice;
-    ttsVoiceDatalist.appendChild(opt);
-  }
   ttsVoiceInput.value = currentConfig.tts_voice ?? "af_heart";
 
   volumeInput.value = volume;
@@ -535,7 +550,6 @@ function populateModal() {
   maxHistoryInput.value   = currentConfig.max_history_size ?? 0;
   geminiKeyInput.value    = "";
   openaiKeyInput.value    = "";
-  elevenlabsKeyInput.value = "";
   cfgSubtitleMode.checked = subtitleMode === "separated";
   cfgPromptset.value = currentPromptsetName;
   _updatePromptsetBtns();
@@ -544,6 +558,64 @@ function populateModal() {
   cfgFgColor.value = fgColor;
   cfgFgPreview.style.background = fgColor;
 }
+
+vlmProviderSelect.addEventListener("change", () => {
+  vlmModelInput.value = (vlmCatalogue[vlmProviderSelect.value] ?? [])[0] ?? "";
+});
+
+// A combobox that filters its list while typing, shows the full list on focus,
+// and snaps to the top filtered match on blur/Tab unless the user picked an
+// item from the list explicitly (picking a shorter candidate that is itself a
+// substring of a later one, e.g. "gpt-4o" vs "gpt-4o-mini", would otherwise get
+// silently overwritten by the substring match on blur).
+function _initCombo(inputEl, dropdownEl, wrapperEl, getCandidates) {
+  let explicitlySelected = false;
+
+  function filteredCandidates() {
+    const typed = inputEl.value.trim().toLowerCase();
+    const all = getCandidates();
+    return typed ? all.filter((c) => c.toLowerCase().includes(typed)) : all;
+  }
+
+  function render(candidates) {
+    dropdownEl.innerHTML = "";
+    for (const candidate of candidates) {
+      const li = document.createElement("li");
+      li.textContent = candidate;
+      if (candidate === inputEl.value) li.classList.add("combo-selected");
+      li.addEventListener("mousedown", (e) => {
+        e.preventDefault(); // keep focus on input
+        inputEl.value = candidate;
+        explicitlySelected = true;
+        dropdownEl.classList.add("hidden");
+      });
+      dropdownEl.appendChild(li);
+    }
+    dropdownEl.classList.toggle("hidden", candidates.length === 0);
+  }
+
+  inputEl.addEventListener("focus", () => render(getCandidates()));
+
+  inputEl.addEventListener("input", () => {
+    explicitlySelected = false;
+    render(filteredCandidates());
+  });
+
+  inputEl.addEventListener("blur", () => {
+    if (!explicitlySelected) {
+      const candidates = filteredCandidates();
+      if (candidates.length > 0) inputEl.value = candidates[0];
+    }
+    dropdownEl.classList.add("hidden");
+  });
+
+  document.addEventListener("mousedown", (e) => {
+    if (!wrapperEl.contains(e.target)) dropdownEl.classList.add("hidden");
+  });
+}
+
+_initCombo(vlmModelInput, vlmModelDropdown, vlmModelCombo, () => vlmCatalogue[vlmProviderSelect.value] ?? []);
+_initCombo(ttsVoiceInput, ttsVoiceDropdown, ttsVoiceCombo, () => ttsVoices);
 
 function setVolume(v, save = false) {
   volume = v;
@@ -577,19 +649,17 @@ barMuteBtn.addEventListener("click", () => {
 });
 
 modalOk.addEventListener("click", () => {
-  const [provider, model_id] = (vlmSelect.value || "").split("|");
   const updates = {
-    vlm_provider: provider || "gemini",
-    vlm_model: model_id || null,
+    vlm_provider: vlmProviderSelect.value || "gemini",
+    vlm_model: vlmModelInput.value.trim() || null,
     tts_voice: ttsVoiceInput.value.trim() || "af_heart",
     pre_screenshot_delay: parseFloat(preScreenshotInput.value) || 2.0,
     difference_threshold: parseFloat(diffThreshInput.value) || 0.0,
     difference_measure: diffMeasureSelect.value || "mse",
     max_history_size: parseInt(maxHistoryInput.value, 10) || 0,
   };
-  if (geminiKeyInput.value)     updates.gemini_api_key     = geminiKeyInput.value;
-  if (openaiKeyInput.value)     updates.openai_api_key     = openaiKeyInput.value;
-  if (elevenlabsKeyInput.value) updates.elevenlabs_api_key = elevenlabsKeyInput.value;
+  if (geminiKeyInput.value) updates.gemini_api_key = geminiKeyInput.value;
+  if (openaiKeyInput.value) updates.openai_api_key = openaiKeyInput.value;
 
   // Changing the VLM or TTS model tears down and rebuilds it on the backend,
   // so a running cycle would hit a "no model configured" error mid-flight.
@@ -619,10 +689,6 @@ modalOk.addEventListener("click", () => {
   send({ type: "set_config", data: updates, persist: true });
   closeModal();
 });
-
-function capitalize(s) {
-  return s ? s[0].toUpperCase() + s.slice(1) : s;
-}
 
 // --- Promptset combobox ---
 function _openPromptsetDropdown() {

@@ -37,9 +37,13 @@ if __import__('sys').platform == "win32":
     _wait_for_torch()
     del _wait_for_torch
 
+import logging
+
 import torch
 from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 from transformers.utils.quantization_config import BitsAndBytesConfig
+
+log = logging.getLogger(__name__)
 
 from .describer import (
     Describer,
@@ -193,6 +197,11 @@ class LocalDescriber(Describer):
                     setattr(mod, attr, orig)
 
         self._notify("Model loaded")
+        try:
+            from huggingface_hub import snapshot_download
+            log.info("Model directory: %s", snapshot_download(self.model_id, local_files_only=True))
+        except Exception:
+            pass
 
         if device != "cuda":
             device = torch.device(self.device_param or device)
@@ -231,6 +240,7 @@ class LocalDescriber(Describer):
             "torch_dtype": "auto",
             "_attn_implementation": attn_implementation,
         } | self.model_kwargs
+        log.info("model_kwargs: %s", model_kwargs)
         return AutoModelForCausalLM.from_pretrained(self.model_id, **model_kwargs)
 
     @abstractmethod

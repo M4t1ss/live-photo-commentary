@@ -1,6 +1,9 @@
+import logging
 import torch
 
 from ..local_describer import LocalDescriber, image_to_data_uri
+
+log = logging.getLogger(__name__)
 
 
 class Gemma3LocalDescriber(LocalDescriber):
@@ -13,6 +16,7 @@ class Gemma3LocalDescriber(LocalDescriber):
                 "quantization_config": quantization_config,
                 "torch_dtype": "auto",
             } | self.model_kwargs
+            log.info("model_kwargs: %s", model_kwargs)
             return Qwen2_5_VLForConditionalGeneration.from_pretrained(self.model_id, **model_kwargs)
         if "gemma-4" in self.model_id.lower():
             from transformers import AutoModelForImageTextToText
@@ -23,6 +27,7 @@ class Gemma3LocalDescriber(LocalDescriber):
                 "torch_dtype": "auto",
                 "_attn_implementation": attn_implementation,
             } | self.model_kwargs
+            log.info("model_kwargs: %s", model_kwargs)
             return AutoModelForImageTextToText.from_pretrained(self.model_id, **model_kwargs)
         return super()._create_model(quantization_config, attn_implementation, device)
 
