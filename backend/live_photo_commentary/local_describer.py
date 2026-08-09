@@ -110,17 +110,12 @@ class LocalDescriber(Describer):
         if "FastVLM" in model_id:
             from .local_describers.fastvlm import FastVLMLocalDescriber
             instance = super(LocalDescriber, FastVLMLocalDescriber).__new__(FastVLMLocalDescriber)
-        elif "Qwen" in model_id or "gemma" in model_id.lower():
-            from .local_describers.gemma3 import Gemma3LocalDescriber
-            instance = super(LocalDescriber, Gemma3LocalDescriber).__new__(Gemma3LocalDescriber)
         elif "Phi-4" in model_id:
             from .local_describers.phi4mm import Phi4MMLocalDescriber
             instance = super(LocalDescriber, Phi4MMLocalDescriber).__new__(Phi4MMLocalDescriber)
         else:
-            raise ValueError(
-                f"Unsupported model: {model_id}. "
-                f"Supported models: FastVLM, Phi-4, Gemma, Qwen"
-            )
+            from .local_describers.pipeline import PipelineLocalDescriber
+            instance = super(LocalDescriber, PipelineLocalDescriber).__new__(PipelineLocalDescriber)
 
         return instance
 
