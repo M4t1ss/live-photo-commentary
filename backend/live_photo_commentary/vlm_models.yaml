@@ -1,3 +1,17 @@
+# VLM model catalogue.
+#
+# Each provider section lists available models. Entries can be a plain string
+# (model name/ID) or an object with optional kwargs:
+#
+#   - name: org/model-id
+#     display_name: Human-readable label   # optional, defaults to name
+#     processor_kwargs:                    # optional, passed to AutoProcessor.from_pretrained
+#       max_pixels: 262144
+#     model_kwargs:                        # optional, passed to from_pretrained
+#       quantization_config: null          # e.g. disable auto 4-bit for this model
+#     generation_kwargs:                   # optional, passed to model.generate
+#       max_new_tokens: 150
+#
 # Cloud
 gemini:
   - gemini-3.6-flash

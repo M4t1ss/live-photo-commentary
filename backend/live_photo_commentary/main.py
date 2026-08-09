@@ -57,13 +57,36 @@ async def _send_ready_state() -> None:
     })
 
 
-def _load_vlm_catalogue() -> dict[str, list[str]]:
+def _load_vlm_catalogue() -> dict[str, list]:
     path = Path(__file__).parent / "vlm_models.yaml"
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 _VLM_CATALOGUE = _load_vlm_catalogue()
+
+
+def _parse_catalogue_entry(entry) -> dict:
+    if isinstance(entry, str):
+        return {"name": entry, "display_name": entry,
+                "processor_kwargs": {}, "model_kwargs": {}, "generation_kwargs": {}}
+    return {
+        "name": entry["name"],
+        "display_name": entry.get("display_name", entry["name"]),
+        "processor_kwargs": entry.get("processor_kwargs") or {},
+        "model_kwargs": entry.get("model_kwargs") or {},
+        "generation_kwargs": entry.get("generation_kwargs") or {},
+    }
+
+
+def _catalogue_entry_for_model(model_id: str) -> dict:
+    for provider_entries in _VLM_CATALOGUE.values():
+        for raw in provider_entries:
+            entry = _parse_catalogue_entry(raw)
+            if entry["name"] == model_id:
+                return entry
+    return {"name": model_id, "display_name": model_id,
+            "processor_kwargs": {}, "model_kwargs": {}, "generation_kwargs": {}}
 
 
 def _free_describer(describer) -> None:
@@ -90,8 +113,15 @@ def _make_describer(on_progress=None):
     cfg = config.get()
     if cfg.vlm_provider == "local":
         path = _model_local_dirs.get(cfg.vlm_model, cfg.vlm_model)
+        entry = _catalogue_entry_for_model(cfg.vlm_model)
         from .local_describer import LocalDescriber
-        describer = LocalDescriber(model_id=path, on_progress=on_progress)
+        describer = LocalDescriber(
+            model_id=path,
+            on_progress=on_progress,
+            processor_kwargs=entry["processor_kwargs"] or None,
+            model_kwargs=entry["model_kwargs"] or None,
+            generation_kwargs=entry["generation_kwargs"] or None,
+        )
     else:
         from .remote_describer import RemoteDescriber
         api_key = {"gemini": cfg.gemini_api_key, "openai": cfg.openai_api_key}.get(cfg.vlm_provider)
@@ -342,7 +372,11 @@ async def _send_models() -> None:
         voices = []
     await _send({
         "type": "models",
-        "vlm": _VLM_CATALOGUE,
+        "vlm": {
+            provider: [{"name": e["name"], "display_name": e["display_name"]}
+                       for e in (_parse_catalogue_entry(raw) for raw in provider_entries)]
+            for provider, provider_entries in _VLM_CATALOGUE.items()
+        },
         "tts": [{"engine": "kokoro", "voice": v} for v in voices],
     })
 
