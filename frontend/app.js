@@ -537,7 +537,7 @@ function closeModal() {
 
 function populateModal() {
   vlmProviderSelect.value = currentConfig.vlm_provider || "gemini";
-  vlmModelInput.value = currentConfig.vlm_model || (vlmCatalogue[vlmProviderSelect.value] ?? [])[0] || "";
+  vlmModelInput.value = currentConfig.vlm_model || (vlmCatalogue[vlmProviderSelect.value] ?? [])[0]?.name || "";
 
   ttsVoiceInput.value = currentConfig.tts_voice ?? "af_heart";
 
@@ -560,7 +560,7 @@ function populateModal() {
 }
 
 vlmProviderSelect.addEventListener("change", () => {
-  vlmModelInput.value = (vlmCatalogue[vlmProviderSelect.value] ?? [])[0] ?? "";
+  vlmModelInput.value = (vlmCatalogue[vlmProviderSelect.value] ?? [])[0]?.name ?? "";
 });
 
 // A combobox that filters its list while typing, shows the full list on focus,
@@ -571,21 +571,28 @@ vlmProviderSelect.addEventListener("change", () => {
 function _initCombo(inputEl, dropdownEl, wrapperEl, getCandidates) {
   let explicitlySelected = false;
 
+  function norm(c) {
+    return typeof c === "string" ? { name: c, display_name: c } : c;
+  }
+
   function filteredCandidates() {
     const typed = inputEl.value.trim().toLowerCase();
-    const all = getCandidates();
-    return typed ? all.filter((c) => c.toLowerCase().includes(typed)) : all;
+    const all = getCandidates().map(norm);
+    return typed ? all.filter((c) =>
+      c.name.toLowerCase().includes(typed) ||
+      c.display_name.toLowerCase().includes(typed)
+    ) : all;
   }
 
   function render(candidates) {
     dropdownEl.innerHTML = "";
     for (const candidate of candidates) {
       const li = document.createElement("li");
-      li.textContent = candidate;
-      if (candidate === inputEl.value) li.classList.add("combo-selected");
+      li.textContent = candidate.display_name;
+      if (candidate.name === inputEl.value) li.classList.add("combo-selected");
       li.addEventListener("mousedown", (e) => {
         e.preventDefault(); // keep focus on input
-        inputEl.value = candidate;
+        inputEl.value = candidate.name;
         explicitlySelected = true;
         dropdownEl.classList.add("hidden");
       });
@@ -594,7 +601,7 @@ function _initCombo(inputEl, dropdownEl, wrapperEl, getCandidates) {
     dropdownEl.classList.toggle("hidden", candidates.length === 0);
   }
 
-  inputEl.addEventListener("focus", () => render(getCandidates()));
+  inputEl.addEventListener("focus", () => render(getCandidates().map(norm)));
 
   inputEl.addEventListener("input", () => {
     explicitlySelected = false;
@@ -604,7 +611,7 @@ function _initCombo(inputEl, dropdownEl, wrapperEl, getCandidates) {
   inputEl.addEventListener("blur", () => {
     if (!explicitlySelected) {
       const candidates = filteredCandidates();
-      if (candidates.length > 0) inputEl.value = candidates[0];
+      if (candidates.length > 0) inputEl.value = candidates[0].name;
     }
     dropdownEl.classList.add("hidden");
   });
