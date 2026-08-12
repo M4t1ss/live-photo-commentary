@@ -76,6 +76,7 @@ def _parse_catalogue_entry(entry) -> dict:
         "processor_kwargs": entry.get("processor_kwargs") or {},
         "model_kwargs": entry.get("model_kwargs") or {},
         "generation_kwargs": entry.get("generation_kwargs") or {},
+        "response_re": entry.get("response_re"),
     }
 
 
@@ -118,9 +119,10 @@ def _make_describer(on_progress=None):
         describer = LocalDescriber(
             model_id=path,
             on_progress=on_progress,
-            processor_kwargs=entry["processor_kwargs"] or None,
-            model_kwargs=entry["model_kwargs"] or None,
-            generation_kwargs=entry["generation_kwargs"] or None,
+            processor_kwargs=entry.get("processor_kwargs"),
+            model_kwargs=entry.get("model_kwargs"),
+            generation_kwargs=entry.get("generation_kwargs"),
+            response_re=entry.get("response_re"),
         )
     else:
         from .remote_describer import RemoteDescriber

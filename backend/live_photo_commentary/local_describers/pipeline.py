@@ -50,6 +50,7 @@ class PipelineLocalDescriber(LocalDescriber):
                 except ImportError:
                     pass
 
+        print(f"{pipeline_kwargs=}") # DEBUG:
         try:
             self.pipe = pipeline("image-text-to-text", model=self.model_id, **pipeline_kwargs)
         finally:

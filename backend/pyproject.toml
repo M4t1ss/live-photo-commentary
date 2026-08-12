@@ -18,7 +18,7 @@ dependencies = [
   "regex>=2024.11.6",
   "torch",
   "torchvision",
-  "transformers",
+  "transformers>=5.15.0",
   "accelerate",
   "bitsandbytes",
   "timm>=1.0.27",
