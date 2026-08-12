@@ -11,6 +11,7 @@
 #       quantization_config: null          # e.g. disable auto 4-bit for this model
 #     generation_kwargs:                   # optional, passed to model.generate
 #       max_new_tokens: 150
+#     response_re: '...'                   # optional, picks 'text' group or 1st group from response
 #
 # Cloud
 gemini:
@@ -27,12 +28,23 @@ local:
   - microsoft/Phi-4-multimodal-instruct
   - google/gemma-3-4b-it
   - google/gemma-3-12b-it
-  - google/gemma-4-12B-it
-  - google/gemma-4-E4B-it
   - google/gemma-4-E2B-it
+  - google/gemma-4-E4B-it
+  - google/gemma-4-31B-it
+  - google/gemma-4-12B-it
   - Qwen/Qwen2.5-VL-3B-Instruct
   - Qwen/Qwen2.5-VL-7B-Instruct
   - Qwen/Qwen3-VL-2B-Instruct
+  - Qwen/Qwen3-VL-4B-Instruct
+  - Qwen/Qwen3-VL-8B-Instruct
+  - Qwen/Qwen3-VL-32B-Instruct
   - apple/FastVLM-0.5B
   - apple/FastVLM-1.5B
   - apple/FastVLM-7B
+  - name: meta-models/Muse-Glimmer-30B
+    generation_kwargs:
+        temperature: 1.0
+        top_p: 0.95
+        top_k: 64
+        max_new_tokens: 10000
+    response_re: '<\|start\|>assistant to=user<\|message\|>(.*?)$'

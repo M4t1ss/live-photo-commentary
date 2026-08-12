@@ -135,6 +135,7 @@ class LocalDescriber(Describer):
                  model_kwargs=None,
                  generation_kwargs=None,
                  on_progress=None,
+                 response_re=None,
                  **kwargs,
     ):
         super().__init__(
@@ -146,6 +147,7 @@ class LocalDescriber(Describer):
             compact_prompt=compact_prompt,
             max_history_size=max_history_size,
             min_history_size=min_history_size,
+            response_re=response_re,
         )
         self.model_id = model_id
         self.device_param = device

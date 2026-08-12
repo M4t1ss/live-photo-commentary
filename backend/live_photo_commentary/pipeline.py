@@ -166,6 +166,7 @@ class Pipeline:
                 try:
                     text = describer(curr_img, prev_img)
                 except Exception as exc:
+                    import traceback; traceback.print_exc() # DEBUG: print stacktrace on terminal
                     self._send({"type": "error", "message": f"VLM error: {exc}"})
                     continue
                 finally:
