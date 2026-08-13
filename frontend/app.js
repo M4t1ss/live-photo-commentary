@@ -20,10 +20,12 @@ const statusTimerEl      = document.getElementById("status-timer");
 const modalOverlay       = document.getElementById("modal-overlay");
 const modalCancel        = document.getElementById("modal-cancel");
 const modalOk            = document.getElementById("modal-ok");
-const vlmProviderSelect  = document.getElementById("cfg-vlm-provider");
-const vlmModelInput      = document.getElementById("cfg-vlm-model");
-const vlmModelCombo      = document.getElementById("vlm-model-combo");
-const vlmModelDropdown   = document.getElementById("vlm-model-dropdown");
+const vlmProviderSelect      = document.getElementById("cfg-vlm-provider");
+const vlmModelInput          = document.getElementById("cfg-vlm-model");
+const vlmModelCombo          = document.getElementById("vlm-model-combo");
+const vlmModelDropdown       = document.getElementById("vlm-model-dropdown");
+const vlmModelOverridesInput = document.getElementById("cfg-vlm-model-overrides");
+const vlmOverridesDetails    = document.getElementById("vlm-overrides-details");
 const ttsVoiceInput      = document.getElementById("cfg-tts-voice");
 const ttsVoiceCombo      = document.getElementById("tts-voice-combo");
 const ttsVoiceDropdown   = document.getElementById("tts-voice-dropdown");
@@ -538,6 +540,8 @@ function closeModal() {
 function populateModal() {
   vlmProviderSelect.value = currentConfig.vlm_provider || "gemini";
   vlmModelInput.value = currentConfig.vlm_model || (vlmCatalogue[vlmProviderSelect.value] ?? [])[0]?.name || "";
+  vlmModelOverridesInput.value = currentConfig.vlm_model_overrides ?? "";
+  vlmOverridesDetails.open = !!currentConfig.vlm_model_overrides;
 
   ttsVoiceInput.value = currentConfig.tts_voice ?? "af_heart";
 
@@ -561,14 +565,28 @@ function populateModal() {
 
 vlmProviderSelect.addEventListener("change", () => {
   vlmModelInput.value = (vlmCatalogue[vlmProviderSelect.value] ?? [])[0]?.name ?? "";
+  vlmModelOverridesInput.value = "";
+  vlmOverridesDetails.open = false;
 });
+
+function _onVlmModelSelected(entry) {
+  const overrides = {};
+  for (const k of ["processor_kwargs", "model_kwargs", "generation_kwargs"]) {
+    const v = entry[k];
+    if (v && Object.keys(v).length > 0) overrides[k] = v;
+  }
+  if (entry.response_re) overrides.response_re = entry.response_re;
+  vlmModelOverridesInput.value = Object.keys(overrides).length
+    ? JSON.stringify(overrides, null, 2)
+    : "";
+}
 
 // A combobox that filters its list while typing, shows the full list on focus,
 // and snaps to the top filtered match on blur/Tab unless the user picked an
 // item from the list explicitly (picking a shorter candidate that is itself a
 // substring of a later one, e.g. "gpt-4o" vs "gpt-4o-mini", would otherwise get
 // silently overwritten by the substring match on blur).
-function _initCombo(inputEl, dropdownEl, wrapperEl, getCandidates) {
+function _initCombo(inputEl, dropdownEl, wrapperEl, getCandidates, onSelect = null) {
   let explicitlySelected = false;
 
   function norm(c) {
@@ -595,6 +613,7 @@ function _initCombo(inputEl, dropdownEl, wrapperEl, getCandidates) {
         inputEl.value = candidate.name;
         explicitlySelected = true;
         dropdownEl.classList.add("hidden");
+        onSelect?.(candidate);
       });
       dropdownEl.appendChild(li);
     }
@@ -621,7 +640,7 @@ function _initCombo(inputEl, dropdownEl, wrapperEl, getCandidates) {
   });
 }
 
-_initCombo(vlmModelInput, vlmModelDropdown, vlmModelCombo, () => vlmCatalogue[vlmProviderSelect.value] ?? []);
+_initCombo(vlmModelInput, vlmModelDropdown, vlmModelCombo, () => vlmCatalogue[vlmProviderSelect.value] ?? [], _onVlmModelSelected);
 _initCombo(ttsVoiceInput, ttsVoiceDropdown, ttsVoiceCombo, () => ttsVoices);
 
 function setVolume(v, save = false) {
@@ -656,9 +675,18 @@ barMuteBtn.addEventListener("click", () => {
 });
 
 modalOk.addEventListener("click", () => {
+  const overridesRaw = vlmModelOverridesInput.value.trim();
+  if (overridesRaw) {
+    try { JSON.parse(overridesRaw); } catch {
+      alert("Model overrides: invalid JSON");
+      return;
+    }
+  }
+
   const updates = {
     vlm_provider: vlmProviderSelect.value || "gemini",
     vlm_model: vlmModelInput.value.trim() || null,
+    vlm_model_overrides: overridesRaw || null,
     tts_voice: ttsVoiceInput.value.trim() || "af_heart",
     pre_screenshot_delay: parseFloat(preScreenshotInput.value) || 2.0,
     difference_threshold: parseFloat(diffThreshInput.value) || 0.0,
@@ -674,6 +702,7 @@ modalOk.addEventListener("click", () => {
   const modelChanged =
     updates.vlm_provider !== currentConfig.vlm_provider ||
     updates.vlm_model !== currentConfig.vlm_model ||
+    updates.vlm_model_overrides !== currentConfig.vlm_model_overrides ||
     updates.tts_voice !== currentConfig.tts_voice;
   if (modelChanged) stopCycle();
 
