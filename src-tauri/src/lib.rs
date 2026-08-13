@@ -75,10 +75,71 @@ fn restart_backend(
 
 // ── Screenshot ───────────────────────────────────────────────────────────────
 
+fn png_to_data_url(path: &std::path::Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read failed: {e}"))?;
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:image/png;base64,{b64}"))
+}
+
+#[tauri::command]
+fn list_monitors() -> Result<Vec<MonitorInfo>, String> {
+    use screenshots::Screen;
+    let screens = Screen::all().map_err(|e| format!("screen enumeration failed: {e}"))?;
+    Ok(screens
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| MonitorInfo {
+            index: i,
+            name: format!("Display {}", s.display_info.id),
+            x: s.display_info.x,
+            y: s.display_info.y,
+            width: s.display_info.width,
+            height: s.display_info.height,
+            is_primary: s.display_info.is_primary,
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn capture_monitor_preview(
+    app: tauri::AppHandle,
+    state: State<'_, ScreenshotState>,
+    monitor_idx: Option<u32>,
+) -> Result<String, String> {
+    let preview_path = state.frames_dir.join("frame_preview.png");
+    if state.is_wsl {
+        let win_dest = wslpath_to_windows(&preview_path)?;
+        let exe = locate_screenshot_exe(&app);
+        let mut cmd = Command::new(&exe);
+        cmd.arg(&win_dest);
+        if let Some(idx) = monitor_idx {
+            cmd.args(["--monitor", &idx.to_string()]);
+        }
+        let status = cmd.status().map_err(|e| format!("screenshot.exe failed: {e}"))?;
+        if !status.success() {
+            return Err(format!("screenshot.exe exited with {:?}", status.code()));
+        }
+    } else {
+        use screenshots::Screen;
+        let screens = Screen::all().map_err(|e| format!("screen enumeration failed: {e}"))?;
+        let idx = monitor_idx.unwrap_or(0) as usize;
+        let screen = screens.get(idx).or_else(|| screens.first()).ok_or("no screens found")?;
+        screen
+            .capture()
+            .map_err(|e| format!("capture failed: {e}"))?
+            .save(&preview_path)
+            .map_err(|e| format!("save failed: {e}"))?;
+    }
+    png_to_data_url(&preview_path)
+}
+
 #[tauri::command]
 fn take_screenshot(
     app: tauri::AppHandle,
     state: State<'_, ScreenshotState>,
+    monitor_idx: Option<u32>,
+    clip: Option<[i32; 4]>,
 ) -> Result<String, String> {
     let slot = state.frame_slot.fetch_xor(1, Ordering::Relaxed);
     let dest = state.frames_dir.join(format!("frame_{slot}.png"));
@@ -87,8 +148,15 @@ fn take_screenshot(
         if state.is_wsl {
             let exe = locate_screenshot_exe(&app);
             let win_dest = wslpath_to_windows(&dest)?;
-            let status = Command::new(&exe)
-                .arg(&win_dest)
+            let mut cmd = Command::new(&exe);
+            cmd.arg(&win_dest);
+            if let Some(idx) = monitor_idx {
+                cmd.args(["--monitor", &idx.to_string()]);
+            }
+            if let Some([x, y, w, h]) = clip {
+                cmd.args(["--clip", &format!("{x},{y},{w},{h}")]);
+            }
+            let status = cmd
                 .status()
                 .map_err(|e| format!("screenshot.exe failed to start: {e}"))?;
             if !status.success() {
@@ -97,9 +165,20 @@ fn take_screenshot(
         } else {
             use screenshots::Screen;
             let screens = Screen::all().map_err(|e| format!("screen enumeration failed: {e}"))?;
-            let screen = screens.into_iter().next().ok_or("no screens found")?;
-            let image = screen.capture().map_err(|e| format!("capture failed: {e}"))?;
-            image.save(&dest).map_err(|e| format!("save failed: {e}"))?;
+            let idx = monitor_idx.unwrap_or(0) as usize;
+            let screen = screens.get(idx).or_else(|| screens.first()).ok_or("no screens found")?;
+            let img = screen.capture().map_err(|e| format!("capture failed: {e}"))?;
+            let img = if let Some([x, y, w, h]) = clip {
+                let ix = x.max(0) as u32;
+                let iy = y.max(0) as u32;
+                let iw = (w as u32).min(img.width().saturating_sub(ix)).max(1);
+                let ih = (h as u32).min(img.height().saturating_sub(iy)).max(1);
+                image::DynamicImage::ImageRgba8(img).crop_imm(ix, iy, iw, ih)
+                    .into_rgba8()
+            } else {
+                img
+            };
+            img.save(&dest).map_err(|e| format!("save failed: {e}"))?;
         }
         Ok(dest.to_string_lossy().into_owned())
     })();
@@ -230,6 +309,17 @@ struct ScreenshotState {
     frames_dir: std::path::PathBuf,
     frame_slot: AtomicUsize,
     is_wsl: bool,
+}
+
+#[derive(serde::Serialize)]
+struct MonitorInfo {
+    index: usize,
+    name: String,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    is_primary: bool,
 }
 
 fn detect_wsl() -> bool {
@@ -980,6 +1070,8 @@ pub fn run() {
             get_backend_port,
             install_cuda_torch,
             restart_backend,
+            list_monitors,
+            capture_monitor_preview,
             take_screenshot,
         ])
         .build(tauri::generate_context!())

@@ -125,6 +125,28 @@
       </section>
 
       <section>
+        <h3>Capture</h3>
+        <label>Monitor
+          <select id="cfg-monitor">
+            <option value="0">Default monitor</option>
+          </select>
+        </label>
+        <div id="clip-region-row">
+          <span>Region</span>
+          <div id="clip-inputs">
+            <input type="number" id="cfg-clip-x" placeholder="X" min="0" title="Left edge (px)" />
+            <input type="number" id="cfg-clip-y" placeholder="Y" min="0" title="Top edge (px)" />
+            <input type="number" id="cfg-clip-w" placeholder="W" min="1" title="Width (px)" />
+            <input type="number" id="cfg-clip-h" placeholder="H" min="1" title="Height (px)" />
+          </div>
+          <div id="clip-btns">
+            <button id="cfg-pick-region">Pick&hellip;</button>
+            <button id="cfg-clear-clip">Clear</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
         <h3>Timing</h3>
         <label>Screenshot delay (s)
           <input type="number" id="cfg-pre-screenshot-delay" step="0.5" min="0" />
@@ -199,6 +221,37 @@
       <div id="modal-buttons">
         <button id="modal-cancel">Cancel</button>
         <button id="modal-ok">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="picker-overlay" class="hidden">
+    <div id="picker-modal">
+      <div id="picker-header">
+        <h2>Pick Capture Region</h2>
+        <div id="picker-zoom-controls">
+          <button id="picker-zoom-out" title="Zoom out">&#8722;</button>
+          <span id="picker-zoom-level">100%</span>
+          <button id="picker-zoom-in" title="Zoom in">+</button>
+          <button id="picker-fit-btn" title="Fit to window">Fit</button>
+        </div>
+      </div>
+      <div id="picker-canvas-wrap">
+        <canvas id="picker-canvas"></canvas>
+        <div id="picker-loading">Capturing screen&hellip;</div>
+      </div>
+      <div id="picker-footer">
+        <span id="picker-cursor-pos" class="mono">&#8212;</span>
+        <div id="picker-inputs">
+          <span class="pi-label">X</span><input type="number" id="pi-x" min="0" />
+          <span class="pi-label">Y</span><input type="number" id="pi-y" min="0" />
+          <span class="pi-label">W</span><input type="number" id="pi-w" min="1" />
+          <span class="pi-label">H</span><input type="number" id="pi-h" min="1" />
+        </div>
+        <div id="picker-footer-btns">
+          <button id="picker-cancel">Cancel</button>
+          <button id="picker-apply">Apply</button>
+        </div>
       </div>
     </div>
   </div>

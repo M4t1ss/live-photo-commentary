@@ -1,6 +1,6 @@
 [project]
 name = "live-photo-commentary-backend"
-version = "0.1.10"
+version = "0.1.11"
 requires-python = ">=3.12, <3.13"
 dependencies = [
   "fastapi>=0.136.3",

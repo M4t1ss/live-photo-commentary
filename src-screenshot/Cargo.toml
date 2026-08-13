@@ -8,3 +8,4 @@ name = "screenshot"
 
 [dependencies]
 screenshots = "0.8"
+image = "0.24"

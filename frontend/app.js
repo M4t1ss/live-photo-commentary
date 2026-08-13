@@ -66,7 +66,38 @@ const cfgFirstPrompt     = document.getElementById("cfg-first-prompt");
 const cfgHistoryPrompt   = document.getElementById("cfg-history-prompt");
 const cfgCompactPrompt   = document.getElementById("cfg-compact-prompt");
 
+// Capture section (settings modal)
+const cfgMonitorSelect   = document.getElementById("cfg-monitor");
+const cfgClipX           = document.getElementById("cfg-clip-x");
+const cfgClipY           = document.getElementById("cfg-clip-y");
+const cfgClipW           = document.getElementById("cfg-clip-w");
+const cfgClipH           = document.getElementById("cfg-clip-h");
+const cfgPickRegionBtn   = document.getElementById("cfg-pick-region");
+const cfgClearClipBtn    = document.getElementById("cfg-clear-clip");
+
+// Picker modal
+const pickerOverlay      = document.getElementById("picker-overlay");
+const pickerCanvasWrap   = document.getElementById("picker-canvas-wrap");
+const pickerCanvas       = document.getElementById("picker-canvas");
+const pickerLoadingEl    = document.getElementById("picker-loading");
+const pickerCursorPos    = document.getElementById("picker-cursor-pos");
+const pickerZoomEl       = document.getElementById("picker-zoom-level");
+const pickerZoomInBtn    = document.getElementById("picker-zoom-in");
+const pickerZoomOutBtn   = document.getElementById("picker-zoom-out");
+const pickerFitBtn       = document.getElementById("picker-fit-btn");
+const piX                = document.getElementById("pi-x");
+const piY                = document.getElementById("pi-y");
+const piW                = document.getElementById("pi-w");
+const piH                = document.getElementById("pi-h");
+const pickerCancelBtn    = document.getElementById("picker-cancel");
+const pickerApplyBtn     = document.getElementById("picker-apply");
+
 // --- App state ---
+let selectedMonitorIdx = parseInt(localStorage.getItem("lpc_monitor") ?? "0", 10);
+let selectedClip = (() => {
+  try { return JSON.parse(localStorage.getItem("lpc_clip") ?? ""); } catch { return null; }
+})();
+
 let volume = parseFloat(localStorage.getItem("lpc_volume") ?? "1");
 let preMuteVolume = null;
 barVolumeInput.value = volume;
@@ -465,7 +496,10 @@ function sendSpeechEnded() {
 
 async function takeScreenshot() {
   try {
-    const path = await invoke("take_screenshot");
+    const path = await invoke("take_screenshot", {
+      monitorIdx: selectedMonitorIdx,
+      clip: selectedClip,
+    });
     send({ type: "frame_ready", path });
   } catch (e) {
     console.error("[screenshot] take_screenshot failed:", e);
@@ -515,7 +549,9 @@ toggleSubtitleBtn.addEventListener("click", () => {
 settingsBtn.addEventListener("click", openModal);
 modalCancel.addEventListener("click", closeModal);
 modalOverlay.addEventListener("click", (e) => { if (e.target === modalOverlay) closeModal(); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && pickerOverlay.classList.contains("hidden")) closeModal();
+});
 
 document.querySelectorAll(".tab-btn").forEach(btn => {
   btn.addEventListener("click", () => {
@@ -561,6 +597,25 @@ function populateModal() {
   cfgBgPreview.style.background = bgColor;
   cfgFgColor.value = fgColor;
   cfgFgPreview.style.background = fgColor;
+
+  // Monitor dropdown — populate async, don't block the modal opening
+  cfgMonitorSelect.innerHTML = `<option value="${selectedMonitorIdx}">Loading…</option>`;
+  invoke("list_monitors").then(monitors => {
+    cfgMonitorSelect.innerHTML = monitors.map((m, i) =>
+      `<option value="${i}">${m.name} (${m.width}×${m.height})${m.is_primary ? " ✓" : ""}</option>`
+    ).join("");
+    cfgMonitorSelect.value = String(selectedMonitorIdx);
+  }).catch(() => {
+    cfgMonitorSelect.innerHTML = '<option value="0">Monitor 0</option>';
+    cfgMonitorSelect.value = "0";
+  });
+
+  // Clip region
+  if (selectedClip) {
+    [cfgClipX.value, cfgClipY.value, cfgClipW.value, cfgClipH.value] = selectedClip;
+  } else {
+    cfgClipX.value = cfgClipY.value = cfgClipW.value = cfgClipH.value = "";
+  }
 }
 
 vlmProviderSelect.addEventListener("change", () => {
@@ -721,6 +776,17 @@ modalOk.addEventListener("click", () => {
     localStorage.setItem("lpc_bg_color", newBg);
     localStorage.setItem("lpc_fg_color", newFg);
   }
+
+  // Monitor and clip region
+  const newMonitorIdx = parseInt(cfgMonitorSelect.value, 10);
+  const cx = parseInt(cfgClipX.value, 10);
+  const cy = parseInt(cfgClipY.value, 10);
+  const cw = parseInt(cfgClipW.value, 10);
+  const ch = parseInt(cfgClipH.value, 10);
+  selectedMonitorIdx = isNaN(newMonitorIdx) ? 0 : newMonitorIdx;
+  selectedClip = (!isNaN(cx) && !isNaN(cy) && cw > 0 && ch > 0) ? [cx, cy, cw, ch] : null;
+  localStorage.setItem("lpc_monitor", String(selectedMonitorIdx));
+  localStorage.setItem("lpc_clip", selectedClip ? JSON.stringify(selectedClip) : "");
 
   send({ type: "set_config", data: updates, persist: true });
   closeModal();
@@ -904,6 +970,358 @@ cfgFgColor.addEventListener("input", () => {
   const v = _normalizeHex(cfgFgColor.value);
   if (isValidHex(v)) cfgFgPreview.style.background = v;
 });
+
+// --- Capture section handlers ---
+cfgMonitorSelect.addEventListener("change", () => {
+  cfgClipX.value = cfgClipY.value = cfgClipW.value = cfgClipH.value = "";
+});
+
+cfgClearClipBtn.addEventListener("click", () => {
+  cfgClipX.value = cfgClipY.value = cfgClipW.value = cfgClipH.value = "";
+});
+
+cfgPickRegionBtn.addEventListener("click", openPicker);
+
+// --- Region picker ---
+let _pickerImg = null;
+let _pickerZoom = 1.0;       // 1.0 = fit to canvas
+let _pickerPan = { x: 0, y: 0 };
+let _pickerFitScale = 1.0;
+let _pickerSel = null;       // { x, y, w, h } in image pixels
+let _pickerDrag = null;      // { type: 'select'|'pan'|'resize'|'move', ... }
+let _pickerSpaceDown = false;
+let _pickerCtx = null;
+let _pickerCaptureTimeout = null;
+let _pickerCountInterval = null;
+
+function _pickerToImg(cx, cy) {
+  if (!_pickerImg) return { x: 0, y: 0 };
+  const scale = _pickerZoom * _pickerFitScale;
+  const ox = (pickerCanvas.width - _pickerImg.naturalWidth * scale) / 2 + _pickerPan.x;
+  const oy = (pickerCanvas.height - _pickerImg.naturalHeight * scale) / 2 + _pickerPan.y;
+  return { x: (cx - ox) / scale, y: (cy - oy) / scale };
+}
+
+function _pickerDraw() {
+  if (!_pickerCtx || !_pickerImg) return;
+  const ctx = _pickerCtx;
+  const cw = pickerCanvas.width;
+  const ch = pickerCanvas.height;
+  const iw = _pickerImg.naturalWidth;
+  const ih = _pickerImg.naturalHeight;
+  const scale = _pickerZoom * _pickerFitScale;
+  const ox = (cw - iw * scale) / 2 + _pickerPan.x;
+  const oy = (ch - ih * scale) / 2 + _pickerPan.y;
+
+  ctx.clearRect(0, 0, cw, ch);
+  ctx.drawImage(_pickerImg, ox, oy, iw * scale, ih * scale);
+
+  if (_pickerSel && _pickerSel.w > 0 && _pickerSel.h > 0) {
+    const sx = ox + _pickerSel.x * scale;
+    const sy = oy + _pickerSel.y * scale;
+    const sw = _pickerSel.w * scale;
+    const sh = _pickerSel.h * scale;
+    const ir = ox + iw * scale;
+    const ib = oy + ih * scale;
+
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    if (sy > oy)      ctx.fillRect(ox, oy, iw * scale, sy - oy);
+    if (sy + sh < ib) ctx.fillRect(ox, sy + sh, iw * scale, ib - (sy + sh));
+    if (sx > ox)      ctx.fillRect(ox, sy, sx - ox, sh);
+    if (sx + sw < ir) ctx.fillRect(sx + sw, sy, ir - (sx + sw), sh);
+
+    ctx.strokeStyle = "#4a9eff";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(sx, sy, sw, sh);
+
+    const hs = 8;
+    ctx.fillStyle = "#4a9eff";
+    for (const [hx, hy] of [[sx, sy], [sx + sw, sy], [sx, sy + sh], [sx + sw, sy + sh]]) {
+      ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+    }
+  }
+}
+
+function _pickerSyncInputs() {
+  if (_pickerSel) {
+    piX.value = _pickerSel.x; piY.value = _pickerSel.y;
+    piW.value = _pickerSel.w; piH.value = _pickerSel.h;
+  } else {
+    piX.value = piY.value = piW.value = piH.value = "";
+  }
+}
+
+function _pickerSyncSelFromInputs() {
+  if (!_pickerImg) return;
+  const x = parseInt(piX.value, 10), y = parseInt(piY.value, 10);
+  const w = parseInt(piW.value, 10), h = parseInt(piH.value, 10);
+  if (!isNaN(x) && !isNaN(y) && w > 0 && h > 0) {
+    const iw = _pickerImg.naturalWidth, ih = _pickerImg.naturalHeight;
+    _pickerSel = {
+      x: Math.max(0, Math.min(iw - 1, x)),
+      y: Math.max(0, Math.min(ih - 1, y)),
+      w: Math.min(iw - Math.max(0, x), w),
+      h: Math.min(ih - Math.max(0, y), h),
+    };
+  } else {
+    _pickerSel = null;
+  }
+  _pickerDraw();
+}
+
+[piX, piY, piW, piH].forEach(el => el.addEventListener("input", _pickerSyncSelFromInputs));
+
+function _pickerGetHandle(cx, cy) {
+  if (!_pickerSel || _pickerSel.w <= 0 || _pickerSel.h <= 0 || !_pickerImg) return null;
+  const scale = _pickerZoom * _pickerFitScale;
+  const iw = _pickerImg.naturalWidth, ih = _pickerImg.naturalHeight;
+  const ox = (pickerCanvas.width - iw * scale) / 2 + _pickerPan.x;
+  const oy = (pickerCanvas.height - ih * scale) / 2 + _pickerPan.y;
+  const sx = ox + _pickerSel.x * scale, sy = oy + _pickerSel.y * scale;
+  const sw = _pickerSel.w * scale, sh = _pickerSel.h * scale;
+  const hs = 10;
+  for (const [hx, hy, corner, cursor] of [
+    [sx,      sy,      "tl", "nw-resize"],
+    [sx + sw, sy,      "tr", "ne-resize"],
+    [sx,      sy + sh, "bl", "sw-resize"],
+    [sx + sw, sy + sh, "br", "se-resize"],
+  ]) {
+    if (Math.abs(cx - hx) <= hs && Math.abs(cy - hy) <= hs) return { corner, cursor };
+  }
+  return null;
+}
+
+function _pickerIsInsideSel(cx, cy) {
+  if (!_pickerSel || _pickerSel.w <= 0 || _pickerSel.h <= 0 || !_pickerImg) return false;
+  const scale = _pickerZoom * _pickerFitScale;
+  const iw = _pickerImg.naturalWidth, ih = _pickerImg.naturalHeight;
+  const ox = (pickerCanvas.width - iw * scale) / 2 + _pickerPan.x;
+  const oy = (pickerCanvas.height - ih * scale) / 2 + _pickerPan.y;
+  const sx = ox + _pickerSel.x * scale, sy = oy + _pickerSel.y * scale;
+  return cx >= sx && cx <= sx + _pickerSel.w * scale && cy >= sy && cy <= sy + _pickerSel.h * scale;
+}
+
+function _pickerUpdateCursor(cx, cy) {
+  if (_pickerSpaceDown) return;
+  const handle = _pickerGetHandle(cx, cy);
+  if (handle) pickerCanvasWrap.style.cursor = handle.cursor;
+  else if (_pickerIsInsideSel(cx, cy)) pickerCanvasWrap.style.cursor = "move";
+  else pickerCanvasWrap.style.cursor = "crosshair";
+}
+
+pickerCanvas.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  const rect = pickerCanvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+  if (e.button === 1 || _pickerSpaceDown) {
+    _pickerDrag = { type: "pan", startCx: cx, startCy: cy, panStart: { ..._pickerPan } };
+    pickerCanvasWrap.style.cursor = "grabbing";
+  } else if (e.button === 0) {
+    const handle = _pickerGetHandle(cx, cy);
+    if (handle) {
+      const sel = _pickerSel;
+      const anchorX = (handle.corner === "tl" || handle.corner === "bl") ? sel.x + sel.w : sel.x;
+      const anchorY = (handle.corner === "tl" || handle.corner === "tr") ? sel.y + sel.h : sel.y;
+      _pickerDrag = { type: "resize", anchor: { x: anchorX, y: anchorY } };
+      pickerCanvasWrap.style.cursor = handle.cursor;
+    } else if (_pickerIsInsideSel(cx, cy)) {
+      _pickerDrag = { type: "move", imgStart: _pickerToImg(cx, cy), selStart: { ..._pickerSel } };
+      pickerCanvasWrap.style.cursor = "move";
+    } else {
+      _pickerDrag = { type: "select", imgStart: _pickerToImg(cx, cy) };
+      _pickerSel = null;
+      _pickerSyncInputs();
+      _pickerDraw();
+    }
+  }
+});
+
+pickerCanvas.addEventListener("mousemove", (e) => {
+  const rect = pickerCanvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+  const imgPos = _pickerToImg(cx, cy);
+
+  if (_pickerImg) {
+    const ix = Math.max(0, Math.min(_pickerImg.naturalWidth - 1, Math.round(imgPos.x)));
+    const iy = Math.max(0, Math.min(_pickerImg.naturalHeight - 1, Math.round(imgPos.y)));
+    pickerCursorPos.textContent = `${ix}, ${iy}`;
+  }
+
+  if (!_pickerDrag) {
+    _pickerUpdateCursor(cx, cy);
+    return;
+  }
+
+  if (_pickerDrag.type === "pan") {
+    _pickerPan.x = _pickerDrag.panStart.x + (cx - _pickerDrag.startCx);
+    _pickerPan.y = _pickerDrag.panStart.y + (cy - _pickerDrag.startCy);
+  } else if (_pickerImg) {
+    const iw = _pickerImg.naturalWidth, ih = _pickerImg.naturalHeight;
+    if (_pickerDrag.type === "select" || _pickerDrag.type === "resize") {
+      const anchor = _pickerDrag.type === "resize" ? _pickerDrag.anchor : _pickerDrag.imgStart;
+      const ax = Math.max(0, Math.min(iw, anchor.x));
+      const ay = Math.max(0, Math.min(ih, anchor.y));
+      const bx = Math.max(0, Math.min(iw, imgPos.x));
+      const by = Math.max(0, Math.min(ih, imgPos.y));
+      const w = Math.round(Math.abs(bx - ax)), h = Math.round(Math.abs(by - ay));
+      if (w > 0 && h > 0) {
+        _pickerSel = { x: Math.round(Math.min(ax, bx)), y: Math.round(Math.min(ay, by)), w, h };
+        _pickerSyncInputs();
+      }
+    } else if (_pickerDrag.type === "move") {
+      const dx = Math.round(imgPos.x - _pickerDrag.imgStart.x);
+      const dy = Math.round(imgPos.y - _pickerDrag.imgStart.y);
+      const nx = Math.max(0, Math.min(iw - _pickerDrag.selStart.w, _pickerDrag.selStart.x + dx));
+      const ny = Math.max(0, Math.min(ih - _pickerDrag.selStart.h, _pickerDrag.selStart.y + dy));
+      _pickerSel = { x: nx, y: ny, w: _pickerDrag.selStart.w, h: _pickerDrag.selStart.h };
+      _pickerSyncInputs();
+    }
+  }
+  _pickerDraw();
+});
+
+pickerCanvas.addEventListener("mouseup", (e) => {
+  if (_pickerDrag?.type === "select" && _pickerSel && (_pickerSel.w < 2 || _pickerSel.h < 2)) {
+    _pickerSel = null;
+    _pickerSyncInputs();
+    _pickerDraw();
+  }
+  _pickerDrag = null;
+  const rect = pickerCanvas.getBoundingClientRect();
+  _pickerUpdateCursor(e.clientX - rect.left, e.clientY - rect.top);
+});
+
+pickerCanvas.addEventListener("mouseleave", () => {
+  pickerCursorPos.textContent = "—";
+  if (_pickerDrag) { _pickerDrag = null; _pickerDraw(); }
+});
+
+pickerCanvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  if (!_pickerImg) return;
+  const rect = pickerCanvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+  const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+  const newZoom = Math.max(0.1, Math.min(30, _pickerZoom * factor));
+
+  const scale = _pickerZoom * _pickerFitScale;
+  const ox = (pickerCanvas.width - _pickerImg.naturalWidth * scale) / 2 + _pickerPan.x;
+  const oy = (pickerCanvas.height - _pickerImg.naturalHeight * scale) / 2 + _pickerPan.y;
+  const imgX = (cx - ox) / scale, imgY = (cy - oy) / scale;
+
+  _pickerZoom = newZoom;
+  const ns = _pickerZoom * _pickerFitScale;
+  _pickerPan.x = cx - imgX * ns - (pickerCanvas.width - _pickerImg.naturalWidth * ns) / 2;
+  _pickerPan.y = cy - imgY * ns - (pickerCanvas.height - _pickerImg.naturalHeight * ns) / 2;
+  pickerZoomEl.textContent = Math.round(_pickerZoom * 100) + "%";
+  _pickerDraw();
+}, { passive: false });
+
+pickerZoomInBtn.addEventListener("click", () => {
+  _pickerZoom = Math.min(30, _pickerZoom * 1.5);
+  pickerZoomEl.textContent = Math.round(_pickerZoom * 100) + "%";
+  _pickerDraw();
+});
+pickerZoomOutBtn.addEventListener("click", () => {
+  _pickerZoom = Math.max(0.1, _pickerZoom / 1.5);
+  pickerZoomEl.textContent = Math.round(_pickerZoom * 100) + "%";
+  _pickerDraw();
+});
+pickerFitBtn.addEventListener("click", () => {
+  _pickerZoom = 1.0; _pickerPan = { x: 0, y: 0 };
+  pickerZoomEl.textContent = "100%";
+  _pickerDraw();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (pickerOverlay.classList.contains("hidden")) return;
+  if (e.code === "Space") {
+    _pickerSpaceDown = true;
+    pickerCanvasWrap.style.cursor = "grab";
+    e.preventDefault();
+  }
+  if (e.key === "Escape") closePicker();
+});
+document.addEventListener("keyup", (e) => {
+  if (e.code === "Space") {
+    _pickerSpaceDown = false;
+    pickerCanvasWrap.style.cursor = _pickerDrag?.type === "pan" ? "grabbing" : "crosshair";
+  }
+});
+
+function openPicker() {
+  const monIdx = parseInt(cfgMonitorSelect.value, 10) || 0;
+  const delayMs = Math.round((currentConfig.pre_screenshot_delay ?? 2.0) * 1000);
+
+  _pickerZoom = 1.0; _pickerPan = { x: 0, y: 0 }; _pickerFitScale = 1.0;
+  _pickerImg = null; _pickerDrag = null; _pickerSpaceDown = false;
+  pickerZoomEl.textContent = "100%";
+  clearTimeout(_pickerCaptureTimeout); clearInterval(_pickerCountInterval);
+
+  // Pre-fill selection from clip inputs
+  const cx = parseInt(cfgClipX.value, 10), cy = parseInt(cfgClipY.value, 10);
+  const cw = parseInt(cfgClipW.value, 10), ch = parseInt(cfgClipH.value, 10);
+  _pickerSel = (!isNaN(cx) && !isNaN(cy) && cw > 0 && ch > 0) ? { x: cx, y: cy, w: cw, h: ch } : null;
+  _pickerSyncInputs();
+
+  pickerCanvas.classList.add("hidden");
+  pickerOverlay.classList.remove("hidden");
+  pickerCursorPos.textContent = "—";
+
+  pickerCanvas.width = pickerCanvasWrap.clientWidth || pickerCanvasWrap.offsetWidth;
+  pickerCanvas.height = pickerCanvasWrap.clientHeight || pickerCanvasWrap.offsetHeight;
+  _pickerCtx = pickerCanvas.getContext("2d");
+
+  const deadline = Date.now() + delayMs;
+  const updateCountdown = () => {
+    const remaining = Math.max(0, deadline - Date.now()) / 1000;
+    pickerLoadingEl.textContent = `Capturing in ${remaining.toFixed(1)}s`;
+  };
+  updateCountdown();
+  pickerLoadingEl.classList.remove("hidden");
+  _pickerCountInterval = setInterval(updateCountdown, 100);
+
+  _pickerCaptureTimeout = setTimeout(() => {
+    clearInterval(_pickerCountInterval);
+    _pickerCountInterval = null;
+    pickerLoadingEl.textContent = "Capturing screen…";
+
+    invoke("capture_monitor_preview", { monitorIdx: monIdx })
+      .then(dataUrl => {
+        const img = new Image();
+        img.onload = () => {
+          _pickerImg = img;
+          _pickerFitScale = Math.min(
+            pickerCanvas.width / img.naturalWidth,
+            pickerCanvas.height / img.naturalHeight,
+          );
+          pickerLoadingEl.classList.add("hidden");
+          pickerCanvas.classList.remove("hidden");
+          _pickerDraw();
+        };
+        img.onerror = () => { pickerLoadingEl.textContent = "Failed to load preview image"; };
+        img.src = dataUrl;
+      })
+      .catch(e => { pickerLoadingEl.textContent = `Capture failed: ${e}`; });
+  }, delayMs);
+}
+
+function closePicker() {
+  clearTimeout(_pickerCaptureTimeout); _pickerCaptureTimeout = null;
+  clearInterval(_pickerCountInterval); _pickerCountInterval = null;
+  pickerOverlay.classList.add("hidden");
+}
+
+function applyPicker() {
+  if (_pickerSel) {
+    cfgClipX.value = _pickerSel.x; cfgClipY.value = _pickerSel.y;
+    cfgClipW.value = _pickerSel.w; cfgClipH.value = _pickerSel.h;
+  }
+  closePicker();
+}
+
+pickerCancelBtn.addEventListener("click", closePicker);
+pickerApplyBtn.addEventListener("click", applyPicker);
 
 // --- Subtitle row divider ---
 const SUBTITLE_HEIGHT_KEY = "lpc_subtitle_height";
