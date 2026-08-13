@@ -156,6 +156,7 @@ let audioQueue = [];
 let ttsAllReceived = false;
 let isPlaying = false;
 let currentAudio = null;
+let _currentAudioGen = -1;
 // True from first chunk of a batch until sendSpeechEnded, to gate "Synthesizing" phase
 let firstChunkReceived = false;
 
@@ -308,12 +309,14 @@ function handleMessage(data) {
         diffInfoEl.classList.add("hidden");
       }
       firstChunkReceived = false;
+      if (data.gen !== undefined) _currentAudioGen = data.gen;
       resetAudio();
       setPhase("Describing…", "up");
       break;
     }
     case "chunk":
       if (running) {
+        if (data.gen !== undefined && data.gen !== _currentAudioGen) break;
         if (!firstChunkReceived) {
           firstChunkReceived = true;
           setPhase("Synthesizing…", "up");

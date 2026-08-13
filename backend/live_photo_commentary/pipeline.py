@@ -82,8 +82,9 @@ class Pipeline:
         push = not self._last_rejected
         self._last_rejected = not accepted
 
+        self._generation += 1
         if self._broadcast_fn:
-            frame_msg = {"type": "frame", "url": "/frame/current", "push": push}
+            frame_msg = {"type": "frame", "url": "/frame/current", "push": push, "gen": self._generation}
             if diff is not None:
                 frame_msg["diff"] = round(diff, 6)
                 frame_msg["measure"] = cfg.difference_measure
@@ -210,6 +211,7 @@ class Pipeline:
                     ]
                     self._send({
                         "type": "chunk",
+                        "gen": gen,
                         "index": i,
                         "text": fragment,
                         "audio_url": f"/audio/chunk/{i}",
