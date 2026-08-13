@@ -66,6 +66,7 @@ def image_to_data_uri(image):
 class LocalDescriber(Describer):
     uses_processor = True
     processor_extra_kwargs: dict = {}
+    tokenizer_extra_kwargs: dict = {}
 
     def _display_name(self) -> str:
         """Return a clean HF-style model name even when model_id is a local path."""
@@ -113,6 +114,9 @@ class LocalDescriber(Describer):
         elif "Phi-4" in model_id:
             from .local_describers.phi4mm import Phi4MMLocalDescriber
             instance = super(LocalDescriber, Phi4MMLocalDescriber).__new__(Phi4MMLocalDescriber)
+        elif "InternVL" in model_id:
+            from .local_describers.internvl import InternVLLocalDescriber
+            instance = super(LocalDescriber, InternVLLocalDescriber).__new__(InternVLLocalDescriber)
         else:
             from .local_describers.pipeline import PipelineLocalDescriber
             instance = super(LocalDescriber, PipelineLocalDescriber).__new__(PipelineLocalDescriber)
@@ -215,7 +219,7 @@ class LocalDescriber(Describer):
         try:
             self.tokenizer = self.processor.tokenizer
         except AttributeError:
-            tokenizer_kwargs = {"trust_remote_code": True} | self.tokenizer_kwargs
+            tokenizer_kwargs = {"trust_remote_code": True} | self.tokenizer_extra_kwargs | self.tokenizer_kwargs
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, **tokenizer_kwargs)
 
         self.generation_args = {

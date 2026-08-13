@@ -38,6 +38,12 @@ local:
   - Qwen/Qwen3-VL-4B-Instruct
   - Qwen/Qwen3-VL-8B-Instruct
   - Qwen/Qwen3-VL-32B-Instruct
+  - OpenGVLab/InternVL3_5-1B-Instruct
+  - OpenGVLab/InternVL3_5-2B-Instruct
+  - OpenGVLab/InternVL3_5-4B-Instruct
+  - OpenGVLab/InternVL3_5-8B-Instruct
+  - OpenGVLab/InternVL3_5-14B-Instruct
+  - OpenGVLab/InternVL3_5-38B-Instruct
   - apple/FastVLM-0.5B
   - apple/FastVLM-1.5B
   - apple/FastVLM-7B

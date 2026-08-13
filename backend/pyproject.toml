@@ -22,6 +22,7 @@ dependencies = [
   "accelerate",
   "bitsandbytes",
   "timm>=1.0.27",
+  "einops",
   "openai",
   "google-genai",
 ]
