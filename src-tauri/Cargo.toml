@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.10"
+version = "0.1.11"
 description = "Live Photo Commentary desktop app"
 authors = ["Goran Topic", "Matiss Rikters"]
 license = "MIT"
@@ -29,4 +29,6 @@ tauri-plugin-log = "2"
 tauri-plugin-window-state = "2"
 reqwest = { version = "0.12", features = ["json"] }
 screenshots = "0.8"
+image = "0.24"
+base64 = "0.22"
 tokio = { version = "1", features = ["time"] }

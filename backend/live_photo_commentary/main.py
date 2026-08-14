@@ -115,6 +115,16 @@ def _make_describer(on_progress=None):
     if cfg.vlm_provider == "local":
         path = _model_local_dirs.get(cfg.vlm_model, cfg.vlm_model)
         entry = _catalogue_entry_for_model(cfg.vlm_model)
+        if cfg.vlm_model_overrides:
+            try:
+                overrides = json.loads(cfg.vlm_model_overrides)
+                for k in ("processor_kwargs", "model_kwargs", "generation_kwargs"):
+                    if k in overrides:
+                        entry[k] = {**entry.get(k, {}), **overrides[k]}
+                if "response_re" in overrides:
+                    entry["response_re"] = overrides["response_re"]
+            except (json.JSONDecodeError, TypeError):
+                log.warning("Invalid vlm_model_overrides JSON, ignoring")
         from .local_describer import LocalDescriber
         describer = LocalDescriber(
             model_id=path,
@@ -375,8 +385,7 @@ async def _send_models() -> None:
     await _send({
         "type": "models",
         "vlm": {
-            provider: [{"name": e["name"], "display_name": e["display_name"]}
-                       for e in (_parse_catalogue_entry(raw) for raw in provider_entries)]
+            provider: [_parse_catalogue_entry(raw) for raw in provider_entries]
             for provider, provider_entries in _VLM_CATALOGUE.items()
         },
         "tts": [{"engine": "kokoro", "voice": v} for v in voices],
@@ -417,7 +426,7 @@ async def websocket_endpoint(ws: WebSocket):
                             (new.vlm_provider == "gemini" and old.gemini_api_key != new.gemini_api_key)
                             or (new.vlm_provider == "openai" and old.openai_api_key != new.openai_api_key)
                         )
-                        if old.vlm_provider != new.vlm_provider or old.vlm_model != new.vlm_model or api_key_changed:
+                        if old.vlm_provider != new.vlm_provider or old.vlm_model != new.vlm_model or old.vlm_model_overrides != new.vlm_model_overrides or api_key_changed:
                             asyncio.create_task(_reinit_describer())
                         if old.tts_voice != new.tts_voice:
                             asyncio.create_task(_reinit_synthesizer())

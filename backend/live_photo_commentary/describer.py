@@ -98,7 +98,7 @@ class Describer(ABC):
         self.max_history_size = max_history_size
         self.min_history_size = min_history_size
         self.history = []
-        self.response_re = response_re and re.compile(response_re)
+        self.response_re = response_re and re.compile(response_re, re.DOTALL)
 
     def __call__(self, current_image, previous_image=None):
         images = [current_image]
@@ -123,9 +123,8 @@ class Describer(ABC):
         print(f"[lpc] describer user_prompt:\n{user_prompt}", flush=True)
         response_text = self.prompt_model(user_prompt, images, system_prompt=self.system_prompt)
         print(f"[lpc] describer response:\n{response_text}", flush=True)
-        print(f"{self.response_re}")
         if self.response_re:
-            match = self.response_re.search(response_text, re.DOTALL)
+            match = self.response_re.search(response_text)
             if match:
                 if 'text' in match.re.groupindex:
                     response_text = match.group('text')
