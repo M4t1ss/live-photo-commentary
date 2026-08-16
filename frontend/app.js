@@ -327,6 +327,7 @@ function handleMessage(data) {
 
     case "tts_done":
       if (running) {
+        if (data.gen !== undefined && data.gen !== _currentAudioGen) break;
         ttsAllReceived = true;
         if (!isPlaying) sendSpeechEnded();
       }
