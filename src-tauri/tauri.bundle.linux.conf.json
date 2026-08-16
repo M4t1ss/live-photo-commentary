@@ -4,6 +4,7 @@
       "resources/uv-*",
       "resources/backend/**/*",
       "resources/models/model.*",
+      "resources/models/animations/*",
       "resources/screenshot.exe"
     ]
   }
