@@ -19,7 +19,7 @@ struct BackendProcess {
 }
 
 impl BackendProcess {
-    /// Kills the backend process (and its children on Windows).
+    /// Kills the backend process and its children.
     /// Safe to call multiple times — the Option is taken on first call;
     /// subsequent calls find None and return immediately.
     fn kill(&self) {
@@ -31,8 +31,16 @@ impl BackendProcess {
                     no_window(cmd.args(["/F", "/T", "/PID", &child.id().to_string()]));
                     let _ = cmd.status();
                 }
-                #[cfg(not(target_os = "windows"))]
-                let _ = child.kill();
+                // Kill the whole process group so uvicorn (and any model it loaded)
+                // are also terminated — not just the uv launcher. The child was
+                // started with process_group(0), so its pgid equals its pid.
+                #[cfg(unix)]
+                {
+                    let pgid = child.id();
+                    let _ = Command::new("kill")
+                        .args(["-KILL", &format!("-{pgid}")])
+                        .status();
+                }
                 let _ = child.wait();
             }
             // None → already killed (by RunEvent::Exit handler or monitor thread)
@@ -923,6 +931,14 @@ async fn spawn_and_monitor_backend(
     // Suppress the console window in release builds.
     if !cfg!(debug_assertions) {
         no_window(&mut cmd);
+    }
+
+    // Put the child in its own process group so kill() can terminate the whole
+    // tree (uv + uvicorn + Python) by sending SIGKILL to the group.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
     }
 
     let child = match cmd.spawn() {

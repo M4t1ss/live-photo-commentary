@@ -220,7 +220,7 @@ class Pipeline:
                         "tags": tags,
                     })
                 else:
-                    self._send({"type": "tts_done"})
+                    self._send({"type": "tts_done", "gen": gen})
             except Exception as exc:
                 self._send({"type": "error", "message": f"TTS error: {exc}"})
 

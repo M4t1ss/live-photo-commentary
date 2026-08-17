@@ -133,10 +133,15 @@ jobs:
             touch src-tauri/resources/models/model.glb
             touch src-tauri/resources/models/model.yaml
           fi
+          mkdir -p src-tauri/resources/models/animations
           if [ -d models/animations ]; then
-            mkdir -p src-tauri/resources/models/animations
             find models/animations -maxdepth 1 -name '*.vrma' \
               -exec cp {} src-tauri/resources/models/animations/ \;
+          fi
+          # Ensure the animations glob in tauri.bundle.conf.json always matches
+          # at least one file, even when no .vrma files are present.
+          if [ -z "$(ls src-tauri/resources/models/animations/)" ]; then
+            touch src-tauri/resources/models/animations/placeholder
           fi
 
       # Cache the cargo-tauri binary so it is only compiled on first run.

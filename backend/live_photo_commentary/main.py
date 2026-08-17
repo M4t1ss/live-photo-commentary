@@ -326,7 +326,7 @@ async def get_audio_chunk(index: int):
     path = pipeline.chunk_path(index) if pipeline else None
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail="Chunk not available")
-    return FileResponse(str(path), media_type="audio/wav")
+    return FileResponse(str(path), media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/model-config")

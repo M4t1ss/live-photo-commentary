@@ -24,8 +24,8 @@ def mse_difference(image1, image2):
     if image2.mode != 'RGB':
         image2 = image2.convert('RGB')
 
-    arr1 = np.array(image1)
-    arr2 = np.array(image2)
+    arr1 = np.array(image1, dtype=np.float32)
+    arr2 = np.array(image2, dtype=np.float32)
     return np.mean((arr1 - arr2) ** 2) / (256 ** 2)
 
 
