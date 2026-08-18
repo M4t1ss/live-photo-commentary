@@ -67,6 +67,11 @@ class LocalDescriber(Describer):
     uses_processor = True
     processor_extra_kwargs: dict = {}
     tokenizer_extra_kwargs: dict = {}
+    default_generation_args: dict = {
+        "max_new_tokens": 200,
+        "do_sample": True,
+        "top_k": 50,
+    }
 
     def _display_name(self) -> str:
         """Return a clean HF-style model name even when model_id is a local path."""
@@ -222,11 +227,7 @@ class LocalDescriber(Describer):
             tokenizer_kwargs = {"trust_remote_code": True} | self.tokenizer_extra_kwargs | self.tokenizer_kwargs
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, **tokenizer_kwargs)
 
-        self.generation_args = {
-            "max_new_tokens": 200,
-            "temperature": 0.2,
-            "do_sample": True,
-        } | self.generation_kwargs
+        self.generation_args = self.default_generation_args | self.generation_kwargs
 
         model_params = next(self.model.parameters())
         self.device = model_params.device

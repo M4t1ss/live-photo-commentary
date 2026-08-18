@@ -75,11 +75,7 @@ class PipelineLocalDescriber(LocalDescriber):
             for k, v in self.processor_kwargs.items():
                 setattr(image_proc, k, v)
 
-        self.generation_args = {
-            "max_new_tokens": 200,
-            "temperature": 0.2,
-            "do_sample": True,
-        } | self.generation_kwargs
+        self.generation_args = self.default_generation_args | self.generation_kwargs
 
         model_params = next(self.model.parameters())
         self.device = model_params.device
