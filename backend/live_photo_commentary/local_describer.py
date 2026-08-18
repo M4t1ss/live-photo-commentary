@@ -69,6 +69,7 @@ class LocalDescriber(Describer):
     tokenizer_extra_kwargs: dict = {}
     default_generation_args: dict = {
         "max_new_tokens": 200,
+        "max_length": None,  # suppress spurious warning when model config has max_length set
         "do_sample": True,
         "temperature": 1.0,
         "top_k": 50,
