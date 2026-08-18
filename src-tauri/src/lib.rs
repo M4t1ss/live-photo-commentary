@@ -9,6 +9,7 @@ use tauri_plugin_window_state::WindowExt;
 struct BackendState {
     port: u16,
     process: BackendProcess,
+    cuda_suggestion: Option<String>,
 }
 
 /// Wraps the child process handle so we can share it between the shutdown handler
@@ -57,8 +58,8 @@ impl Drop for BackendProcess {
 // ── Tauri commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-fn get_backend_port(state: State<BackendState>) -> u16 {
-    state.port
+fn get_backend_port(state: State<BackendState>) -> (u16, Option<String>) {
+    (state.port, state.cuda_suggestion.clone())
 }
 
 #[tauri::command]
@@ -1041,6 +1042,25 @@ pub fn run() {
                 is_wsl: detect_wsl(),
             });
 
+            // CUDA upgrade detection — run before managing state so the result
+            // is available synchronously when get_backend_port is called.
+            #[cfg(not(target_os = "macos"))]
+            let cuda_suggestion: Option<String> = {
+                let cuda_dir = get_cuda_dir(app.handle());
+                let marker = cuda_dir.join(".cuda_torch");
+                let installed = std::fs::read_to_string(&marker).unwrap_or_default();
+                detect_cuda_index().and_then(|cu_index| {
+                    if installed.trim() != cu_index {
+                        log::info!("NVIDIA GPU detected, suggesting {cu_index} torch");
+                        Some(cu_index.to_string())
+                    } else {
+                        None
+                    }
+                })
+            };
+            #[cfg(target_os = "macos")]
+            let cuda_suggestion: Option<String> = None;
+
             // Pre-allocate BackendState with the chosen port; the child process
             // handle starts as None and is filled in once the background task
             // spawns the backend (after uv sync completes).
@@ -1049,6 +1069,7 @@ pub fn run() {
             app.manage(BackendState {
                 port,
                 process: BackendProcess { inner },
+                cuda_suggestion,
             });
 
             // Spawn all heavy work (uv sync, process spawn, health polling) on
@@ -1062,20 +1083,6 @@ pub fn run() {
                     Some(dir) => dir,
                     None => return,
                 };
-
-                // CUDA upgrade detection — non-macOS only.
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let cuda_dir = get_cuda_dir(&handle);
-                    let marker = cuda_dir.join(".cuda_torch");
-                    let installed = std::fs::read_to_string(&marker).unwrap_or_default();
-                    if let Some(cu_index) = detect_cuda_index() {
-                        if installed.trim() != cu_index {
-                            log::info!("NVIDIA GPU detected, suggesting {cu_index} torch");
-                            let _ = handle.emit("cuda_upgrade_available", cu_index);
-                        }
-                    }
-                }
 
                 spawn_and_monitor_backend(handle, port, uv, backend_dir, inner_for_bg).await;
             });

@@ -892,8 +892,7 @@ async function main() {
   setPhase("Starting up…", "up");
 
   // Register early so splash status updates during uv sync / backend setup,
-  // and so backend_crashed / cuda_upgrade_available are never missed while
-  // invoke is still pending.
+  // and so backend_crashed is never missed while invoke is still pending.
   await listen("setup_progress", ({ payload }) => setPhase(payload, "up"));
   await listen("backend_crashed", ({ payload }) => {
     setRunning(false);
@@ -906,14 +905,6 @@ async function main() {
     splashRestartBtn.classList.remove("hidden");
   });
 
-  // cuda_upgrade_available fires right after uv sync (before uvicorn even
-  // starts), so it must be registered here alongside the other early listeners.
-  await listen("cuda_upgrade_available", ({ payload }) => {
-    pendingCuIndex = payload;
-    cudaBannerMsg.textContent =
-      `NVIDIA GPU detected (${payload}). Install CUDA-optimised PyTorch for faster inference?`;
-    cudaBanner.classList.remove("hidden");
-  });
   await listen("cuda_install_progress", ({ payload }) => {
     cudaBannerMsg.textContent = payload;
   });
@@ -930,7 +921,14 @@ async function main() {
     cudaDismissBtn.disabled = false;
   });
 
-  port = await invoke("get_backend_port");
+  const [backendPort, cuIndex] = await invoke("get_backend_port");
+  port = backendPort;
+  if (cuIndex) {
+    pendingCuIndex = cuIndex;
+    cudaBannerMsg.textContent =
+      `NVIDIA GPU detected (${cuIndex}). Install CUDA-optimised PyTorch for faster inference?`;
+    cudaBanner.classList.remove("hidden");
+  }
   connectWebSocket();
 }
 
