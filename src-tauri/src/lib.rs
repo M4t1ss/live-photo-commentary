@@ -1,8 +1,37 @@
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(unix)]
+use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_window_state::WindowExt;
+
+// ── Signal handling (Unix only) ───────────────────────────────────────────────
+//
+// When `cargo tauri dev` is stopped with Ctrl-C, SIGINT is delivered to the
+// entire terminal process group, which includes the Tauri binary. The default
+// SIGINT action terminates the process immediately — no destructors, no
+// RunEvent::Exit — so the backend (in its own process group) is orphaned.
+//
+// Fix: intercept SIGINT/SIGTERM, kill the backend's process group first
+// (async-signal-safe: only uses kill/signal/raise), then re-raise so the
+// process exits with the correct signal disposition.
+
+#[cfg(unix)]
+static BACKEND_PGID: AtomicI32 = AtomicI32::new(-1);
+
+#[cfg(unix)]
+extern "C" fn on_term_signal(sig: libc::c_int) {
+    let pgid = BACKEND_PGID.load(Ordering::Relaxed);
+    if pgid > 0 {
+        unsafe { libc::kill(-(pgid as libc::pid_t), libc::SIGKILL); }
+    }
+    // Reset to default and re-raise so callers see the correct exit status.
+    unsafe {
+        libc::signal(sig, libc::SIG_DFL);
+        libc::raise(sig);
+    }
+}
 
 // ── App state ────────────────────────────────────────────────────────────────
 
@@ -26,6 +55,11 @@ impl BackendProcess {
     fn kill(&self) {
         if let Ok(mut guard) = self.inner.lock() {
             if let Some(mut child) = guard.take() {
+                // Clear the global PGID before killing so a concurrent signal
+                // handler won't try to kill the same group twice.
+                #[cfg(unix)]
+                BACKEND_PGID.store(-1, Ordering::Relaxed);
+
                 #[cfg(target_os = "windows")]
                 {
                     let mut cmd = Command::new("taskkill");
@@ -968,6 +1002,11 @@ async fn spawn_and_monitor_backend(
         }
     };
 
+    // Publish PGID for the signal handler before inserting into the mutex.
+    // process_group(0) means the child's PGID equals its PID.
+    #[cfg(unix)]
+    BACKEND_PGID.store(child.id() as i32, Ordering::Relaxed);
+
     // Insert child into the shared Arc so kill() and the monitor can reach it.
     *inner.lock().unwrap() = Some(child);
     let spawn_time = std::time::Instant::now();
@@ -1022,6 +1061,14 @@ async fn spawn_and_monitor_backend(
 pub fn run() {
     let port = find_free_port();
 
+    // Register signal handlers before spawning anything so Ctrl-C and SIGTERM
+    // always kill the backend process group before terminating.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGINT, on_term_signal as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, on_term_signal as libc::sighandler_t);
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(move |app| {
@@ -1037,6 +1084,24 @@ pub fn run() {
 
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.restore_state(tauri_plugin_window_state::StateFlags::all());
+
+                // After restoring, verify the window is visible on at least one
+                // monitor. If not (e.g. the second monitor it was on is now
+                // disconnected), center it on the primary monitor instead.
+                if let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) {
+                    let monitors = app.available_monitors().unwrap_or_default();
+                    let on_screen = monitors.iter().any(|m| {
+                        let mp = m.position();
+                        let ms = m.size();
+                        pos.x + size.width as i32 > mp.x
+                            && pos.x < mp.x + ms.width as i32
+                            && pos.y + size.height as i32 > mp.y
+                            && pos.y < mp.y + ms.height as i32
+                    });
+                    if !on_screen {
+                        let _ = window.center();
+                    }
+                }
             }
 
             let uv = get_uv_path(app.handle());

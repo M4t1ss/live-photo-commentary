@@ -75,12 +75,6 @@ class LocalDescriber(Describer):
     }
 
     def _display_name(self) -> str:
-        """Return a clean HF-style model name even when model_id is a local path."""
-        from pathlib import Path
-        p = Path(self.model_id)
-        # Local paths contain a separator; convert google--gemma-4-E4B-it → google/gemma-4-E4B-it
-        if p.is_absolute() or (p.parts and any(sep in self.model_id for sep in ('/', '\\'))):
-            return p.name.replace('--', '/', 1)
         return self.model_id
 
     def _notify(self, message: str) -> None:
@@ -139,6 +133,7 @@ class LocalDescriber(Describer):
                  max_history_size=False,
                  min_history_size=False,
                  model_id="microsoft/Phi-4-multimodal-instruct",
+                 load_path=None,
                  device=None,
                  processor_kwargs=None,
                  tokenizer_kwargs=None,
@@ -160,6 +155,8 @@ class LocalDescriber(Describer):
             response_re=response_re,
         )
         self.model_id = model_id
+        # load_path is the local filesystem path for from_pretrained; falls back to model_id.
+        self.load_path = load_path or model_id
         self.device_param = device
         self.processor_kwargs = processor_kwargs or {}
         self.tokenizer_kwargs = tokenizer_kwargs or {}
@@ -230,12 +227,12 @@ class LocalDescriber(Describer):
         if self.uses_processor:
             self._notify("Loading processor")
             processor_kwargs = {"trust_remote_code": True} | self.processor_extra_kwargs | self.processor_kwargs
-            self.processor = AutoProcessor.from_pretrained(self.model_id, **processor_kwargs)
+            self.processor = AutoProcessor.from_pretrained(self.load_path, **processor_kwargs)
         try:
             self.tokenizer = self.processor.tokenizer
         except AttributeError:
             tokenizer_kwargs = {"trust_remote_code": True} | self.tokenizer_extra_kwargs | self.tokenizer_kwargs
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, **tokenizer_kwargs)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.load_path, **tokenizer_kwargs)
 
         self.generation_args = self.default_generation_args | self.generation_kwargs
 
@@ -253,7 +250,7 @@ class LocalDescriber(Describer):
             "_attn_implementation": attn_implementation,
         } | self.model_kwargs
         log.info("model_kwargs: %s", model_kwargs)
-        return AutoModelForCausalLM.from_pretrained(self.model_id, **model_kwargs)
+        return AutoModelForCausalLM.from_pretrained(self.load_path, **model_kwargs)
 
     @abstractmethod
     def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:

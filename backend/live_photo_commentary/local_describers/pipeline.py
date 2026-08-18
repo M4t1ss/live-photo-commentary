@@ -56,7 +56,7 @@ class PipelineLocalDescriber(LocalDescriber):
                     pass
 
         try:
-            self.pipe = pipeline("image-text-to-text", model=self.model_id, **pipeline_kwargs)
+            self.pipe = pipeline("image-text-to-text", model=self.load_path, **pipeline_kwargs)
         finally:
             if self._on_progress:
                 for mod, attr, orig in _patches:

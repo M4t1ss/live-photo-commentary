@@ -49,10 +49,10 @@ class InternVLLocalDescriber(LocalDescriber):
         try:
             from transformers import AutoConfig
             from transformers.dynamic_module_utils import get_class_from_dynamic_module
-            config = AutoConfig.from_pretrained(self.model_id, trust_remote_code=True)
+            config = AutoConfig.from_pretrained(self.load_path, trust_remote_code=True)
             model_class_ref = getattr(config, "auto_map", {}).get("AutoModel")
             if model_class_ref:
-                model_cls = get_class_from_dynamic_module(model_class_ref, self.model_id)
+                model_cls = get_class_from_dynamic_module(model_class_ref, self.load_path)
                 _orig_cls_init = model_cls.__init__
 
                 def _compat_init(self_m, cfg, *args, **kwargs):
@@ -66,7 +66,7 @@ class InternVLLocalDescriber(LocalDescriber):
             log.warning("InternVL post_init compat patch failed: %s", e)
 
         try:
-            return AutoModel.from_pretrained(self.model_id, **model_kwargs).eval()
+            return AutoModel.from_pretrained(self.load_path, **model_kwargs).eval()
         finally:
             if _patched_cls is not None:
                 _patched_cls.__init__ = _orig_cls_init

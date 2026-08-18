@@ -29,7 +29,6 @@ _ws: WebSocket | None = None
 
 pipeline: Pipeline | None = None
 _model_errors: dict[str, str] = {}      # "vlm" | "tts" → last error message
-_model_local_dirs: dict[str, str] = {}  # model_id → local download path (no symlinks)
 _vlm_ready: bool = False
 _tts_ready: bool = False
 
@@ -110,10 +109,9 @@ def _free_describer(describer) -> None:
         pass
 
 
-def _make_describer(on_progress=None):
+def _make_describer(on_progress=None, local_path=None):
     cfg = config.get()
     if cfg.vlm_provider == "local":
-        path = _model_local_dirs.get(cfg.vlm_model, cfg.vlm_model)
         entry = _catalogue_entry_for_model(cfg.vlm_model)
         if cfg.vlm_model_overrides:
             try:
@@ -127,7 +125,8 @@ def _make_describer(on_progress=None):
                 log.warning("Invalid vlm_model_overrides JSON, ignoring")
         from .local_describer import LocalDescriber
         describer = LocalDescriber(
-            model_id=path,
+            model_id=cfg.vlm_model,
+            load_path=local_path,
             on_progress=on_progress,
             processor_kwargs=entry.get("processor_kwargs"),
             model_kwargs=entry.get("model_kwargs"),
@@ -169,13 +168,22 @@ def _make_synthesizer():
 
 
 async def _download_with_progress(model_id: str) -> str:
-    """Download model files to a flat local_dir (no symlinks) with progress events.
-    Returns the local directory path for use with from_pretrained."""
+    """Return the local snapshot path for model_id, downloading if necessary.
+    Uses the standard HF hub cache; no download occurs if already cached."""
     import os
     import tqdm as tqdm_lib
-    from huggingface_hub import snapshot_download, constants
+    from huggingface_hub import snapshot_download
 
-    local_dir = str(Path(constants.HF_HUB_CACHE) / "lpc" / model_id.replace("/", "--"))
+    # Fast path: already in cache, no network needed.
+    try:
+        return await asyncio.to_thread(
+            snapshot_download,
+            repo_id=model_id,
+            local_files_only=True,
+        )
+    except Exception:
+        pass
+
     loop = asyncio.get_running_loop()
 
     class _ProgressTqdm(tqdm_lib.tqdm):
@@ -200,14 +208,12 @@ async def _download_with_progress(model_id: str) -> str:
                     "total": self.total,
                 }, loop)
 
-    await asyncio.to_thread(
+    return await asyncio.to_thread(
         snapshot_download,
         repo_id=model_id,
-        local_dir=local_dir,
         tqdm_class=_ProgressTqdm,
         ignore_patterns=["*.msgpack", "*.h5", "flax_*", "tf_*", "rust_model*"],
     )
-    return local_dir
 
 
 async def _reinit_describer() -> None:
@@ -240,9 +246,10 @@ async def _reinit_describer() -> None:
         def _progress(msg):
             _send_threadsafe(msg, loop)
 
+        local_path = None
         if cfg.vlm_provider == "local":
-            _model_local_dirs[cfg.vlm_model] = await _download_with_progress(cfg.vlm_model)
-        pipeline.describer = await asyncio.to_thread(_make_describer, _progress)
+            local_path = await _download_with_progress(cfg.vlm_model)
+        pipeline.describer = await asyncio.to_thread(_make_describer, _progress, local_path=local_path)
         _apply_promptset(config.get().active_promptset)
         log.info("Describer ready")
         _vlm_ready = True

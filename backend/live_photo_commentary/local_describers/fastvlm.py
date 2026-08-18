@@ -22,7 +22,7 @@ class FastVLMLocalDescriber(LocalDescriber):
             "attn_implementation": attn_implementation,
         } | self.model_kwargs
         log.info("model_kwargs: %s", model_kwargs)
-        return AutoModelForCausalLM.from_pretrained(self.model_id, **model_kwargs)
+        return AutoModelForCausalLM.from_pretrained(self.load_path, **model_kwargs)
 
     def build_messages(self, user_prompt, images=None, system_prompt=None):
         user_prompt = re.sub(r'<\|image_\d+\|>', '<image>', user_prompt)

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.11"
+version = "0.1.12"
 description = "Live Photo Commentary desktop app"
 authors = ["Goran Topic", "Matiss Rikters"]
 license = "MIT"
@@ -33,3 +33,6 @@ screenshots = "0.8"
 image = "0.24"
 base64 = "0.22"
 tokio = { version = "1", features = ["time"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
