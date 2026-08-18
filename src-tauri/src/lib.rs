@@ -950,6 +950,9 @@ async fn spawn_and_monitor_backend(
     // happen before the process has a chance to flush its write buffer.
     cmd.env("PYTHONUNBUFFERED", "1");
     cmd.env("LPC_FRAMES_DIR", backend_dir.join("frames"));
+    if cfg!(debug_assertions) {
+        cmd.env("LPC_DEV", "1");
+    }
 
     // Point the backend at the bundled models directory (release only).
     // In debug mode the backend's default ../models already points at the

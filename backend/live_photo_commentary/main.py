@@ -299,6 +299,14 @@ def _suppress_pipe_reset(loop, context):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pipeline
+    import os
+    _pkg_log = logging.getLogger("live_photo_commentary")
+    _pkg_log.setLevel(logging.DEBUG if os.environ.get("LPC_DEV") else logging.INFO)
+    if not _pkg_log.handlers:
+        _h = logging.StreamHandler()
+        _h.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+        _pkg_log.addHandler(_h)
+        _pkg_log.propagate = False
     prompts.set_dir(Path("prompts"))
     loop = asyncio.get_running_loop()
     if sys.platform == "win32":

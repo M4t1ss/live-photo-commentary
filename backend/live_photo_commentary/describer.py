@@ -1,7 +1,10 @@
 import io
+import logging
 from abc import ABC, abstractmethod
 import re
 import time
+
+log = logging.getLogger(__name__)
 
 
 TAGS_PLACEHOLDER = "<|tags|>"
@@ -101,6 +104,10 @@ class Describer(ABC):
         self.history = []
         self.response_re = response_re and re.compile(response_re, re.DOTALL)
 
+    def _log_prompt(self, system_prompt, user_prompt):
+        log.debug("system_prompt:\n%s", system_prompt)
+        log.debug("user_prompt:\n%s", user_prompt)
+
     def __call__(self, current_image, previous_image=None):
         images = [current_image]
 
@@ -120,11 +127,10 @@ class Describer(ABC):
         else:
             user_prompt = self.first_prompt
 
-        print(f"[lpc] describer system_prompt:\n{self.system_prompt}", flush=True)
-        print(f"[lpc] describer user_prompt:\n{user_prompt}", flush=True)
+        self._log_prompt(self.system_prompt, user_prompt)
         t0 = time.perf_counter()
         response_text = self.prompt_model(user_prompt, images, system_prompt=self.system_prompt)
-        print(f"[lpc] describer response ({time.perf_counter() - t0:.1f}s):\n{response_text}", flush=True)
+        log.info("response (%.1fs):\n%s", time.perf_counter() - t0, response_text)
         if self.response_re:
             match = self.response_re.search(response_text)
             if match:
