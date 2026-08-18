@@ -70,6 +70,7 @@ class LocalDescriber(Describer):
     default_generation_args: dict = {
         "max_new_tokens": 200,
         "do_sample": True,
+        "temperature": 1.0,
         "top_k": 50,
     }
 
@@ -203,6 +204,15 @@ class LocalDescriber(Describer):
                     setattr(mod, attr, orig)
 
         self._notify("Model loaded")
+
+        # If xformers is installed, swap attention layers to its memory-efficient kernel.
+        if importlib.util.find_spec('xformers'):
+            try:
+                self.model.enable_xformers_memory_efficient_attention()
+                self._notify("xformers memory-efficient attention enabled")
+            except Exception as e:
+                self._notify(f"xformers enable skipped: {e}")
+
         try:
             from huggingface_hub import snapshot_download
             log.info("Model directory: %s", snapshot_download(self.model_id, local_files_only=True))

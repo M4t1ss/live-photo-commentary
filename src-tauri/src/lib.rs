@@ -267,7 +267,18 @@ fn update_pyproject_for_cuda(backend_dir: &std::path::Path, cu_index: &str) -> s
     let path = backend_dir.join("pyproject.toml");
     let mut content = std::fs::read_to_string(&path)?;
 
-    // Preserve non-torch entries from any existing [tool.uv.sources] block
+    // Inject xformers into [project] dependencies so uv resolves it.
+    // Kept out of the source pyproject.toml to avoid failing on platforms without
+    // CUDA wheels (Mac/CPU Linux). The [tool.uv.sources] block below points uv at
+    // the pytorch index so the CUDA-matched wheel is picked up.
+    if !content.contains("\"xformers\"") {
+        content = content.replace(
+            "  \"torchvision\",\n",
+            "  \"torchvision\",\n  \"xformers\",\n",
+        );
+    }
+
+    // Preserve non-torch/torchvision/xformers entries from any existing [tool.uv.sources] block
     // (e.g. the pyopenjtalk vendor-path entry added by the build scripts).
     let preserved: Vec<String> = if let Some(pos) = content.find("\n[tool.uv.sources]") {
         let tail = &content[pos + 1..]; // skip the leading '\n'
@@ -279,7 +290,10 @@ fn update_pyproject_for_cuda(backend_dir: &std::path::Path, cu_index: &str) -> s
             .lines()
             .filter(|l| {
                 let t = l.trim();
-                !t.is_empty() && !t.starts_with("torch ") && !t.starts_with("torchvision ")
+                !t.is_empty()
+                    && !t.starts_with("torch ")
+                    && !t.starts_with("torchvision ")
+                    && !t.starts_with("xformers ")
             })
             // vendor/ is relative to backend/; rewrite for backend-cuda/ (its sibling).
             .map(|l| l.replace("\"vendor/", "\"../backend/vendor/"))
@@ -433,6 +447,7 @@ async fn install_cuda_torch(
             "--no-install-project", // source code loaded via PYTHONPATH, not editable install
             "--reinstall-package", "torch",
             "--reinstall-package", "torchvision",
+            "--reinstall-package", "xformers",
         ])
         .current_dir(&cuda_dir);
         let (out, err) = log_to_file(&cuda_dir.join("uv-sync.log"));

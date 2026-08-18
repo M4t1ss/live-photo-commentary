@@ -32,7 +32,12 @@ class PipelineLocalDescriber(LocalDescriber):
             "trust_remote_code": True,
         }
         if cuda_available and not self.device_param:
-            pipeline_kwargs["device_map"] = "auto"
+            # BNB 4-bit requires all layers on CUDA; "auto" plans layout from the
+            # non-quantized size so a 12B model looks like ~24 GB and accelerate
+            # spills layers to CPU, which BNB then rejects (broke in accelerate
+            # 1.14.0). Use "cuda" so BNB quantizes in place; keep "auto" only
+            # when not quantizing, where multi-GPU spread is desirable.
+            pipeline_kwargs["device_map"] = "cuda" if quantization_config else "auto"
         else:
             pipeline_kwargs["device"] = self.device_param or device
 
@@ -58,6 +63,15 @@ class PipelineLocalDescriber(LocalDescriber):
                     setattr(mod, attr, orig)
 
         self._notify("Model loaded")
+
+        # If xformers is installed, swap attention layers to its memory-efficient kernel.
+        # This is safer than _attn_implementation='xformers' (not all models advertise it).
+        if importlib.util.find_spec('xformers'):
+            try:
+                self.pipe.model.enable_xformers_memory_efficient_attention()
+                self._notify("xformers memory-efficient attention enabled")
+            except Exception as e:
+                self._notify(f"xformers enable skipped: {e}")
 
         # Expose model/processor/tokenizer for parent infrastructure (_notify dtype, tqdm patch).
         self.model = self.pipe.model

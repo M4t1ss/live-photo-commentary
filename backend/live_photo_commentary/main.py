@@ -321,8 +321,8 @@ async def get_current_frame():
     return FileResponse(str(path), media_type="image/png")
 
 
-@app.get("/audio/chunk/{index}")
-async def get_audio_chunk(index: int):
+@app.get("/audio/chunk/{gen}/{index}")
+async def get_audio_chunk(gen: int, index: int):
     path = pipeline.chunk_path(index) if pipeline else None
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail="Chunk not available")

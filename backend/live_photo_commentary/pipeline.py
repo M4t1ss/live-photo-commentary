@@ -214,7 +214,7 @@ class Pipeline:
                         "gen": gen,
                         "index": i,
                         "text": fragment,
-                        "audio_url": f"/audio/chunk/{i}",
+                        "audio_url": f"/audio/chunk/{gen}/{i}",
                         "phonemes": [[ph, round(t, 4)] for ph, t in chunk_phonemes],
                         "subtitles": subtitles,
                         "tags": tags,

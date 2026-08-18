@@ -38,6 +38,7 @@ local:
   - Qwen/Qwen3-VL-4B-Instruct
   - Qwen/Qwen3-VL-8B-Instruct
   - Qwen/Qwen3-VL-32B-Instruct
+  - Qwen/Qwen3.8-27B
   - OpenGVLab/InternVL3_5-1B-Instruct
   - OpenGVLab/InternVL3_5-2B-Instruct
   - OpenGVLab/InternVL3_5-4B-Instruct

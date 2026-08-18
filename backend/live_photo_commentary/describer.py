@@ -1,6 +1,7 @@
 import io
 from abc import ABC, abstractmethod
 import re
+import time
 
 
 TAGS_PLACEHOLDER = "<|tags|>"
@@ -121,8 +122,9 @@ class Describer(ABC):
 
         print(f"[lpc] describer system_prompt:\n{self.system_prompt}", flush=True)
         print(f"[lpc] describer user_prompt:\n{user_prompt}", flush=True)
+        t0 = time.perf_counter()
         response_text = self.prompt_model(user_prompt, images, system_prompt=self.system_prompt)
-        print(f"[lpc] describer response:\n{response_text}", flush=True)
+        print(f"[lpc] describer response ({time.perf_counter() - t0:.1f}s):\n{response_text}", flush=True)
         if self.response_re:
             match = self.response_re.search(response_text)
             if match:
