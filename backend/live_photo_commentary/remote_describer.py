@@ -32,6 +32,7 @@ class RemoteDescriber(Describer):
 
     def __init__(self,
                  api_key=None,
+                 base_url=None,
                  system_prompt=DEFAULT_SYSTEM_PROMPT,
                  ending=DEFAULT_ENDING,
                  first_prompt=DEFAULT_FIRST_PROMPT,
@@ -57,6 +58,7 @@ class RemoteDescriber(Describer):
         self.provider = provider
         self.model_id = model_id or self.get_default_model()
         self.api_key = api_key
+        self.base_url = base_url
         self._setup_client()
 
     @abstractmethod

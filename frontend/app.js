@@ -33,8 +33,10 @@ const preScreenshotInput    = document.getElementById("cfg-pre-screenshot-delay"
 const diffThreshInput    = document.getElementById("cfg-diff-threshold");
 const diffMeasureSelect  = document.getElementById("cfg-diff-measure");
 const maxHistoryInput    = document.getElementById("cfg-max-history");
-const geminiKeyInput     = document.getElementById("cfg-gemini-key");
-const openaiKeyInput     = document.getElementById("cfg-openai-key");
+const geminiKeyInput        = document.getElementById("cfg-gemini-key");
+const openaiKeyInput        = document.getElementById("cfg-openai-key");
+const openaiBaseUrlInput    = document.getElementById("cfg-openai-base-url");
+const openaiCompatKeyInput  = document.getElementById("cfg-openai-compat-key");
 const volumeInput        = document.getElementById("cfg-volume");
 const volumePctEl        = document.getElementById("cfg-volume-pct");
 const barVolumeInput     = document.getElementById("bar-volume");
@@ -562,14 +564,18 @@ document.addEventListener("keydown", (e) => {
 document.querySelectorAll(".tab-btn").forEach(btn => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b === btn));
-    document.getElementById("tab-general").classList.toggle("hidden", btn.dataset.tab !== "general");
+    document.getElementById("tab-llm").classList.toggle("hidden", btn.dataset.tab !== "llm");
+    document.getElementById("tab-capture").classList.toggle("hidden", btn.dataset.tab !== "capture");
+    document.getElementById("tab-ui").classList.toggle("hidden", btn.dataset.tab !== "ui");
     document.getElementById("tab-prompts").classList.toggle("hidden", btn.dataset.tab !== "prompts");
   });
 });
 
 function openModal() {
-  document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === "general"));
-  document.getElementById("tab-general").classList.remove("hidden");
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === "llm"));
+  document.getElementById("tab-llm").classList.remove("hidden");
+  document.getElementById("tab-capture").classList.add("hidden");
+  document.getElementById("tab-ui").classList.add("hidden");
   document.getElementById("tab-prompts").classList.add("hidden");
   populateModal();
   modalOverlay.classList.remove("hidden");
@@ -594,8 +600,11 @@ function populateModal() {
   diffThreshInput.value   = currentConfig.difference_threshold ?? 0.0;
   diffMeasureSelect.value = currentConfig.difference_measure ?? "mse";
   maxHistoryInput.value   = currentConfig.max_history_size ?? 0;
-  geminiKeyInput.value    = "";
-  openaiKeyInput.value    = "";
+  geminiKeyInput.value       = "";
+  openaiKeyInput.value       = "";
+  openaiBaseUrlInput.value        = currentConfig.openai_base_url ?? "";
+  openaiCompatKeyInput.value       = "";
+  openaiCompatKeyInput.placeholder = currentConfig.openai_compat_api_key ? "unchanged" : "";
   cfgSubtitleMode.checked = subtitleMode === "separated";
   cfgPromptset.value = currentPromptsetName;
   _updatePromptsetBtns();
@@ -625,9 +634,12 @@ function populateModal() {
 }
 
 vlmProviderSelect.addEventListener("change", () => {
-  vlmModelInput.value = (vlmCatalogue[vlmProviderSelect.value] ?? [])[0]?.name ?? "";
-  vlmModelOverridesInput.value = "";
-  vlmOverridesDetails.open = false;
+  vlmModelInput.value              = (vlmCatalogue[vlmProviderSelect.value] ?? [])[0]?.name ?? "";
+  vlmModelOverridesInput.value     = "";
+  vlmOverridesDetails.open         = false;
+  openaiBaseUrlInput.value         = "";
+  openaiCompatKeyInput.value       = "";
+  openaiCompatKeyInput.placeholder = "";
 });
 
 function _onVlmModelSelected(entry) {
@@ -640,6 +652,9 @@ function _onVlmModelSelected(entry) {
   vlmModelOverridesInput.value = Object.keys(overrides).length
     ? JSON.stringify(overrides, null, 2)
     : "";
+  openaiBaseUrlInput.value        = entry.base_url ?? "";
+  openaiCompatKeyInput.value       = "";
+  openaiCompatKeyInput.placeholder = "";
 }
 
 // A combobox that filters its list while typing, shows the full list on focus,
@@ -756,6 +771,8 @@ modalOk.addEventListener("click", () => {
   };
   if (geminiKeyInput.value) updates.gemini_api_key = geminiKeyInput.value;
   if (openaiKeyInput.value) updates.openai_api_key = openaiKeyInput.value;
+  updates.openai_base_url = openaiBaseUrlInput.value.trim() || null;
+  if (openaiCompatKeyInput.value) updates.openai_compat_api_key = openaiCompatKeyInput.value;
 
   // Changing the VLM or TTS model tears down and rebuilds it on the backend,
   // so a running cycle would hit a "no model configured" error mid-flight.

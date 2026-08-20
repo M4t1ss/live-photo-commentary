@@ -278,8 +278,7 @@ body {
   padding: 0 24px;
 }
 
-#tab-general,
-#tab-prompts {
+#modal-body > div {
   display: flex;
   flex-direction: column;
   gap: 20px;

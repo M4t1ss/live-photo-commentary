@@ -16,7 +16,10 @@ class OpenAIDescriber(RemoteDescriber):
         return "gpt-4o"
 
     def _setup_client(self):
-        self.client = OpenAI(api_key=self.api_key)
+        self.client = OpenAI(
+            api_key=self.api_key or "none",
+            base_url=self.base_url or None,
+        )
 
     def build_messages(self, user_prompt, images=None, system_prompt=None):
         content = [{"type": "text", "text": user_prompt}]

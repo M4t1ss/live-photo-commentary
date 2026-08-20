@@ -21,11 +21,13 @@ class Settings(BaseSettings):
     subtitle_max_chars: int = 60
     gemini_api_key: str | None = None
     openai_api_key: str | None = None
+    openai_base_url: str | None = None
+    openai_compat_api_key: str | None = None
     model_dir: Path = Path("../models")
     active_promptset: str = "default"
 
 
-_API_KEY_FIELDS = frozenset({"gemini_api_key", "openai_api_key"})
+_API_KEY_FIELDS = frozenset({"gemini_api_key", "openai_api_key", "openai_compat_api_key"})
 
 _settings = Settings()
 

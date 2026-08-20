@@ -76,6 +76,7 @@ def _parse_catalogue_entry(entry) -> dict:
         "model_kwargs": entry.get("model_kwargs") or {},
         "generation_kwargs": entry.get("generation_kwargs") or {},
         "response_re": entry.get("response_re"),
+        "base_url": entry.get("base_url"),
     }
 
 
@@ -135,8 +136,12 @@ def _make_describer(on_progress=None, local_path=None):
         )
     else:
         from .remote_describer import RemoteDescriber
-        api_key = {"gemini": cfg.gemini_api_key, "openai": cfg.openai_api_key}.get(cfg.vlm_provider)
-        describer = RemoteDescriber(provider=cfg.vlm_provider, model_id=cfg.vlm_model, api_key=api_key)
+        if cfg.vlm_provider == "openai":
+            api_key = cfg.openai_compat_api_key if cfg.openai_base_url else cfg.openai_api_key
+            describer = RemoteDescriber(provider="openai", model_id=cfg.vlm_model, api_key=api_key, base_url=cfg.openai_base_url)
+        else:
+            api_key = {"gemini": cfg.gemini_api_key}.get(cfg.vlm_provider)
+            describer = RemoteDescriber(provider=cfg.vlm_provider, model_id=cfg.vlm_model, api_key=api_key)
     return describer
 
 
@@ -439,7 +444,11 @@ async def websocket_endpoint(ws: WebSocket):
                     if pipeline is not None:
                         api_key_changed = (
                             (new.vlm_provider == "gemini" and old.gemini_api_key != new.gemini_api_key)
-                            or (new.vlm_provider == "openai" and old.openai_api_key != new.openai_api_key)
+                            or (new.vlm_provider == "openai" and (
+                                old.openai_api_key != new.openai_api_key
+                                or old.openai_compat_api_key != new.openai_compat_api_key
+                                or old.openai_base_url != new.openai_base_url
+                            ))
                         )
                         if old.vlm_provider != new.vlm_provider or old.vlm_model != new.vlm_model or old.vlm_model_overrides != new.vlm_model_overrides or api_key_changed:
                             asyncio.create_task(_reinit_describer())

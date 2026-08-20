@@ -61,12 +61,14 @@
       <h2>Settings</h2>
 
       <div id="modal-tabs">
-        <button class="tab-btn active" data-tab="general">General</button>
+        <button class="tab-btn active" data-tab="llm">LLM</button>
+        <button class="tab-btn" data-tab="capture">Capture</button>
+        <button class="tab-btn" data-tab="ui">UI</button>
         <button class="tab-btn" data-tab="prompts">Prompts</button>
       </div>
 
       <div id="modal-body">
-      <div id="tab-general">
+      <div id="tab-llm">
       <section>
         <h3>Vision model</h3>
         <label>Provider
@@ -86,44 +88,34 @@
           <summary>Model overrides (JSON)</summary>
           <textarea id="cfg-vlm-model-overrides" spellcheck="false" placeholder='{"generation_kwargs": {"max_new_tokens": 200}}'></textarea>
         </details>
-      </section>
-
-      <section>
-        <h3>Audio</h3>
-        <label>Voice
-          <div class="combo" id="tts-voice-combo">
-            <input id="cfg-tts-voice" type="text"
-                   placeholder='af_heart  or  {"af_nicole":0.8,"jf_alpha":0.2}' autocomplete="off" spellcheck="false" />
-            <ul id="tts-voice-dropdown" class="combo-dropdown hidden"></ul>
-          </div>
+        <label>Endpoint URL
+          <input type="text" id="cfg-openai-base-url" placeholder="https://…/v1" autocomplete="off" spellcheck="false" />
         </label>
-        <label>Volume
-          <div id="volume-row">
-            <input type="range" id="cfg-volume" min="0" max="1" step="0.05" />
-            <span id="cfg-volume-pct"></span>
-          </div>
+        <label>Endpoint API key
+          <input type="password" id="cfg-openai-compat-key" autocomplete="off" />
         </label>
       </section>
 
       <section>
-        <h3>Appearance</h3>
-        <label>Background
-          <div class="color-row">
-            <div class="color-preview" id="cfg-bg-preview"></div>
-            <input type="text" id="cfg-bg-color" class="mono" maxlength="7" placeholder="#000000" spellcheck="false" />
-          </div>
+        <h3>API keys</h3>
+        <label>Gemini
+          <input type="password" id="cfg-gemini-key" placeholder="unchanged" autocomplete="off" />
         </label>
-        <label>Subtitle color
-          <div class="color-row">
-            <div class="color-preview" id="cfg-fg-preview"></div>
-            <input type="text" id="cfg-fg-color" class="mono" maxlength="7" placeholder="#ffffff" spellcheck="false" />
-          </div>
-        </label>
-        <label>Separated subtitles
-          <input type="checkbox" id="cfg-subtitle-mode" />
+        <label>OpenAI
+          <input type="password" id="cfg-openai-key" placeholder="unchanged" autocomplete="off" />
         </label>
       </section>
 
+      <section>
+        <h3>History</h3>
+        <label>Max history size
+          <input type="number" id="cfg-max-history" step="1" min="0" />
+        </label>
+      </section>
+
+      </div><!-- #tab-llm -->
+
+      <div id="tab-capture" class="hidden">
       <section>
         <h3>Capture</h3>
         <label>Monitor
@@ -173,24 +165,46 @@
         </label>
       </section>
 
+      </div><!-- #tab-capture -->
+
+      <div id="tab-ui" class="hidden">
       <section>
-        <h3>History</h3>
-        <label>Max history size
-          <input type="number" id="cfg-max-history" step="1" min="0" />
+        <h3>Audio</h3>
+        <label>Voice
+          <div class="combo" id="tts-voice-combo">
+            <input id="cfg-tts-voice" type="text"
+                   placeholder='af_heart  or  {"af_nicole":0.8,"jf_alpha":0.2}' autocomplete="off" spellcheck="false" />
+            <ul id="tts-voice-dropdown" class="combo-dropdown hidden"></ul>
+          </div>
+        </label>
+        <label>Volume
+          <div id="volume-row">
+            <input type="range" id="cfg-volume" min="0" max="1" step="0.05" />
+            <span id="cfg-volume-pct"></span>
+          </div>
         </label>
       </section>
 
       <section>
-        <h3>API keys</h3>
-        <label>Gemini
-          <input type="password" id="cfg-gemini-key" placeholder="unchanged" autocomplete="off" />
+        <h3>Appearance</h3>
+        <label>Background
+          <div class="color-row">
+            <div class="color-preview" id="cfg-bg-preview"></div>
+            <input type="text" id="cfg-bg-color" class="mono" maxlength="7" placeholder="#000000" spellcheck="false" />
+          </div>
         </label>
-        <label>OpenAI
-          <input type="password" id="cfg-openai-key" placeholder="unchanged" autocomplete="off" />
+        <label>Subtitle color
+          <div class="color-row">
+            <div class="color-preview" id="cfg-fg-preview"></div>
+            <input type="text" id="cfg-fg-color" class="mono" maxlength="7" placeholder="#ffffff" spellcheck="false" />
+          </div>
+        </label>
+        <label>Separated subtitles
+          <input type="checkbox" id="cfg-subtitle-mode" />
         </label>
       </section>
 
-      </div><!-- #tab-general -->
+      </div><!-- #tab-ui -->
 
       <div id="tab-prompts" class="hidden">
         <section>
