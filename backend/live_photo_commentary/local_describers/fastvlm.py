@@ -1,5 +1,4 @@
 import logging
-import re
 
 import torch
 from transformers import AutoModelForCausalLM
@@ -25,7 +24,6 @@ class FastVLMLocalDescriber(LocalDescriber):
         return AutoModelForCausalLM.from_pretrained(self.load_path, **model_kwargs)
 
     def build_messages(self, user_prompt, images=None, system_prompt=None):
-        user_prompt = re.sub(r'<\|image_\d+\|>', '<image>', user_prompt)
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})

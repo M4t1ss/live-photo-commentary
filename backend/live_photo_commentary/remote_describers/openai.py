@@ -21,18 +21,8 @@ class OpenAIDescriber(RemoteDescriber):
             base_url=self.base_url or None,
         )
 
-    def build_messages(self, user_prompt, images=None, system_prompt=None):
-        content = [{"type": "text", "text": user_prompt}]
-        for image in (images or []):
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": image_to_base64_url(image)},
-            })
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": content})
-        return messages
+    def _image_content(self, image):
+        return {"type": "image_url", "image_url": {"url": image_to_base64_url(image)}}
 
     def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         messages = self.build_messages(user_prompt, images, system_prompt)

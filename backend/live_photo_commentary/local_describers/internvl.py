@@ -121,22 +121,13 @@ class InternVLLocalDescriber(LocalDescriber):
         if images:
             tile_batches = [self._preprocess_image(img) for img in images]
             pixel_values = torch.cat(tile_batches).to(self.device, dtype=self.dtype)
-            if len(images) == 1:
-                question = f"<image>\n{user_prompt}"
-                chat_kwargs = {}
-            else:
-                question = (
-                    "".join(f"Image-{i + 1}: <image>\n" for i in range(len(images)))
-                    + user_prompt
-                )
-                chat_kwargs = {"num_patches_list": [len(t) for t in tile_batches]}
+            chat_kwargs = {} if len(images) == 1 else {"num_patches_list": [len(t) for t in tile_batches]}
         else:
             pixel_values = None
-            question = user_prompt
             chat_kwargs = {}
 
         return self.model.chat(
-            self.tokenizer, pixel_values, question,
+            self.tokenizer, pixel_values, user_prompt,
             generation_config=self.generation_args,
             **chat_kwargs,
         )
