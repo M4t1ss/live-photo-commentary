@@ -7,6 +7,7 @@ use tauri::{Emitter, Manager, State};
 use tauri_plugin_window_state::WindowExt;
 
 mod flash_attn;
+mod screensaver;
 
 // ── Signal handling (Unix only) ───────────────────────────────────────────────
 //
@@ -1204,6 +1205,7 @@ pub fn run() {
                 process: BackendProcess { inner },
                 cuda_suggestion,
             });
+            app.manage(screensaver::ScreensaverState::default());
 
             // Spawn all heavy work (uv sync, process spawn, health polling) on
             // a background task so setup() returns immediately and the WebView
@@ -1229,6 +1231,8 @@ pub fn run() {
             list_monitors,
             capture_monitor_preview,
             take_screenshot,
+            screensaver::inhibit_screensaver,
+            screensaver::allow_screensaver,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
