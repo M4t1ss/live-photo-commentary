@@ -1,6 +1,6 @@
 [project]
 name = "live-photo-commentary-backend"
-version = "0.1.12"
+version = "0.1.13"
 requires-python = ">=3.12, <3.13"
 dependencies = [
   "fastapi>=0.136.3",
@@ -29,10 +29,6 @@ dependencies = [
 
 [dependency-groups]
 test = ["pytest>=8", "pytest-asyncio>=0.24", "httpx2"]
-
-# Standard PyPI torch (~250 MB): CPU everywhere, MPS on Apple Silicon.
-# NVIDIA users who want CUDA acceleration can reinstall after setup:
-#   uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -1,15 +1,22 @@
+import contextlib
 import importlib.util
 from abc import abstractmethod
 from io import BytesIO
 import base64
 
-# On Windows, torch may have been installed moments before this process started
-# (CUDA venv setup via restart_backend).  NTFS can return a fresh result for a
-# direct-path stat while the parent directory's index hasn't been updated yet,
-# so Python's import machinery (which uses readdir) may not see __init__.py and
-# creates a namespace package instead.  Calling importlib.invalidate_caches()
-# flushes Python's FileFinder cache and forces a fresh readdir on the next
-# find_spec; if the file still isn't visible we wait up to 60 s and retry.
+# On Windows, torch may have been installed (or reinstalled) moments before this
+# process started (CUDA venv setup via restart_backend).  Two distinct NTFS
+# failure modes can occur:
+#
+#  1. Python's FileFinder cache is stale: readdir on the torch package directory
+#     hasn't been updated yet, so find_spec("torch") returns None (or a namespace
+#     package without __init__.py).  Fixed by invalidate_caches() + retry.
+#
+#  2. The DLL loader can't find torch\lib\torch.dll even though __init__.py is
+#     visible: the lib/ sub-directory index is still stale, so ctypes.WinDLL()
+#     inside torch's __init__ raises OSError [WinError 126].  Fixed by actually
+#     attempting the import inside the retry loop and catching that specific error,
+#     then clearing the partially-imported module from sys.modules before retrying.
 if __import__('sys').platform == "win32":
     def _wait_for_torch():
         import sys
@@ -22,12 +29,22 @@ if __import__('sys').platform == "win32":
             try:
                 spec = importlib.util.find_spec("torch")
                 if spec is not None and spec.origin is not None:
-                    return
+                    try:
+                        import torch  # also exercises DLL loading
+                        return
+                    except OSError as e:
+                        if getattr(e, "winerror", None) != 126:
+                            raise  # unexpected error — don't suppress
+                        # torch.dll (or a dependency) not yet visible; remove any
+                        # partial state so the next attempt starts clean.
+                        for mod in [k for k in sys.modules
+                                    if k == "torch" or k.startswith("torch.")]:
+                            sys.modules.pop(mod, None)
             except Exception:
                 pass
 
             if i == 0:
-                print("[lpc] waiting for torch/__init__.py to become visible…",
+                print("[lpc] waiting for torch to become visible…",
                       flush=True, file=sys.stderr)
             time.sleep(0.5)
 
@@ -54,6 +71,31 @@ from .describer import (
     DEFAULT_HISTORY_PROMPT,
     DEFAULT_COMPACT_PROMPT,
 )
+
+
+def _flash_attn2_compatible(load_path):
+    """Return True only if every attention layer has head_dim ≤ 256 (flash_attn 2 limit).
+
+    Models with heterogeneous per-layer configs (e.g. Gemma 4) raise
+    AmbiguousGlobalPerLayerAttributeError on head_dim access — treat that as
+    incompatible. Models that simply don't define head_dim (e.g. Qwen2.5-VL)
+    get it computed from hidden_size / num_attention_heads.
+    """
+    try:
+        from transformers import AutoConfig
+        cfg = AutoConfig.from_pretrained(load_path, trust_remote_code=True)
+        tc = getattr(cfg, "text_config", cfg)
+        try:
+            hd = tc.head_dim
+        except AttributeError:
+            hd = None  # not defined; compute below
+        except Exception:
+            return False  # AmbiguousGlobalPerLayerAttributeError — heterogeneous per-layer config
+        if hd is None:
+            hd = getattr(tc, "hidden_size", 256) // max(getattr(tc, "num_attention_heads", 1), 1)
+        return isinstance(hd, int) and hd <= 256
+    except Exception:
+        return True  # can't read config → assume ok
 
 
 def image_to_data_uri(image):
@@ -166,50 +208,66 @@ class LocalDescriber(Describer):
         self._on_progress = on_progress
         self._setup_model()
 
-    def _setup_model(self):
+    def _select_device(self):
         cuda_available = torch.cuda.is_available()
         mps_available = not cuda_available and torch.backends.mps.is_available()
-        device = "cuda" if cuda_available else ("mps" if mps_available else "cpu")
+        return cuda_available, "cuda" if cuda_available else ("mps" if mps_available else "cpu")
 
-        quantization_config = BitsAndBytesConfig(load_in_4bit=True) if (cuda_available and importlib.util.find_spec('bitsandbytes')) else None
+    def _select_quant(self, cuda_available):
+        return BitsAndBytesConfig(load_in_4bit=True) if (cuda_available and importlib.util.find_spec('bitsandbytes')) else None
+
+    def _select_attn(self):
         if importlib.util.find_spec('flash_attn'):
-            attn_implementation = 'flash_attention_2'
-        else:
-            attn_implementation = 'sdpa'  # PyTorch built-in fused attention; much faster than eager
+            if _flash_attn2_compatible(self.load_path):
+                return 'flash_attention_2'
+            log.info("flash_attn installed but model is not flash_attn 2 compatible; using sdpa")
+        return 'sdpa'
+
+    @contextlib.contextmanager
+    def _tqdm_patched(self):
+        if not self._on_progress:
+            yield
+            return
+        import importlib as _il
+        _WeightTqdm = self._make_weight_tqdm()
+        patches = []
+        for mod_name, attr in [('tqdm', 'tqdm'), ('tqdm.auto', 'tqdm'),
+                                ('transformers.modeling_utils', 'tqdm')]:
+            try:
+                mod = _il.import_module(mod_name)
+                if hasattr(mod, attr):
+                    patches.append((mod, attr, getattr(mod, attr)))
+                    setattr(mod, attr, _WeightTqdm)
+            except ImportError:
+                pass
+        try:
+            yield
+        finally:
+            for mod, attr, orig in patches:
+                setattr(mod, attr, orig)
+
+    def _maybe_enable_xformers(self, model, attn_implementation):
+        # Skip when flash_attention_2 is in use — it outperforms xformers and
+        # enable_xformers_memory_efficient_attention() would silently override it.
+        if attn_implementation != "flash_attention_2" and importlib.util.find_spec('xformers'):
+            try:
+                model.enable_xformers_memory_efficient_attention()
+                self._notify("xformers memory-efficient attention enabled")
+            except Exception as e:
+                log.debug("xformers enable skipped: %s", e)
+
+    def _setup_model(self):
+        cuda_available, device = self._select_device()
+        quantization_config = self._select_quant(cuda_available)
+        attn_implementation = self._select_attn()
 
         self._notify(f"Loading {self._display_name()} (device={device}, quant={quantization_config is not None}, attn={attn_implementation})")
 
-        # Patch tqdm in transformers so weight-loading progress reaches the frontend.
-        if self._on_progress:
-            import importlib as _il
-            _WeightTqdm = self._make_weight_tqdm()
-            _patches = []
-            for mod_name, attr in [('tqdm', 'tqdm'), ('tqdm.auto', 'tqdm'),
-                                    ('transformers.modeling_utils', 'tqdm')]:
-                try:
-                    mod = _il.import_module(mod_name)
-                    if hasattr(mod, attr):
-                        _patches.append((mod, attr, getattr(mod, attr)))
-                        setattr(mod, attr, _WeightTqdm)
-                except ImportError:
-                    pass
-
-        try:
+        with self._tqdm_patched():
             self.model = self._create_model(quantization_config, attn_implementation, device)
-        finally:
-            if self._on_progress:
-                for mod, attr, orig in _patches:
-                    setattr(mod, attr, orig)
 
         self._notify("Model loaded")
-
-        # If xformers is installed, swap attention layers to its memory-efficient kernel.
-        if importlib.util.find_spec('xformers'):
-            try:
-                self.model.enable_xformers_memory_efficient_attention()
-                self._notify("xformers memory-efficient attention enabled")
-            except Exception as e:
-                self._notify(f"xformers enable skipped: {e}")
+        self._maybe_enable_xformers(self.model, attn_implementation)
 
         try:
             from huggingface_hub import snapshot_download

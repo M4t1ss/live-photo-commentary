@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_window_state::WindowExt;
 
+mod flash_attn;
+
 // ── Signal handling (Unix only) ───────────────────────────────────────────────
 //
 // When `cargo tauri dev` is stopped with Ctrl-C, SIGINT is delivered to the
@@ -297,9 +299,18 @@ fn detect_cuda_index() -> Option<&'static str> {
 
 /// Appends (or replaces) the `[tool.uv.sources]` / `[[tool.uv.index]]` blocks
 /// in pyproject.toml so that `uv sync` pulls the CUDA-enabled torch wheel.
-fn update_pyproject_for_cuda(backend_dir: &std::path::Path, cu_index: &str) -> std::io::Result<()> {
+/// If `flash` is Some, also pins the torch minor version and adds flash-attn as a
+/// direct-URL dependency so the pre-built wheel is installed alongside torch.
+fn update_pyproject_for_cuda(
+    backend_dir: &std::path::Path,
+    cu_index: &str,
+    flash: Option<&flash_attn::FlashAttnWheel>,
+) -> std::io::Result<()> {
     let path = backend_dir.join("pyproject.toml");
     let mut content = std::fs::read_to_string(&path)?;
+    // Normalize to LF so the replacement patterns below match regardless of
+    // whether the source file was written with CRLF (common on Windows).
+    content = content.replace("\r\n", "\n");
 
     // Inject xformers into [project] dependencies so uv resolves it.
     // Kept out of the source pyproject.toml to avoid failing on platforms without
@@ -312,8 +323,27 @@ fn update_pyproject_for_cuda(backend_dir: &std::path::Path, cu_index: &str) -> s
         );
     }
 
-    // Preserve non-torch/torchvision/xformers entries from any existing [tool.uv.sources] block
-    // (e.g. the pyopenjtalk vendor-path entry added by the build scripts).
+    // When we have a flash-attn wheel, pin torch to its required minor version so uv
+    // doesn't pull a newer torch that flash-attn wasn't built against.
+    if let Some(fw) = flash {
+        let tv = &fw.torch_version; // e.g. "2.7"
+        if let Some((maj, min_str)) = tv.split_once('.') {
+            if let Ok(min) = min_str.parse::<u32>() {
+                let pinned = format!("torch>={tv},<{maj}.{}", min + 1);
+                content = content.replace("  \"torch\",\n", &format!("  \"{pinned}\",\n"));
+            }
+        }
+        if !content.contains("\"flash-attn\"") {
+            content = content.replace(
+                "  \"xformers\",\n",
+                "  \"xformers\",\n  \"flash-attn\",\n",
+            );
+        }
+    }
+
+    // Preserve non-torch/torchvision/xformers/flash-attn entries from any existing
+    // [tool.uv.sources] block (e.g. the pyopenjtalk vendor-path entry added by the
+    // build scripts).
     let preserved: Vec<String> = if let Some(pos) = content.find("\n[tool.uv.sources]") {
         let tail = &content[pos + 1..]; // skip the leading '\n'
         let body_start = tail.find('\n').map(|p| p + 1).unwrap_or(tail.len());
@@ -328,6 +358,7 @@ fn update_pyproject_for_cuda(backend_dir: &std::path::Path, cu_index: &str) -> s
                     && !t.starts_with("torch ")
                     && !t.starts_with("torchvision ")
                     && !t.starts_with("xformers ")
+                    && !t.starts_with("flash-attn ")
             })
             // vendor/ is relative to backend/; rewrite for backend-cuda/ (its sibling).
             .map(|l| l.replace("\"vendor/", "\"../backend/vendor/"))
@@ -346,6 +377,9 @@ fn update_pyproject_for_cuda(backend_dir: &std::path::Path, cu_index: &str) -> s
     content.push_str(&format!(
         "\n[tool.uv.sources]\ntorch       = [{{ index = \"{idx}\", marker = \"{platform}\" }}]\ntorchvision = [{{ index = \"{idx}\", marker = \"{platform}\" }}]\n"
     ));
+    if let Some(fw) = flash {
+        content.push_str(&format!("flash-attn  = {{ url = \"{}\" }}\n", fw.url));
+    }
     for line in &preserved {
         content.push_str(line);
         content.push('\n');
@@ -468,21 +502,37 @@ async fn install_cuda_torch(
         let _ = std::fs::copy(source_backend.join("uv.lock"), cuda_dir.join("uv.lock"));
     }
 
-    update_pyproject_for_cuda(&cuda_dir, &cu_index)
+    let _ = app.emit("cuda_install_progress", "Checking for flash-attn pre-built wheels…");
+    // Python version is fixed to 3.12 by requires-python in pyproject.toml.
+    let flash_wheel = flash_attn::find_flash_attn_wheel(&cu_index, "312").await;
+    match &flash_wheel {
+        Some(fw) => log::info!(
+            "flash_attn: found {} for torch {} — will install alongside CUDA torch",
+            fw.flash_version, fw.torch_version
+        ),
+        None => log::info!("flash_attn: no matching wheel for {cu_index}; skipping"),
+    }
+
+    update_pyproject_for_cuda(&cuda_dir, &cu_index, flash_wheel.as_ref())
         .map_err(|e| format!("Failed to update pyproject.toml: {e}"))?;
 
     let _ = app.emit("cuda_install_progress", "Downloading CUDA PyTorch — this may take a few minutes…");
 
     let cu = cu_index.clone();
+    let has_flash = flash_wheel.is_some();
     let status = tokio::task::spawn_blocking(move || {
         let mut cmd = uv_command(&uv);
-        cmd.args([
+        let mut sync_args = vec![
             "sync",
             "--no-install-project", // source code loaded via PYTHONPATH, not editable install
             "--reinstall-package", "torch",
             "--reinstall-package", "torchvision",
             "--reinstall-package", "xformers",
-        ])
+        ];
+        if has_flash {
+            sync_args.extend_from_slice(&["--reinstall-package", "flash-attn"]);
+        }
+        cmd.args(&sync_args)
         .current_dir(&cuda_dir);
         let (out, err) = log_to_file(&cuda_dir.join("uv-sync.log"));
         cmd.stdout(out).stderr(err);

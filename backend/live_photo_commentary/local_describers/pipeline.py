@@ -1,7 +1,5 @@
 import logging
 
-import torch
-
 from ..local_describer import LocalDescriber, image_to_data_uri
 
 log = logging.getLogger(__name__)
@@ -11,14 +9,9 @@ class PipelineLocalDescriber(LocalDescriber):
     def _setup_model(self):
         from transformers import pipeline
 
-        cuda_available = torch.cuda.is_available()
-        mps_available = not cuda_available and torch.backends.mps.is_available()
-        device = "cuda" if cuda_available else ("mps" if mps_available else "cpu")
-
-        import importlib.util
-        from transformers.utils.quantization_config import BitsAndBytesConfig
-        quantization_config = BitsAndBytesConfig(load_in_4bit=True) if (cuda_available and importlib.util.find_spec('bitsandbytes')) else None
-        attn_implementation = 'flash_attention_2' if importlib.util.find_spec('flash_attn') else 'sdpa'
+        cuda_available, device = self._select_device()
+        quantization_config = self._select_quant(cuda_available)
+        attn_implementation = self._select_attn()
 
         self._notify(f"Loading {self._display_name()} via pipeline (device={device}, quant={quantization_config is not None}, attn={attn_implementation})")
 
@@ -41,37 +34,11 @@ class PipelineLocalDescriber(LocalDescriber):
         else:
             pipeline_kwargs["device"] = self.device_param or device
 
-        if self._on_progress:
-            import importlib as _il
-            _WeightTqdm = self._make_weight_tqdm()
-            _patches = []
-            for mod_name, attr in [('tqdm', 'tqdm'), ('tqdm.auto', 'tqdm'),
-                                    ('transformers.modeling_utils', 'tqdm')]:
-                try:
-                    mod = _il.import_module(mod_name)
-                    if hasattr(mod, attr):
-                        _patches.append((mod, attr, getattr(mod, attr)))
-                        setattr(mod, attr, _WeightTqdm)
-                except ImportError:
-                    pass
-
-        try:
+        with self._tqdm_patched():
             self.pipe = pipeline("image-text-to-text", model=self.load_path, **pipeline_kwargs)
-        finally:
-            if self._on_progress:
-                for mod, attr, orig in _patches:
-                    setattr(mod, attr, orig)
 
         self._notify("Model loaded")
-
-        # If xformers is installed, swap attention layers to its memory-efficient kernel.
-        # This is safer than _attn_implementation='xformers' (not all models advertise it).
-        if importlib.util.find_spec('xformers'):
-            try:
-                self.pipe.model.enable_xformers_memory_efficient_attention()
-                self._notify("xformers memory-efficient attention enabled")
-            except Exception as e:
-                self._notify(f"xformers enable skipped: {e}")
+        self._maybe_enable_xformers(self.pipe.model, attn_implementation)
 
         # Expose model/processor/tokenizer for parent infrastructure (_notify dtype, tqdm patch).
         self.model = self.pipe.model
