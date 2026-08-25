@@ -1,3 +1,5 @@
+from . import patch_multinomial  # noqa: F401
+
 import asyncio
 import json
 import yaml
