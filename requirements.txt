@@ -1,12 +1,25 @@
+pyyaml
 librosa
 kokoro
 soundfile
+sounddevice
 torch
+torchvision
 transformers
+# # for Phi3.5:
+# transformers<4.41
 IPython
-scipy
 numpy
-gradio
-bitsandbytes
-flash-attn
+# # Optionally:
+# bitsandbytes
+# flash-attn
 google-genai
+notebook
+ipywidgets
+semantic_text_splitter
+
+peft
+backoff
+
+pytest
+dummy-text-generator
