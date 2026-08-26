@@ -36,7 +36,7 @@ class KokoroSynthesizer(Synthesizer):
         # Add this guard clause
         if text is None or not text.strip():
             return
-        yield from self.pipeline(text, voice=self.voice, speed=1, split_pattern=r'\n+')
+        yield from self.pipeline(text, voice=self.voice, speed=1.15, split_pattern=r'\n+')
 
     def sample_rate(self):
         return 24000
