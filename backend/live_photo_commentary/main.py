@@ -34,6 +34,14 @@ _model_errors: dict[str, str] = {}      # "vlm" | "tts" → last error message
 _vlm_ready: bool = False
 _tts_ready: bool = False
 
+# Serialises code that writes into the running venv's site-packages
+# (_reinit_synthesizer: `uv pip install` of the Japanese deps, plus misaki's
+# ~500 MB UniDic download on first Japanese use) against _reinit_describer's
+# first transformers import from that same directory. Concurrent churn makes
+# importlib transiently miss a submodule, which transformers reports as
+# "Could not import module 'AutoModelForCausalLM'" — worse on OneDrive/NTFS.
+_site_packages_lock = asyncio.Lock()
+
 
 async def _send(data: dict) -> None:
     if _ws is not None:
@@ -174,6 +182,67 @@ def _make_synthesizer():
     return KokoroSynthesizer(voice=voice)
 
 
+_JAPANESE_DEPS = ("sudachipy", "sudachidict_core")
+
+
+def _tts_voice_is_japanese() -> bool:
+    """True if the configured TTS voice resolves to Japanese, matching the
+    primary-voice language detection KokoroSynthesizer itself uses."""
+    from .synthesizers.kokoro import KokoroSynthesizer
+    raw = config.get().tts_voice
+    try:
+        voice = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        voice = raw
+    primary = next(iter(voice), "") if isinstance(voice, dict) else str(voice)
+    return KokoroSynthesizer.VOICE_LANGS.get(primary[:1]) == "ja"
+
+
+def _japanese_deps_present() -> bool:
+    from importlib.metadata import PackageNotFoundError, distribution
+    for name in ("SudachiPy", "SudachiDict-core"):
+        try:
+            distribution(name)
+        except PackageNotFoundError:
+            return False
+    return True
+
+
+def _install_japanese_deps() -> None:
+    """Install the Sudachi tokenizer + dictionary (~70 MB) the first time a
+    Japanese voice is picked. ``misaki[ja]`` (fugashi/pyopenjtalk/unidic) is
+    already in the base install; only Sudachi is deferred. It is used by the
+    subtitle rework, not TTS — nothing imports it yet, so we only need the
+    install to succeed."""
+    import os
+    import subprocess
+
+    uv = os.environ.get("LPC_UV", "uv")
+    target_python = os.environ.get("LPC_TARGET_PYTHON")
+    # Dev and the CUDA venv install without editing a manifest: dev keeps the
+    # source tree clean, and the CUDA venv is built from a rewritten pyproject
+    # we must not `uv add` into. A plain release install persists into the
+    # AppData/backend manifest copy so a later `uv sync` keeps Sudachi.
+    ephemeral = bool(os.environ.get("LPC_DEV") or os.environ.get("LPC_CUDA_VENV"))
+    if ephemeral:
+        cmd = [uv, "pip", "install"]
+        if target_python:
+            cmd += ["--python", target_python]
+        cmd += list(_JAPANESE_DEPS)
+    else:
+        cmd = [uv, "add", *_JAPANESE_DEPS]
+
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    proc = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"`{' '.join(cmd)}` failed (exit {proc.returncode}):\n"
+            f"{(proc.stderr or proc.stdout).strip()}"
+        )
+
+
 async def _download_with_progress(model_id: str) -> str:
     """Return the local snapshot path for model_id, downloading if necessary.
     Uses the standard HF hub cache; no download occurs if already cached."""
@@ -223,6 +292,20 @@ async def _download_with_progress(model_id: str) -> str:
     )
 
 
+def _exc_summary(exc: BaseException) -> str:
+    """Message including the root cause. transformers' lazy importer re-raises
+    submodule import failures as a terse "Could not import module '<class>'",
+    hiding the real error in __cause__; walk the chain so it reaches the log."""
+    parts = [f"{type(exc).__name__}: {exc}"]
+    seen = {id(exc)}
+    cur = exc.__cause__ or exc.__context__
+    while cur is not None and id(cur) not in seen:
+        parts.append(f"caused by {type(cur).__name__}: {cur}")
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return " | ".join(parts)
+
+
 async def _reinit_describer() -> None:
     global _vlm_ready
     assert pipeline is not None
@@ -256,16 +339,17 @@ async def _reinit_describer() -> None:
         local_path = None
         if cfg.vlm_provider == "local":
             local_path = await _download_with_progress(cfg.vlm_model)
-        pipeline.describer = await asyncio.to_thread(_make_describer, _progress, local_path=local_path)
+        async with _site_packages_lock:
+            pipeline.describer = await asyncio.to_thread(_make_describer, _progress, local_path=local_path)
         _apply_promptset(config.get().active_promptset)
         log.info("Describer ready")
         _vlm_ready = True
         await _send({"type": "model_ready", "model": "vlm"})
         await _send_ready_state()
     except Exception as exc:
-        msg = f"VLM init failed: {exc}"
+        msg = f"VLM init failed: {_exc_summary(exc)}"
         _model_errors["vlm"] = msg
-        log.warning(msg)
+        log.warning(msg, exc_info=True)
         await _send({"type": "error", "message": msg})
         await _send_ready_state()
 
@@ -279,15 +363,20 @@ async def _reinit_synthesizer() -> None:
     await _send({"type": "model_loading", "model": "tts"})
     await _send_ready_state()
     try:
-        pipeline.synthesizer = await asyncio.to_thread(_make_synthesizer)
+        async with _site_packages_lock:
+            if _tts_voice_is_japanese() and not _japanese_deps_present():
+                await _send({"type": "load_progress",
+                             "message": "Installing Japanese language support…"})
+                await asyncio.to_thread(_install_japanese_deps)
+            pipeline.synthesizer = await asyncio.to_thread(_make_synthesizer)
         log.info("Synthesizer ready")
         _tts_ready = True
         await _send({"type": "model_ready", "model": "tts"})
         await _send_ready_state()
     except Exception as exc:
-        msg = f"TTS init failed: {exc}"
+        msg = f"TTS init failed: {_exc_summary(exc)}"
         _model_errors["tts"] = msg
-        log.warning(msg)
+        log.warning(msg, exc_info=True)
         await _send({"type": "error", "message": msg})
         await _send_ready_state()
 

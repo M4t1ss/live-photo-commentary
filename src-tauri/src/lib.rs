@@ -1030,6 +1030,15 @@ async fn spawn_and_monitor_backend(
         cmd.env("LPC_DEV", "1");
     }
 
+    // Let the backend lazily install the Japanese TTS tokenizer (Sudachi + its
+    // large dictionary) via uv the first time a Japanese voice is selected.
+    // Only the Rust side knows where the uv binary and the live venv are.
+    cmd.env("LPC_UV", &uv);
+    cmd.env("LPC_TARGET_PYTHON", &python);
+    if using_cuda_venv {
+        cmd.env("LPC_CUDA_VENV", "1");
+    }
+
     // Point the backend at the bundled models directory (release only).
     // In debug mode the backend's default ../models already points at the
     // project-root models/ directory that developers edit directly.
