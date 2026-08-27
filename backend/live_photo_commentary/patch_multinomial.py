@@ -1,11 +1,15 @@
 """
-Monkey-patches torch.multinomial to route non-CPU-device sampling through CPU.
+Monkey-patches torch.multinomial to route MPS-device sampling through CPU.
 
-torch.multinomial on non-CPU backends has been observed to occasionally
-sample an index with exactly zero probability after top-k filtering --
-the same distribution sampled on CPU did not reproduce this. This patch
-forces just that one op off the GPU, leaving everything else (the forward
-pass, etc.) running on GPU as normal.
+torch.multinomial(probs, 1) on the MPS backend can silently sample an index
+with exactly zero probability. Root cause (see
+https://github.com/pytorch/pytorch/issues/192577): MPS's exponential_(1),
+used internally by multinomial's single-sample Gumbel fast path, sometimes
+produces an exact zero that surfaces as -0.0; dividing by that negative
+zero yields NaN, and MPS's argmax treats NaN as the maximum, picking the
+corrupted (zero-probability) index. CPU sampling doesn't hit this path and
+isn't affected. This patch forces just that one op onto CPU, leaving
+everything else (the forward pass, etc.) running on MPS as normal.
 
 Import this before calling model.generate():
 
@@ -17,8 +21,8 @@ import torch
 
 _real_multinomial = torch.multinomial
 
-def _cpu_multinomial(input, num_samples, replacement=False, *, generator=None, out=None):
-    if input.device.type != "cpu":
+def _mps_safe_multinomial(input, num_samples, replacement=False, *, generator=None, out=None):
+    if input.device.type == "mps":
         return _real_multinomial(
             input.cpu(), num_samples, replacement=replacement, generator=generator
         ).to(input.device)
@@ -26,4 +30,4 @@ def _cpu_multinomial(input, num_samples, replacement=False, *, generator=None, o
         input, num_samples, replacement=replacement, generator=generator, out=out
     )
 
-torch.multinomial = _cpu_multinomial
+torch.multinomial = _mps_safe_multinomial
