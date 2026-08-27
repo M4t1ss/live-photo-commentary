@@ -538,7 +538,10 @@ async fn install_cuda_torch(
         let (out, err) = log_to_file(&cuda_dir.join("uv-sync.log"));
         cmd.stdout(out).stderr(err);
         no_window(&mut cmd);
-        cmd.status()
+        // uv itself, or the DLLs it just extracted, may still be getting
+        // scanned by Defender right after a previous reinstall — retry
+        // briefly rather than failing outright.
+        retry_while_av_blocked(|| cmd.status())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -620,6 +623,28 @@ fn av_blocked_hint(e: &std::io::Error) -> Option<&'static str> {
     }
     let _ = e;
     None
+}
+
+/// How long to keep retrying an operation that fails in a way `av_blocked_hint`
+/// recognizes — e.g. `uv sync` or spawning a just-installed executable while
+/// Defender is still scanning it. One shared constant so every retry site
+/// below waits the same amount before giving up.
+const AV_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Retries `f` while it fails in a way `av_blocked_hint` recognizes as
+/// Defender/AV interference, for up to `AV_RETRY_WINDOW`. Any other error, or
+/// success, returns immediately — this never masks a real failure.
+fn retry_while_av_blocked<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let start = std::time::Instant::now();
+    loop {
+        match f() {
+            Ok(v) => return Ok(v),
+            Err(e) if av_blocked_hint(&e).is_some() && start.elapsed() < AV_RETRY_WINDOW => {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Renames broken managed Python installations so uv skips them and downloads
@@ -885,7 +910,7 @@ fn setup_backend(app: &tauri::AppHandle, uv: &std::path::Path) -> Result<std::pa
             sync_cmd.stdout(out).stderr(err);
         }
 
-        match sync_cmd.status() {
+        match retry_while_av_blocked(|| sync_cmd.status()) {
             Ok(s) if s.success() => log::info!("Python environment ready."),
             Ok(s) => {
                 // Remove the partial venv so the next launch retries rather
@@ -1045,7 +1070,10 @@ async fn spawn_and_monitor_backend(
         cmd.process_group(0);
     }
 
-    let child = match cmd.spawn() {
+    // python.exe (or its DLLs) may have just been (re)installed by
+    // install_cuda_torch / setup_backend and still be getting scanned by
+    // Defender — retry briefly rather than surfacing a spurious crash.
+    let child = match retry_while_av_blocked(|| cmd.spawn()) {
         Ok(c) => c,
         Err(e) => {
             let hint = av_blocked_hint(&e).map(|h| format!(" {h}")).unwrap_or_default();

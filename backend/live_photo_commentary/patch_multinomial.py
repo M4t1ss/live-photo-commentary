@@ -16,6 +16,12 @@ Import this before calling model.generate():
     from . import patch_multinomial  # noqa: F401
 """
 
+# This runs before local_describer.py, which normally guards the first
+# `import torch` against a Windows NTFS staleness race after a CUDA
+# reinstall — see _wait_for_torch.py.
+from ._wait_for_torch import wait_for_torch
+wait_for_torch()
+
 import torch
 
 

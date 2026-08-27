@@ -4,55 +4,10 @@ from abc import abstractmethod
 from io import BytesIO
 import base64
 
-# On Windows, torch may have been installed (or reinstalled) moments before this
-# process started (CUDA venv setup via restart_backend).  Two distinct NTFS
-# failure modes can occur:
-#
-#  1. Python's FileFinder cache is stale: readdir on the torch package directory
-#     hasn't been updated yet, so find_spec("torch") returns None (or a namespace
-#     package without __init__.py).  Fixed by invalidate_caches() + retry.
-#
-#  2. The DLL loader can't find torch\lib\torch.dll even though __init__.py is
-#     visible: the lib/ sub-directory index is still stale, so ctypes.WinDLL()
-#     inside torch's __init__ raises OSError [WinError 126].  Fixed by actually
-#     attempting the import inside the retry loop and catching that specific error,
-#     then clearing the partially-imported module from sys.modules before retrying.
-if __import__('sys').platform == "win32":
-    def _wait_for_torch():
-        import sys
-        import time
-        import importlib
-        import importlib.util
-
-        for i in range(120):
-            importlib.invalidate_caches()
-            try:
-                spec = importlib.util.find_spec("torch")
-                if spec is not None and spec.origin is not None:
-                    try:
-                        import torch  # also exercises DLL loading
-                        return
-                    except OSError as e:
-                        if getattr(e, "winerror", None) != 126:
-                            raise  # unexpected error — don't suppress
-                        # torch.dll (or a dependency) not yet visible; remove any
-                        # partial state so the next attempt starts clean.
-                        for mod in [k for k in sys.modules
-                                    if k == "torch" or k.startswith("torch.")]:
-                            sys.modules.pop(mod, None)
-            except Exception:
-                pass
-
-            if i == 0:
-                print("[lpc] waiting for torch to become visible…",
-                      flush=True, file=sys.stderr)
-            time.sleep(0.5)
-
-        print("[lpc] gave up waiting for torch; import may fail",
-              flush=True, file=sys.stderr)
-
-    _wait_for_torch()
-    del _wait_for_torch
+# torch may have been installed (or reinstalled) moments before this process
+# started (CUDA venv setup via restart_backend); see _wait_for_torch.py.
+from ._wait_for_torch import wait_for_torch
+wait_for_torch()
 
 import logging
 
