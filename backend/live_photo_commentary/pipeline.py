@@ -194,31 +194,30 @@ class Pipeline:
                 continue
             try:
                 self._audio_chunks.clear()
-                for i, (audio, fragment, chunk_phonemes, mark_timings, subtitle_segments) in enumerate(self.synthesizer(text)):
+                for i, (audio, fragment, chunk_phonemes, word_timings, tag_timings) in enumerate(self.synthesizer(text)):
                     if gen != self._generation:
                         break
                     audio_path = self._tmp_dir / f"chunk_{i}.wav"
                     audio_path.write_bytes(self.synthesizer.to_wav_bytes(audio))
                     self._audio_chunks[i] = audio_path
-                    sub_times = [round(t, 4) for name, t in mark_timings if name == "sub"]
-                    subtitles = [
-                        {"text": seg, "time": t}
-                        for seg, t in zip(subtitle_segments, [0.0] + sub_times)
-                    ]
-                    tags = [
-                        {"name": name, "time": round(t, 4)}
-                        for name, t in mark_timings if name != "sub"
-                    ]
-                    self._send({
+                    msg = {
                         "type": "chunk",
                         "gen": gen,
                         "index": i,
                         "text": fragment,
                         "audio_url": f"/audio/chunk/{gen}/{i}",
                         "phonemes": [[ph, round(t, 4)] for ph, t in chunk_phonemes],
-                        "subtitles": subtitles,
-                        "tags": tags,
-                    })
+                        "tags": [
+                            {"name": name, "time": round(t, 4)}
+                            for name, t in tag_timings
+                        ],
+                    }
+                    if word_timings is not None:
+                        msg["words"] = [
+                            {"s": s, "cs": cs, "ce": ce, "ts": ts, "te": te}
+                            for s, cs, ce, ts, te in word_timings
+                        ]
+                    self._send(msg)
                 else:
                     self._send({"type": "tts_done", "gen": gen})
             except Exception as exc:

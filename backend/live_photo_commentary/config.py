@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     difference_threshold: float = 0.0
     difference_measure: str = "mse"
     max_history_size: int = 0
-    subtitle_max_chars: int = 60
     gemini_api_key: str | None = None
     openai_api_key: str | None = None
     openai_base_url: str | None = None

@@ -33,6 +33,10 @@ pipeline: Pipeline | None = None
 _model_errors: dict[str, str] = {}      # "vlm" | "tts" → last error message
 _vlm_ready: bool = False
 _tts_ready: bool = False
+# Ad-hoc prompt fields applied via the Settings "OK" button — overrides the
+# active promptset on the live describer for this session only (not persisted;
+# cleared by an explicit promptset load/delete).
+_prompt_override: dict | None = None
 
 # Serialises code that writes into the running venv's site-packages
 # (_reinit_synthesizer: `uv pip install` of the Japanese deps, plus misaki's
@@ -164,12 +168,26 @@ def _load_tag_names() -> list[str]:
     return list(raw.get("tags", {}).keys())
 
 
-def _apply_promptset(name: str) -> None:
-    """Update the live describer's prompt fields without reloading the model."""
-    if pipeline is not None and pipeline.describer is not None:
-        fields = prompts.substitute_tags(prompts.load(name), _load_tag_names())
-        for k, v in fields.items():
+def _apply_prompt_fields(fields: dict) -> None:
+    """Substitute the tag placeholder and push the given prompt fields onto the
+    live describer, in place (no model reload)."""
+    if pipeline is None or pipeline.describer is None:
+        return
+    fields = prompts.substitute_tags(fields, _load_tag_names())
+    for k, v in fields.items():
+        if k in prompts.FIELDS and isinstance(v, str):
             setattr(pipeline.describer, k, v)
+
+
+def _apply_promptset(name: str) -> None:
+    """Update the live describer's prompt fields without reloading the model.
+
+    An ad-hoc override from the Settings dialog (``_prompt_override``) wins over
+    the named promptset, so re-inits during a session keep the user's edits.
+    """
+    _apply_prompt_fields(prompts.load(name))
+    if _prompt_override:
+        _apply_prompt_fields(_prompt_override)
 
 
 def _make_synthesizer():
@@ -505,7 +523,7 @@ async def _send_models() -> None:
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    global _ws
+    global _ws, _prompt_override
     await ws.accept()
     _ws = ws
     await _send({"type": "config", "data": config.as_dict()})
@@ -561,9 +579,20 @@ async def websocket_endpoint(ws: WebSocket):
                         pipeline.on_frame_ready(data.get("path", ""))
                 case "list_promptsets":
                     await _send({"type": "promptsets", "names": prompts.list_names()})
+                case "apply_prompts":
+                    # Settings "OK": use the prompt fields as shown, without
+                    # saving them as a named promptset. Session-only.
+                    given = data.get("fields") or {}
+                    _prompt_override = {
+                        k: v for k, v in given.items()
+                        if k in prompts.FIELDS and isinstance(v, str)
+                    } or None
+                    if _prompt_override:
+                        _apply_prompt_fields(_prompt_override)
                 case "load_promptset":
                     name = (data.get("name") or "").strip() or _DEFAULT_PROMPTSET
                     fields = prompts.load(name)
+                    _prompt_override = None
                     config.apply({"active_promptset": name})
                     await asyncio.to_thread(config.persist, Path(".env"))
                     _apply_promptset(name)
@@ -592,6 +621,7 @@ async def websocket_endpoint(ws: WebSocket):
                         was_active = config.get().active_promptset == name
                         prompts.delete(name)
                         if was_active:
+                            _prompt_override = None
                             config.apply({"active_promptset": _DEFAULT_PROMPTSET})
                             await asyncio.to_thread(config.persist, Path(".env"))
                             _apply_promptset(_DEFAULT_PROMPTSET)
