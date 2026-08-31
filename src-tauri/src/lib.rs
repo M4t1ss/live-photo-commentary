@@ -36,6 +36,16 @@ extern "C" fn on_term_signal(sig: libc::c_int) {
     }
 }
 
+/// Intercepts SIGINT/SIGTERM so the backend process group is killed before the
+/// Tauri binary exits. Must run before the backend is spawned.
+#[cfg(unix)]
+fn install_signal_handlers() {
+    unsafe {
+        libc::signal(libc::SIGINT, on_term_signal as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, on_term_signal as libc::sighandler_t);
+    }
+}
+
 // ── App state ────────────────────────────────────────────────────────────────
 
 struct BackendState {
@@ -1148,6 +1158,81 @@ async fn spawn_and_monitor_backend(
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+/// Installs the tauri-plugin-log logger. Release builds also write to a file in
+/// the platform log directory.
+fn init_logging(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let builder = tauri_plugin_log::Builder::default().level(log::LevelFilter::Info);
+    #[cfg(not(debug_assertions))]
+    let builder = builder.target(tauri_plugin_log::Target::new(
+        tauri_plugin_log::TargetKind::LogDir { file_name: None },
+    ));
+    app.handle().plugin(builder.build())?;
+    Ok(())
+}
+
+/// Restores the saved window geometry, then recenters the window on the primary
+/// monitor if the restored position lies entirely off every connected monitor
+/// (e.g. the monitor it was on has since been disconnected).
+fn restore_window(app: &tauri::App) {
+    let Some(window) = app.get_webview_window("main") else { return };
+    let _ = window.restore_state(tauri_plugin_window_state::StateFlags::all());
+
+    if let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) {
+        let monitors = app.available_monitors().unwrap_or_default();
+        let on_screen = monitors.iter().any(|m| {
+            let mp = m.position();
+            let ms = m.size();
+            pos.x + size.width as i32 > mp.x
+                && pos.x < mp.x + ms.width as i32
+                && pos.y + size.height as i32 > mp.y
+                && pos.y < mp.y + ms.height as i32
+        });
+        if !on_screen {
+            let _ = window.center();
+        }
+    }
+}
+
+/// Detects an NVIDIA GPU and returns the PyTorch CUDA wheel index to suggest to
+/// the frontend, or `None` if there's no GPU or the matching CUDA torch is
+/// already installed.
+#[cfg(not(target_os = "macos"))]
+fn detect_cuda_suggestion(handle: &tauri::AppHandle) -> Option<String> {
+    let marker = get_cuda_dir(handle).join(".cuda_torch");
+    let installed = std::fs::read_to_string(&marker).unwrap_or_default();
+    detect_cuda_index().and_then(|cu_index| {
+        if installed.trim() != cu_index {
+            log::info!("NVIDIA GPU detected, suggesting {cu_index} torch");
+            Some(cu_index.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn detect_cuda_suggestion(_handle: &tauri::AppHandle) -> Option<String> {
+    None
+}
+
+/// Spawns backend setup + monitoring on a background task so `setup()` returns
+/// immediately and the WebView can render the splash screen. `setup_backend`
+/// may run `uv sync`, which can take minutes on first launch — it must never
+/// run on the event loop thread.
+fn spawn_backend_setup(
+    handle: tauri::AppHandle,
+    port: u16,
+    uv: std::path::PathBuf,
+    inner: Arc<Mutex<Option<Child>>>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let Some(backend_dir) = resolve_backend_dir(&handle, &uv).await else {
+            return;
+        };
+        spawn_and_monitor_backend(handle, port, uv, backend_dir, inner).await;
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let port = find_free_port();
@@ -1155,45 +1240,13 @@ pub fn run() {
     // Register signal handlers before spawning anything so Ctrl-C and SIGTERM
     // always kill the backend process group before terminating.
     #[cfg(unix)]
-    unsafe {
-        libc::signal(libc::SIGINT, on_term_signal as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, on_term_signal as libc::sighandler_t);
-    }
+    install_signal_handlers();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(move |app| {
-            {
-                let builder = tauri_plugin_log::Builder::default()
-                    .level(log::LevelFilter::Info);
-                #[cfg(not(debug_assertions))]
-                let builder = builder.target(tauri_plugin_log::Target::new(
-                    tauri_plugin_log::TargetKind::LogDir { file_name: None },
-                ));
-                app.handle().plugin(builder.build())?;
-            }
-
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.restore_state(tauri_plugin_window_state::StateFlags::all());
-
-                // After restoring, verify the window is visible on at least one
-                // monitor. If not (e.g. the second monitor it was on is now
-                // disconnected), center it on the primary monitor instead.
-                if let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) {
-                    let monitors = app.available_monitors().unwrap_or_default();
-                    let on_screen = monitors.iter().any(|m| {
-                        let mp = m.position();
-                        let ms = m.size();
-                        pos.x + size.width as i32 > mp.x
-                            && pos.x < mp.x + ms.width as i32
-                            && pos.y + size.height as i32 > mp.y
-                            && pos.y < mp.y + ms.height as i32
-                    });
-                    if !on_screen {
-                        let _ = window.center();
-                    }
-                }
-            }
+            init_logging(app)?;
+            restore_window(app);
 
             let uv = get_uv_path(app.handle());
 
@@ -1213,51 +1266,22 @@ pub fn run() {
                 is_wsl: detect_wsl(),
             });
 
-            // CUDA upgrade detection — run before managing state so the result
-            // is available synchronously when get_backend_port is called.
-            #[cfg(not(target_os = "macos"))]
-            let cuda_suggestion: Option<String> = {
-                let cuda_dir = get_cuda_dir(app.handle());
-                let marker = cuda_dir.join(".cuda_torch");
-                let installed = std::fs::read_to_string(&marker).unwrap_or_default();
-                detect_cuda_index().and_then(|cu_index| {
-                    if installed.trim() != cu_index {
-                        log::info!("NVIDIA GPU detected, suggesting {cu_index} torch");
-                        Some(cu_index.to_string())
-                    } else {
-                        None
-                    }
-                })
-            };
-            #[cfg(target_os = "macos")]
-            let cuda_suggestion: Option<String> = None;
+            // Run before managing state so the result is available synchronously
+            // when get_backend_port is called.
+            let cuda_suggestion = detect_cuda_suggestion(app.handle());
 
             // Pre-allocate BackendState with the chosen port; the child process
             // handle starts as None and is filled in once the background task
             // spawns the backend (after uv sync completes).
             let inner = Arc::new(Mutex::new(None::<Child>));
-            let inner_for_bg = Arc::clone(&inner);
             app.manage(BackendState {
                 port,
-                process: BackendProcess { inner },
+                process: BackendProcess { inner: Arc::clone(&inner) },
                 cuda_suggestion,
             });
             app.manage(screensaver::ScreensaverState::default());
 
-            // Spawn all heavy work (uv sync, process spawn, health polling) on
-            // a background task so setup() returns immediately and the WebView
-            // can render the splash screen.
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                // setup_backend may run `uv sync`, which can take minutes on
-                // first launch — must not run on the event loop thread.
-                let backend_dir = match resolve_backend_dir(&handle, &uv).await {
-                    Some(dir) => dir,
-                    None => return,
-                };
-
-                spawn_and_monitor_backend(handle, port, uv, backend_dir, inner_for_bg).await;
-            });
+            spawn_backend_setup(app.handle().clone(), port, uv, inner);
 
             Ok(())
         })
