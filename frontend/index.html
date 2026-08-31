@@ -202,6 +202,27 @@
         <label>Separated subtitles
           <input type="checkbox" id="cfg-subtitle-mode" />
         </label>
+        <label>Subtitle vertical position
+          <div class="slider-row">
+            <input type="range" id="cfg-subtitle-vpos" min="0" max="100" step="1" />
+            <input type="number" id="cfg-subtitle-vpos-num" min="0" max="100" step="1" class="mono" />
+          </div>
+        </label>
+        <label>Subtitle font size (px)
+          <input type="number" id="cfg-subtitle-font" min="8" max="48" step="1" />
+        </label>
+        <label>Subtitle lines (0 = one word)
+          <input type="number" id="cfg-subtitle-lines" min="0" max="6" step="1" />
+        </label>
+        <label>Highlight spoken word
+          <input type="checkbox" id="cfg-highlight-enabled" />
+        </label>
+        <label>Highlight color
+          <div class="color-row">
+            <div class="color-preview" id="cfg-hl-preview"></div>
+            <input type="text" id="cfg-hl-color" class="mono" maxlength="7" placeholder="#4a9eff" spellcheck="false" />
+          </div>
+        </label>
       </section>
 
       </div><!-- #tab-ui -->
@@ -278,6 +299,7 @@
   </div>
 
   <script src="lipsync.js"></script>
+  <script src="subtitles.js"></script>
   <script src="app.js"></script>
   <script type="module" src="avatar.js"></script>
 </body>

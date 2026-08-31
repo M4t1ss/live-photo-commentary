@@ -1,17 +1,19 @@
 import sys
 import re
+import logging
 from pathlib import Path
 import importlib
 from importlib.metadata import distribution, PackageNotFoundError
 
-from semantic_text_splitter import TextSplitter
 from misaki.espeak import EspeakWrapper
 from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
 import numpy as np
 import onnxruntime
 
 from ..synthesizer import Synthesizer
-from ..subtitle_splitter import has_content, insert_subtitle_tags
+from ..text_segmentation import strip_tags, split_words, pack_words, align_words
+
+logger = logging.getLogger(__name__)
 
 
 class KokoroSynthesizer(Synthesizer):
@@ -32,10 +34,7 @@ class KokoroSynthesizer(Synthesizer):
     _EXTRA_RE = re.compile(r"^(?P<dep>[^;\s]+)\s*;\s*extra\s*==\s*'(?P<extra>[^']+)'$")
     _MISAKI_LANGS = ['ja', 'zh']
     _PHONEME_CAPACITY = 512 - 2
-    _SPLITTER_CACHE_SIZE = 10000
-    _EXTRACT_MARKS_RE = re.compile(r'\{([^}]*)\}')
-    _WHITESPACE_PLUS_RE = re.compile(r' {2,}')
-    _SUB_TAG_RE = re.compile(r'\{sub\}')
+    _CHUNK_BUDGET = 500  # pack words up to this many phoneme chars per chunk
 
     _g2p = None
 
@@ -92,123 +91,104 @@ class KokoroSynthesizer(Synthesizer):
         providers = ["CPUExecutionProvider"]
         self.session = onnxruntime.InferenceSession(model_path, providers=providers)
 
-    def _chunk_splitter_callback(self, text: str) -> int:
-        # chunk splitting is based on phoneme count vs TTS capacity
-        # deny splitting within tags
-        if text.count('{') != text.count('}'):
-            return 2 ** 31
-        # ignore tag contents
-        markless, _ = self._extract_marks(text)
-        # deny content-free chunks (only punctuation/whitespace outside tags)
-        if not has_content(markless):
-            return 2 ** 31
-        phonemes, _ = self.g2p(markless)
-        return len(phonemes)
+    def _g2p_one(self, text: str) -> str:
+        if not text:
+            return ''
+        phonemes, _ = self.g2p(text)
+        return phonemes.strip()
 
     def __call__(self, text):
-
-        from .. import config
-
-        capacity = self._PHONEME_CAPACITY
-        prev_excess = None
-        while True:
-            splitter = TextSplitter.from_callback(self._chunk_splitter_callback, capacity=capacity)
-            chunks = list(splitter.chunks(text))
-            prepared = []
-            max_excess = 0
-            for chunk in chunks:
-                tagged = insert_subtitle_tags(chunk, max_chars=config.get().subtitle_max_chars)
-                subtitle_segs = self._subtitle_segments(tagged)
-                markless, marks = self._extract_marks(tagged)
-                braceless = self._EXTRACT_MARKS_RE.sub('', markless).strip()
-                braceless = self._WHITESPACE_PLUS_RE.sub(' ', braceless)
-                phonemes, _ = self.g2p(markless)
-                excess = len(phonemes) - self._PHONEME_CAPACITY
-                max_excess = max(max_excess, excess)
-                prepared.append((phonemes, marks, subtitle_segs, braceless))
-            if max_excess <= 0 or max_excess == prev_excess:
-                break
-            prev_excess = max_excess
-            capacity -= max_excess
-
-        for args in prepared:
-            yield self._synthesize_phonemes(*args)
-
-    @classmethod
-    def _extract_marks(cls, text):
-        marks = []
-        def extract(match):
-            marks.append(match.group(1))
-            return "{}"
-        new_text = cls._EXTRACT_MARKS_RE.sub(extract, text)
-        return new_text, marks
-
-    # XXX: unneeded?
-    @classmethod
-    def _restore_marks(cls, text, marks):
-        def restore(_):
-            return "{" + marks.pop(0) + "}"
-        return cls._EXTRACT_MARKS_RE.sub(restore, text)
-
-    @classmethod
-    def _subtitle_segments(cls, text: str) -> list[str]:
-        """Split text on {sub} marks and strip all other tags from each segment."""
-        parts = cls._SUB_TAG_RE.split(text)
-        result = [cls._EXTRACT_MARKS_RE.sub('', part).strip() for part in parts]
-        return [s for s in result if s]
+        clean, tag_ords = strip_tags(text)
+        words = split_words(clean, self.lang)
+        if not words:
+            return
+        pw_all = [self._g2p_one(w.surface) for w in words]
+        n_words = len(words)
+        for lo, hi in pack_words(words, pw_all, self._CHUNK_BUDGET):
+            chunk_text = clean[words[lo].cstart:words[hi - 1].cend]
+            chunk_tags = []
+            for ordv, name in tag_ords:
+                if lo <= ordv < hi:
+                    chunk_tags.append((ordv - lo, name))
+                elif ordv == n_words and hi == n_words:
+                    chunk_tags.append((hi - lo, name))
+            yield self._synth_chunk(chunk_text, words[lo:hi], pw_all[lo:hi], chunk_tags)
 
     def synthesize(self, text):
+        clean, tag_ords = strip_tags(text)
+        words = split_words(clean, self.lang)
+        if not words:
+            return np.zeros(1, dtype=np.float32), '', [], None, []
+        pw_all = [self._g2p_one(w.surface) for w in words]
+        tags = [(min(o, len(words)), name) for o, name in tag_ords]
+        return self._synth_chunk(clean, words, pw_all, tags)
 
-        from .. import config
-        tagged = insert_subtitle_tags(text, max_chars=config.get().subtitle_max_chars)
-        subtitle_segs = self._subtitle_segments(tagged)
-        markless, marks = self._extract_marks(tagged)
-        braceless = self._EXTRACT_MARKS_RE.sub('', markless).strip()
-        braceless = self._WHITESPACE_PLUS_RE.sub(' ', braceless)
-        phonemes, _ = self.g2p(markless)
-        return self._synthesize_phonemes(phonemes, marks, subtitle_segs, braceless)
+    def _synth_chunk(self, chunk_text, words, pw, tags):
+        ps = self._g2p_one(chunk_text)
+        audio, starts = self._run_model(ps)   # starts: len(ps)+1 absolute times
+        total_time = starts[-1] if starts else 0.0
 
-    def _synthesize_phonemes(self, phonemes, marks, subtitle_segments, braceless_text):
-        input_ids = []
-        restore = []
-        for ix, phoneme in enumerate(phonemes):
-            if phoneme in self.VOCAB:
-                input_ids.append(self.VOCAB[phoneme])
-            else:
-                restore.append((ix, phoneme))
-        voice_style_input = self.voice[len(input_ids)]
-        input_ids_for_model = [[0, *input_ids, 0]]
-        try:
-            audio, pred_durs = self.session.run(
-                None,
-                dict(
-                    input_ids=np.array(input_ids_for_model, dtype=np.int64),
-                    style=voice_style_input,
-                    speed=np.array([self.speed], dtype=np.float32)),
+        spans = align_words(pw, ps)
+        word_timings = None
+        if spans is None:
+            logger.warning(
+                "subtitle_align_fallback: no per-word timing for %r (%d words)",
+                chunk_text[:80], len(words),
             )
-        except Exception as x:
-            # TODO: do something
-            raise
+        if spans is not None:
+            base = words[0].cstart
+            word_timings = []
+            for w, (a, b) in zip(words, spans):
+                word_timings.append((
+                    w.surface, w.cstart - base, w.cend - base,
+                    round(starts[a], 4), round(starts[b], 4),
+                ))
 
-        pred_durs = np.asarray(pred_durs)[0] / 40 # magic divisor for kokoro timestamps
-        full_durs = np.zeros(len(phonemes), dtype=pred_durs.dtype)
-        valid_ix = 1 # skip first and last
-        for ix in range(len(phonemes)):
-            if phonemes[ix] in self.VOCAB:
-                full_durs[ix] = pred_durs[valid_ix]
-                valid_ix += 1
-        timings = full_durs.cumsum().tolist()
+        tag_timings = []
+        n = max(len(words), 1)
+        for local_ordinal, name in tags:
+            if word_timings is not None and 0 <= local_ordinal < len(word_timings):
+                t = word_timings[local_ordinal][3]
+            elif word_timings is not None:
+                t = round(total_time, 4)
+            else:
+                t = round(total_time * min(local_ordinal, n) / n, 4)
+            tag_timings.append((name, t))
 
+        phoneme_timings = [(p, round(starts[i + 1], 4)) for i, p in enumerate(ps)]
+        return audio, chunk_text, phoneme_timings, word_timings, tag_timings
+
+    def _run_model(self, phonemes):
+        """Run Kokoro and return (audio, starts), where starts has len(phonemes)+1
+        absolute times: starts[0] is when phonemes[0] begins (i.e. the model's
+        leading-silence offset) and starts[i+1] is when phonemes[i] ends."""
+        input_ids = [self.VOCAB[p] for p in phonemes if p in self.VOCAB]
+        style = self.voice[min(len(input_ids), self.voice.shape[0] - 1)]
+        input_ids_for_model = [[0, *input_ids, 0]]
+        audio, pred_durs = self.session.run(
+            None,
+            dict(
+                input_ids=np.array(input_ids_for_model, dtype=np.int64),
+                style=style,
+                speed=np.array([self.speed], dtype=np.float32)),
+        )
         audio = np.asarray(audio)[0].astype(np.float32)
-        phoneme_timings = list(zip(phonemes, timings))
-        mark_timings = list(zip(marks, [
-            timing for phoneme, timing in phoneme_timings if phoneme == '{'
-        ]))
-        phoneme_timings = [
-            (phoneme, timing) for phoneme, timing in phoneme_timings
-            if phoneme not in '{}'
-        ]
-        return audio, braceless_text, phoneme_timings, mark_timings, subtitle_segments
+        pred_durs = np.asarray(pred_durs)[0].astype(np.float64)  # BOS + per-phoneme + EOS
+        # Scale the predicted durations so they sum to the true audio length.
+        # This replaces a hand-tuned divisor and folds in the leading-silence
+        # token pred_durs[0] as the offset before the first phoneme.
+        total = float(pred_durs.sum())
+        unit = (len(audio) / self.sample_rate()) / total if total else 0.0
+        starts = [pred_durs[0] * unit]
+        valid_ix = 1
+        for phoneme in phonemes:
+            dur = 0.0
+            if phoneme in self.VOCAB:
+                if valid_ix < len(pred_durs):
+                    dur = pred_durs[valid_ix] * unit
+                valid_ix += 1
+            starts.append(starts[-1] + dur)
+        return audio, starts
 
     def sample_rate(self):
         return 24000
@@ -328,8 +308,12 @@ if __name__ == '__main__':
     def synth_and_play(voice, title, text, lang=None):
         print(title)
         synthesizer = KokoroSynthesizer(voice=voice, lang=lang)
-        for audio, fragment, phoneme_timings, mark_timings in synthesizer(text):
+        for audio, fragment, phoneme_timings, word_timings, tag_timings in synthesizer(text):
             print(fragment)
+            if word_timings:
+                print("  ".join(w[0] for w in word_timings))
+            if tag_timings:
+                print(tag_timings)
             play(audio, phoneme_timings)
 
     parser = argparse.ArgumentParser()

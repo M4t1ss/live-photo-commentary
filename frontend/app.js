@@ -13,7 +13,6 @@ diffInfoEl.addEventListener("click", (e) => {
     navigator.clipboard.writeText(e.target.textContent);
   }
 });
-const subtitleEl         = document.getElementById("subtitle");
 const toggleSubtitleBtn  = document.getElementById("toggle-subtitle");
 const statusPhaseEl      = document.getElementById("status-phase");
 const statusTimerEl      = document.getElementById("status-timer");
@@ -56,6 +55,13 @@ const cfgBgColor         = document.getElementById("cfg-bg-color");
 const cfgBgPreview       = document.getElementById("cfg-bg-preview");
 const cfgFgColor         = document.getElementById("cfg-fg-color");
 const cfgFgPreview       = document.getElementById("cfg-fg-preview");
+const cfgSubtitleVpos     = document.getElementById("cfg-subtitle-vpos");
+const cfgSubtitleVposNum  = document.getElementById("cfg-subtitle-vpos-num");
+const cfgSubtitleFont     = document.getElementById("cfg-subtitle-font");
+const cfgSubtitleLines    = document.getElementById("cfg-subtitle-lines");
+const cfgHighlightEnabled = document.getElementById("cfg-highlight-enabled");
+const cfgHlColor          = document.getElementById("cfg-hl-color");
+const cfgHlPreview        = document.getElementById("cfg-hl-preview");
 const cfgPromptset       = document.getElementById("cfg-promptset");
 const promptsetComboBtn  = document.getElementById("promptset-combo-btn");
 const promptsetDropdown  = document.getElementById("promptset-dropdown");
@@ -166,19 +172,11 @@ let firstChunkReceived = false;
 
 let _startCycleTimer = null;
 
-// Subtitle cycling state
-let _subtitles = null;
-let _subtitleIdx = 0;
 let _subtitleTimer = null;
 
 // Emotion tag scheduling state (tags persist across chunks of one speech act)
 let _tags = [];
 let _tagIdx = 0;
-
-function setSubtitleText(text) {
-  subtitleEl.textContent = text;
-  subtitlePanelEl.textContent = text;
-}
 
 function _clearSubtitleTimer() {
   if (_subtitleTimer !== null) { clearInterval(_subtitleTimer); _subtitleTimer = null; }
@@ -186,20 +184,10 @@ function _clearSubtitleTimer() {
 
 function _startSubtitleTimer() {
   _clearSubtitleTimer();
-  if ((!_subtitles || _subtitles.length <= 1) && _tags.length === 0) return;
   _subtitleTimer = setInterval(() => {
     if (!currentAudio) return;
     const t = currentAudio.currentTime;
-    if (_subtitles) {
-      let idx = 0;
-      for (let i = _subtitles.length - 1; i > 0; i--) {
-        if (_subtitles[i].time <= t) { idx = i; break; }
-      }
-      if (idx !== _subtitleIdx) {
-        _subtitleIdx = idx;
-        if (subtitlesVisible) setSubtitleText(_subtitles[idx].text);
-      }
-    }
+    window.tickSubtitle?.(t);
     // Emotion tags hold until replaced, so just apply each in order as its time passes.
     while (_tagIdx < _tags.length && _tags[_tagIdx].time <= t) {
       window.setEmotion?.(_tags[_tagIdx].name);
@@ -442,20 +430,19 @@ function resetAudio() {
   ttsAllReceived = false;
   isPlaying = false;
   _clearSubtitleTimer();
-  _subtitles = null;
-  _subtitleIdx = 0;
+  window.clearSubtitle?.();
   _tags = [];
   _tagIdx = 0;
   window.setLipSyncData?.([], null);
   window.setEmotion?.(null);
 }
 
-function enqueueChunk({ audio_url, text, phonemes, subtitles, tags }) {
+function enqueueChunk({ audio_url, text, phonemes, words, tags }) {
   audioQueue.push({
     audio_url,
     text,
     timeline: buildTimeline(phonemes ?? []),
-    subtitles: subtitles ?? [{ text, time: 0 }],
+    words: words ?? null,
     tags: tags ?? [],
   });
   if (!isPlaying) playNext();
@@ -466,8 +453,7 @@ function playNext() {
   if (audioQueue.length === 0) {
     isPlaying = false;
     currentAudio = null;
-    _subtitles = null;
-    _subtitleIdx = 0;
+    window.clearSubtitle?.();
     _tags = [];
     _tagIdx = 0;
     window.setLipSyncData?.([], null);
@@ -476,12 +462,10 @@ function playNext() {
     return;
   }
   isPlaying = true;
-  const { audio_url, text, timeline, subtitles, tags } = audioQueue.shift();
-  _subtitles = subtitles;
-  _subtitleIdx = 0;
+  const { audio_url, text, timeline, words, tags } = audioQueue.shift();
   _tags = tags;
   _tagIdx = 0;
-  if (subtitlesVisible) setSubtitleText(subtitles[0].text);
+  window.setSubtitleChunk?.(words, text);
   const audio = new Audio(`http://127.0.0.1:${port}${audio_url}`);
   audio.volume = volume;
   currentAudio = audio;
@@ -494,7 +478,7 @@ function playNext() {
 
 function sendSpeechEnded() {
   ttsAllReceived = false;
-  setSubtitleText("");
+  window.clearSubtitle?.();
   const delayMs = (currentConfig.pre_screenshot_delay ?? 2.0) * 1000;
   setPhase("Screenshot in", "down", delayMs);
   setTimeout(() => {
@@ -525,7 +509,7 @@ function stopCycle() {
   }
   setRunning(false);
   resetAudio();
-  setSubtitleText("");
+  window.clearSubtitle?.();
   setPhase("Idle", "none");
   if (!pendingStart) send({ type: "stop_cycle" });
 }
@@ -549,8 +533,7 @@ startStopBtn.addEventListener("click", () => {
 toggleSubtitleBtn.addEventListener("click", () => {
   subtitlesVisible = !subtitlesVisible;
   toggleSubtitleBtn.classList.toggle("active", subtitlesVisible);
-  if (!subtitlesVisible) setSubtitleText("");
-  else if (_subtitles) setSubtitleText(_subtitles[_subtitleIdx].text);
+  window.setSubtitlesVisible?.(subtitlesVisible);
 });
 
 // --- Settings modal ---
@@ -583,6 +566,8 @@ function openModal() {
 
 function closeModal() {
   modalOverlay.classList.add("hidden");
+  // Drop any live previews (e.g. subtitle vertical position) back to saved state.
+  window.applySubtitleAppearance?.();
 }
 
 function populateModal() {
@@ -612,6 +597,16 @@ function populateModal() {
   cfgBgPreview.style.background = bgColor;
   cfgFgColor.value = fgColor;
   cfgFgPreview.style.background = fgColor;
+
+  const vpos = localStorage.getItem("lpc_subtitle_vpos") ?? "100";
+  cfgSubtitleVpos.value = vpos;
+  cfgSubtitleVposNum.value = vpos;
+  cfgSubtitleFont.value = localStorage.getItem("lpc_subtitle_font_px") ?? "17";
+  cfgSubtitleLines.value = localStorage.getItem("lpc_subtitle_lines") ?? "2";
+  cfgHighlightEnabled.checked = (localStorage.getItem("lpc_highlight_enabled") ?? "1") === "1";
+  const hlColor = localStorage.getItem("lpc_highlight_color") ?? "#4a9eff";
+  cfgHlColor.value = hlColor;
+  cfgHlPreview.style.background = hlColor;
 
   // Monitor dropdown — populate async, don't block the modal opening
   cfgMonitorSelect.innerHTML = `<option value="${selectedMonitorIdx}">Loading…</option>`;
@@ -800,6 +795,17 @@ modalOk.addEventListener("click", () => {
     localStorage.setItem("lpc_fg_color", newFg);
   }
 
+  const sVpos = parseInt(cfgSubtitleVposNum.value, 10);
+  localStorage.setItem("lpc_subtitle_vpos", String(Number.isFinite(sVpos) ? Math.min(100, Math.max(0, sVpos)) : 100));
+  const sFont = parseInt(cfgSubtitleFont.value, 10);
+  localStorage.setItem("lpc_subtitle_font_px", String(Number.isFinite(sFont) && sFont >= 8 ? sFont : 17));
+  const sLines = parseInt(cfgSubtitleLines.value, 10);
+  localStorage.setItem("lpc_subtitle_lines", String(Number.isFinite(sLines) && sLines >= 0 ? sLines : 2));
+  localStorage.setItem("lpc_highlight_enabled", cfgHighlightEnabled.checked ? "1" : "0");
+  const newHl = _normalizeHex(cfgHlColor.value);
+  if (isValidHex(newHl)) localStorage.setItem("lpc_highlight_color", newHl);
+  window.applySubtitleAppearance?.();
+
   // Monitor and clip region
   const newMonitorIdx = parseInt(cfgMonitorSelect.value, 10);
   const cx = parseInt(cfgClipX.value, 10);
@@ -812,6 +818,19 @@ modalOk.addEventListener("click", () => {
   localStorage.setItem("lpc_clip", selectedClip ? JSON.stringify(selectedClip) : "");
 
   send({ type: "set_config", data: updates, persist: true });
+
+  // Apply the prompt fields exactly as shown, whether or not they were saved as
+  // a named promptset. Session-only — a Save persists them, a restart reverts.
+  send({
+    type: "apply_prompts",
+    fields: {
+      system_prompt:  cfgSystemPrompt.value,
+      prompt:         cfgPromptText.value,
+      first_prompt:   cfgFirstPrompt.value,
+      history_prompt: cfgHistoryPrompt.value,
+      compact_prompt: cfgCompactPrompt.value,
+    },
+  });
   closeModal();
 });
 
@@ -991,6 +1010,21 @@ cfgFgColor.addEventListener("input", () => {
   const v = _normalizeHex(cfgFgColor.value);
   if (isValidHex(v)) cfgFgPreview.style.background = v;
 });
+cfgHlColor.addEventListener("input", () => {
+  const v = _normalizeHex(cfgHlColor.value);
+  if (isValidHex(v)) cfgHlPreview.style.background = v;
+});
+
+// Subtitle vertical position — slider and number box mirror each other, with a
+// live preview while the modal is open (reverted on Cancel via closeModal).
+function _syncVpos(v) {
+  const n = Math.min(100, Math.max(0, parseInt(v, 10) || 0));
+  cfgSubtitleVpos.value = String(n);
+  cfgSubtitleVposNum.value = String(n);
+  window.setSubtitleVpos?.(n);
+}
+cfgSubtitleVpos.addEventListener("input", () => _syncVpos(cfgSubtitleVpos.value));
+cfgSubtitleVposNum.addEventListener("input", () => _syncVpos(cfgSubtitleVposNum.value));
 
 // --- Capture section handlers ---
 cfgMonitorSelect.addEventListener("change", () => {
@@ -1364,6 +1398,7 @@ function applySubtitleMode(mode) {
   } else {
     leftPanelEl.classList.remove("subtitle-separated");
   }
+  window.setSubtitleMode?.(mode);
 }
 
 applySubtitleMode(subtitleMode);

@@ -7,7 +7,10 @@ import numpy as np
 
 
 type Timings = list[tuple[str, float]]
-type SynthResult = tuple[np.ndarray, str, Timings, Timings, list[str]]
+# (surface, cstart, cend, tstart, tend) with cstart/cend relative to the chunk text
+type WordTiming = tuple[str, int, int, float, float]
+# (audio, clean_text, phoneme_timings, word_timings|None, tag_timings)
+type SynthResult = tuple[np.ndarray, str, Timings, list[WordTiming] | None, Timings]
 
 class Synthesizer(ABC):
     def __new__(cls, **kwargs):
