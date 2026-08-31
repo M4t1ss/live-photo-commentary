@@ -63,19 +63,8 @@ class PipelineLocalDescriber(LocalDescriber):
         self.dtype = model_params.dtype
         self._notify(f"{self._display_name()} ready (device={self.device}, dtype={self.dtype})")
 
-    def build_messages(self, user_prompt, images=None, system_prompt=None):
-        user_prompt = user_prompt.replace("<|image_1|>", "first image").replace("<|image_2|>", "second image")
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": [{"type": "text", "text": system_prompt}]})
-        messages.append({
-            "role": "user",
-            "content": [
-                *[{"type": "image", "url": image_to_data_uri(image)} for image in (images or [])],
-                {"type": "text", "text": user_prompt},
-            ],
-        })
-        return messages
+    def _image_content(self, image):
+        return {"type": "image", "url": image_to_data_uri(image)}
 
     def prompt_model(self, user_prompt, images=None, system_prompt=None) -> str | None:
         messages = self.build_messages(user_prompt, images, system_prompt)

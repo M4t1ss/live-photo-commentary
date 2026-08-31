@@ -1,12 +1,20 @@
+import re
+
 from ..local_describer import LocalDescriber
 
 
 class Phi4MMLocalDescriber(LocalDescriber):
     processor_extra_kwargs = {"num_crops": 4}
+
+    def prepare_prompts(self, user_prompt, images=None, system_prompt=None):
+        count = 0
+        def numbered(m):
+            nonlocal count
+            count += 1
+            return f"<|image_{count}|>"
+        return re.sub(r'<image>', numbered, user_prompt), system_prompt
+
     def build_messages(self, user_prompt, images=None, system_prompt=None):
-        images = images or []
-        placeholder = ''.join(f"<|image_{ix + 1}|>\n" for ix in range(len(images)))
-        user_prompt = placeholder + user_prompt.replace("<|image_1|>", "first image").replace("<|image_2|>", "second image")
         system_fragment = f"<|system|>{system_prompt}<|end|>" if system_prompt else ""
         return f"{system_fragment}<|user|>{user_prompt}<|end|><|assistant|>"
 
