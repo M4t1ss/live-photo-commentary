@@ -4,11 +4,6 @@ from abc import abstractmethod
 from io import BytesIO
 import base64
 
-# torch may have been installed (or reinstalled) moments before this process
-# started (CUDA venv setup via restart_backend); see _wait_for_torch.py.
-from ._wait_for_torch import wait_for_torch
-wait_for_torch()
-
 import logging
 
 import torch

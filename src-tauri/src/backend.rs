@@ -345,6 +345,24 @@ async fn poll_until_ready(port: u16) {
     }
 }
 
+/// One-shot health probe used while watching a freshly spawned backend.
+async fn health_ok(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{}/health", port);
+    reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_millis(500))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+/// A backend that exits within this window of being spawned is treated as the
+/// post-`uv sync` first-import failure and respawned rather than reported.
+const EARLY_CRASH_WINDOW: std::time::Duration = std::time::Duration::from_secs(25);
+/// Total spawn attempts before giving up and emitting `backend_crashed`.
+const MAX_SPAWN_ATTEMPTS: u32 = 3;
+
 // ── Backend spawn / monitor ──────────────────────────────────────────────────
 
 /// Spawns backend setup + monitoring on a background task so `setup()` returns
@@ -382,102 +400,175 @@ async fn spawn_and_monitor_backend(
     let python = get_python_exe(&cuda_dir, &backend_dir);
     let using_cuda_venv = python.starts_with(&cuda_dir);
 
-    let mut cmd = if cfg!(debug_assertions) && !using_cuda_venv {
-        // Dev without CUDA: let uv manage the venv automatically.
-        let mut c = uv_command(&uv);
-        c.args(["run", "uvicorn", "live_photo_commentary.main:app",
-               "--host", "127.0.0.1", "--port"]);
-        c
-    } else {
-        let mut c = Command::new(&python);
-        c.args(["-m", "uvicorn", "live_photo_commentary.main:app",
-               "--host", "127.0.0.1", "--port"]);
-        // CUDA venv has no editable install of the project; inject the
-        // source directory so `live_photo_commentary` is importable.
-        if using_cuda_venv {
-            c.env("PYTHONPATH", &backend_dir);
-        }
-        c
-    };
-
-    // In release, redirect stdout+stderr to a log file in backend_dir
-    // so crashes are diagnosable.
-    let log_file = if !cfg!(debug_assertions) {
-        std::fs::File::create(backend_dir.join("backend.log")).ok()
-    } else {
-        None
-    };
-
-    // Disable Python's output buffering so backend.log captures crashes that
-    // happen before the process has a chance to flush its write buffer.
-    cmd.env("PYTHONUNBUFFERED", "1");
-    cmd.env("LPC_FRAMES_DIR", backend_dir.join("frames"));
-    if cfg!(debug_assertions) {
-        cmd.env("LPC_DEV", "1");
-    }
-
-    // Let the backend lazily install the Japanese TTS tokenizer (Sudachi + its
-    // large dictionary) via uv the first time a Japanese voice is selected.
-    // Only the Rust side knows where the uv binary and the live venv are.
-    cmd.env("LPC_UV", &uv);
-    cmd.env("LPC_TARGET_PYTHON", &python);
-    if using_cuda_venv {
-        cmd.env("LPC_CUDA_VENV", "1");
-    }
-
-    // Point the backend at the bundled models directory (release only).
-    // In debug mode the backend's default ../models already points at the
-    // project-root models/ directory that developers edit directly.
-    #[cfg(not(debug_assertions))]
-    if let Ok(resource_dir) = handle.path().resource_dir() {
-        let models_dir = resource_dir.join("resources").join("models");
-        if models_dir.exists() {
-            cmd.env("MODEL_DIR", models_dir);
-        }
-    }
-
-    cmd.arg(&port_str)
-        .current_dir(&backend_dir)
-        .stdout(if cfg!(debug_assertions) {
-            Stdio::inherit()
-        } else {
-            log_file.as_ref()
-                .and_then(|f| f.try_clone().ok())
-                .map(Stdio::from)
-                .unwrap_or_else(Stdio::null)
-        })
-        .stderr(if cfg!(debug_assertions) {
-            Stdio::inherit()
-        } else {
-            log_file.map(Stdio::from).unwrap_or_else(Stdio::null)
-        });
-
-    // Suppress the console window in release builds.
-    if !cfg!(debug_assertions) {
-        no_window(&mut cmd);
-    }
-
-    // Put the child in its own process group so kill() can terminate the whole
-    // tree (uv + uvicorn + Python) by sending SIGKILL to the group.
-    #[cfg(unix)]
+    // Windows: the venv may have just been populated by `uv sync`
+    // (setup_backend / install_cuda_torch). Force its directory index to settle
+    // and its native modules to be AV-scanned before the backend imports torch,
+    // otherwise the first import fails and the interpreter crashes on shutdown.
+    // No-op when nothing changed. See `util::warm_venv`.
     {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
+        let venv_dir = if using_cuda_venv {
+            cuda_dir.join(".venv")
+        } else {
+            backend_dir.join(".venv")
+        };
+        let _ = handle.emit("setup_progress", "Preparing Python environment…");
+        let _ = tokio::task::spawn_blocking(move || crate::util::warm_venv(&venv_dir)).await;
     }
 
-    // python.exe (or its DLLs) may have just been (re)installed by
-    // install_cuda_torch / setup_backend and still be getting scanned by
-    // Defender — retry briefly rather than surfacing a spurious crash.
-    let child = match retry_while_av_blocked(|| cmd.spawn()) {
-        Ok(c) => c,
-        Err(e) => {
-            let hint = av_blocked_hint(&e).map(|h| format!(" {h}")).unwrap_or_default();
-            let msg = format!("Failed to start backend: {e}.{hint}");
-            log::error!("{msg}");
-            let _ = handle.emit("backend_crashed", msg);
-            return;
+    let build_cmd = || {
+        let mut cmd = if cfg!(debug_assertions) && !using_cuda_venv {
+            // Dev without CUDA: let uv manage the venv automatically.
+            let mut c = uv_command(&uv);
+            c.args(["run", "uvicorn", "live_photo_commentary.main:app",
+                   "--host", "127.0.0.1", "--port"]);
+            c
+        } else {
+            let mut c = Command::new(&python);
+            c.args(["-m", "uvicorn", "live_photo_commentary.main:app",
+                   "--host", "127.0.0.1", "--port"]);
+            // CUDA venv has no editable install of the project; inject the
+            // source directory so `live_photo_commentary` is importable.
+            if using_cuda_venv {
+                c.env("PYTHONPATH", &backend_dir);
+            }
+            c
+        };
+
+        // In release, redirect stdout+stderr to a log file in backend_dir
+        // so crashes are diagnosable. Recreated per attempt (truncates).
+        let log_file = if !cfg!(debug_assertions) {
+            std::fs::File::create(backend_dir.join("backend.log")).ok()
+        } else {
+            None
+        };
+
+        // Disable Python's output buffering so backend.log captures crashes that
+        // happen before the process has a chance to flush its write buffer.
+        cmd.env("PYTHONUNBUFFERED", "1");
+        cmd.env("LPC_FRAMES_DIR", backend_dir.join("frames"));
+        if cfg!(debug_assertions) {
+            cmd.env("LPC_DEV", "1");
         }
+
+        // Let the backend lazily install the Japanese TTS tokenizer (Sudachi +
+        // its large dictionary) via uv the first time a Japanese voice is
+        // selected. Only the Rust side knows where the uv binary and the live
+        // venv are.
+        cmd.env("LPC_UV", &uv);
+        cmd.env("LPC_TARGET_PYTHON", &python);
+        if using_cuda_venv {
+            cmd.env("LPC_CUDA_VENV", "1");
+        }
+
+        // Point the backend at the bundled models directory (release only).
+        // In debug mode the backend's default ../models already points at the
+        // project-root models/ directory that developers edit directly.
+        #[cfg(not(debug_assertions))]
+        if let Ok(resource_dir) = handle.path().resource_dir() {
+            let models_dir = resource_dir.join("resources").join("models");
+            if models_dir.exists() {
+                cmd.env("MODEL_DIR", models_dir);
+            }
+        }
+
+        cmd.arg(&port_str)
+            .current_dir(&backend_dir)
+            .stdout(if cfg!(debug_assertions) {
+                Stdio::inherit()
+            } else {
+                log_file.as_ref()
+                    .and_then(|f| f.try_clone().ok())
+                    .map(Stdio::from)
+                    .unwrap_or_else(Stdio::null)
+            })
+            .stderr(if cfg!(debug_assertions) {
+                Stdio::inherit()
+            } else {
+                log_file.map(Stdio::from).unwrap_or_else(Stdio::null)
+            });
+
+        // Suppress the console window in release builds.
+        if !cfg!(debug_assertions) {
+            no_window(&mut cmd);
+        }
+
+        // Put the child in its own process group so kill() can terminate the
+        // whole tree (uv + uvicorn + Python) via SIGKILL to the group.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+
+        cmd
     };
+
+    // Spawn, then watch the first seconds. A backend that dies almost
+    // immediately is nearly always the post-`uv sync` first-import failure
+    // (transient, and a fresh process reliably survives it once the venv is
+    // warm) — respawn rather than surface it. Break out the moment /health
+    // answers so a healthy start isn't delayed.
+    let mut child = None;
+    for attempt in 1..=MAX_SPAWN_ATTEMPTS {
+        // python.exe (or its DLLs) may still be getting scanned by Defender
+        // right after a (re)install — retry briefly rather than surfacing a
+        // spurious spawn failure.
+        let mut cmd = build_cmd();
+        let mut c = match retry_while_av_blocked(|| cmd.spawn()) {
+            Ok(c) => c,
+            Err(e) => {
+                let hint = av_blocked_hint(&e).map(|h| format!(" {h}")).unwrap_or_default();
+                let msg = format!("Failed to start backend: {e}.{hint}");
+                log::error!("{msg}");
+                let _ = handle.emit("backend_crashed", msg);
+                return;
+            }
+        };
+
+        let watch_start = std::time::Instant::now();
+        loop {
+            match c.try_wait() {
+                Ok(Some(status)) => {
+                    if attempt < MAX_SPAWN_ATTEMPTS {
+                        log::warn!(
+                            "Backend exited after {:.1}s (code {:?}); respawn {}/{}",
+                            watch_start.elapsed().as_secs_f64(),
+                            status.code(),
+                            attempt + 1,
+                            MAX_SPAWN_ATTEMPTS,
+                        );
+                        let _ = handle.emit("setup_progress", "Restarting backend…");
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    } else {
+                        let code = status.code().unwrap_or(-1);
+                        let av_hint = quick_exit_hint(watch_start.elapsed());
+                        let log_hint = if cfg!(debug_assertions) { "" } else { " Check backend.log for details." };
+                        let msg = format!("Backend exited unexpectedly (code {code}).{av_hint}{log_hint}");
+                        log::error!("{msg}");
+                        let _ = handle.emit("backend_crashed", msg);
+                        return;
+                    }
+                    break; // -> next attempt
+                }
+                Ok(None) => {
+                    if watch_start.elapsed() >= EARLY_CRASH_WINDOW || health_ok(port).await {
+                        child = Some(c);
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                }
+                Err(e) => {
+                    log::error!("Error polling new backend process: {e}");
+                    child = Some(c);
+                    break;
+                }
+            }
+        }
+        if child.is_some() {
+            break;
+        }
+    }
+    let child = child.expect("spawn loop either returns or yields a child");
 
     // Publish PGID for the signal handler before inserting into the mutex.
     // process_group(0) means the child's PGID equals its PID.
