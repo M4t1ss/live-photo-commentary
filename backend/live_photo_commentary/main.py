@@ -125,6 +125,40 @@ def _free_describer(describer) -> None:
 
 
 def _make_describer(on_progress=None, local_path=None):
+    """Build the describer, retrying on Windows when the first attempt trips the
+    post-`uv sync` importlib staleness race.
+
+    After `install_cuda_torch` reinstalls torch into the CUDA venv, NTFS's
+    directory index can lag the freshly written files for a second or two, so a
+    torch/transformers submodule is transiently unimportable — surfacing here as
+    "Could not import module 'AutoModelForCausalLM'". `_wait_for_torch()` guards
+    `import torch` itself but not the `from transformers import …` that
+    `_build_describer` triggers, so flush the import caches and retry.
+    """
+    attempts = 3 if sys.platform == "win32" else 1
+    for attempt in range(1, attempts + 1):
+        try:
+            return _build_describer(on_progress, local_path)
+        except ImportError as exc:
+            if attempt == attempts:
+                raise
+            import importlib
+            import time
+            log.warning(
+                "Describer import failed (%s); flushing import caches, retry %d/%d",
+                exc, attempt, attempts - 1,
+            )
+            for name in [
+                k for k in sys.modules
+                if k == "transformers" or k.startswith("transformers.")
+                or k.endswith(".local_describer")
+            ]:
+                sys.modules.pop(name, None)
+            importlib.invalidate_caches()
+            time.sleep(1.0)
+
+
+def _build_describer(on_progress, local_path):
     cfg = config.get()
     if cfg.vlm_provider == "local":
         entry = _catalogue_entry_for_model(cfg.vlm_model)
