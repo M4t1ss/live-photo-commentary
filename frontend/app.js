@@ -525,6 +525,12 @@ startStopBtn.addEventListener("click", () => {
     stopCycle();
   } else {
     setRunning(true);
+    currentFrameUrl = null;
+    currentFrameEl.src = "";
+    currentFrameEl.classList.add("hidden");
+    prevFrameEl.src = "";
+    prevFrameEl.classList.add("hidden");
+    diffInfoEl.classList.add("hidden");
     const delayMs = (currentConfig.pre_screenshot_delay ?? 2.0) * 1000;
     setPhase("Screenshot in", "down", delayMs);
     _startCycleTimer = setTimeout(() => {

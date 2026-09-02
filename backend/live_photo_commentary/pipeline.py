@@ -118,6 +118,10 @@ class Pipeline:
         if self._auto_loop_running:
             return
         self._auto_loop_running = True
+        self._prev_img = None
+        self._last_rejected = False
+        if self.describer is not None:
+            self.describer.history = []
         self._loop = asyncio.get_running_loop()
         self._frame_q = asyncio.Queue()
         self._auto_loop_task = asyncio.create_task(self._auto_loop())
