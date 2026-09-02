@@ -61,6 +61,7 @@ const cfgSubtitleFont     = document.getElementById("cfg-subtitle-font");
 const cfgSubtitleLines    = document.getElementById("cfg-subtitle-lines");
 const cfgHighlightEnabled = document.getElementById("cfg-highlight-enabled");
 const cfgHlColor          = document.getElementById("cfg-hl-color");
+const cfgAutoplay         = document.getElementById("cfg-autoplay");
 const cfgHlPreview        = document.getElementById("cfg-hl-preview");
 const cfgPromptset       = document.getElementById("cfg-promptset");
 const promptsetComboBtn  = document.getElementById("promptset-combo-btn");
@@ -122,6 +123,7 @@ let vlmCatalogue = {};
 let ttsVoices = [];
 let promptsetNames = [];
 let currentPromptsetName = "default";
+let autoplay = localStorage.getItem("lpc_autoplay") === "1";
 
 let currentFrameUrl = null;
 
@@ -140,7 +142,11 @@ function checkReady() {
   settingsBtn.disabled  = !connected;
   if (connected) dismissSplash();
   if (ready && !running) {
-    setPhase("Idle", "none");
+    if (autoplay) {
+      startStopBtn.click();
+    } else {
+      setPhase("Idle", "none");
+    }
   } else if (connected && !running && !currentConfig.vlm_provider) {
     setPhase("Select a VLM model in Settings", "none");
   }
@@ -603,6 +609,7 @@ function populateModal() {
   cfgSubtitleVposNum.value = vpos;
   cfgSubtitleFont.value = localStorage.getItem("lpc_subtitle_font_px") ?? "17";
   cfgSubtitleLines.value = localStorage.getItem("lpc_subtitle_lines") ?? "2";
+  cfgAutoplay.checked = autoplay;
   cfgHighlightEnabled.checked = (localStorage.getItem("lpc_highlight_enabled") ?? "1") === "1";
   const hlColor = localStorage.getItem("lpc_highlight_color") ?? "#4a9eff";
   cfgHlColor.value = hlColor;
@@ -801,6 +808,8 @@ modalOk.addEventListener("click", () => {
   localStorage.setItem("lpc_subtitle_font_px", String(Number.isFinite(sFont) && sFont >= 8 ? sFont : 17));
   const sLines = parseInt(cfgSubtitleLines.value, 10);
   localStorage.setItem("lpc_subtitle_lines", String(Number.isFinite(sLines) && sLines >= 0 ? sLines : 2));
+  autoplay = cfgAutoplay.checked;
+  localStorage.setItem("lpc_autoplay", autoplay ? "1" : "0");
   localStorage.setItem("lpc_highlight_enabled", cfgHighlightEnabled.checked ? "1" : "0");
   const newHl = _normalizeHex(cfgHlColor.value);
   if (isValidHex(newHl)) localStorage.setItem("lpc_highlight_color", newHl);
