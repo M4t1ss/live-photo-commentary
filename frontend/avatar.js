@@ -513,6 +513,8 @@ function _updateGazeTracking(delta) {
       g.currentQuat.slerp(g.bone.quaternion, alpha);
     }
     g.bone.quaternion.copy(g.currentQuat);
+    g.bone.updateMatrix();
+    g.bone.updateWorldMatrix(false, false);
   }
 }
 
