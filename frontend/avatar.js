@@ -35,7 +35,11 @@ let maxJawAngle  = 0.15;
 // reach within their own swing limits.
 const GAZE_BONE_KEYS = ['neck', 'head', 'leftEye', 'rightEye'];
 const GAZE_DEFAULT_MAX_ANGLE = { neck: 0.3, head: 0.5, leftEye: 0.15, rightEye: 0.15 };
-let _gazeChain = []; // [{ bone, restLocalQuat, bindWorldQuat, bindForwardWorld, maxAngle }, ...]
+// Each entry: { bone, restLocalQuat, bindWorldQuat, bindForwardWorld, maxAngle,
+//              elastic, currentQuat }
+// elastic=true for neck/head (spring-smoothed); eyes snap directly to target.
+let _gazeChain = [];
+let _gazeSpeed = 4.0; // exponential-smoothing speed for neck/head (rad⁻¹)
 
 let _visemeMap   = {};   // phoneme → {morph: value, ...}; used by showPhoneme
 let _tagsConfig  = {};   // tag name → {morph: value, ...}; used by setEmotion
@@ -431,12 +435,22 @@ function _computeSwingClampedLookAt(bone, restLocalQuat, bindForwardWorld, bindW
 
 // Re-aims each configured gaze bone in chain order (neck → head → eyes), so
 // eyes only pick up whatever angle neck+head couldn't reach within their own
-// swing limits.
-function _updateGazeTracking() {
+// swing limits. Neck and head are spring-smoothed (elastic=true); eyes snap.
+function _updateGazeTracking(delta) {
   for (const g of _gazeChain) {
-    g.bone.quaternion.copy(_computeSwingClampedLookAt(
+    const targetQuat = _computeSwingClampedLookAt(
       g.bone, g.restLocalQuat, g.bindForwardWorld, g.bindWorldQuat, camera.position, g.maxAngle
-    ));
+    );
+    if (g.elastic) {
+      // Exponential smoothing — slerp takes the shortest arc, so a target that
+      // flips from extreme-right to extreme-left rotates through forward, not
+      // around the back of the head.
+      const alpha = 1 - Math.exp(-_gazeSpeed * delta);
+      g.currentQuat.slerp(targetQuat, alpha);
+      g.bone.quaternion.copy(g.currentQuat);
+    } else {
+      g.bone.quaternion.copy(targetQuat);
+    }
   }
 }
 
@@ -517,6 +531,7 @@ async function _resolveAnimClips(namesOrPaths, port, gltf, vrm) {
 window.initAvatar = function (config, port) {
   _visemeMap  = config.visemeMap   ?? {};
   _tagsConfig = config.tags        ?? {};
+  _gazeSpeed  = config.gazeSpeed   ?? 4.0;
   jawAxis     = config.jawAxis     ?? 'x';
   minJawAngle = config.minJawAngle ?? 0;
   maxJawAngle = config.maxJawAngle ?? 0.15;
@@ -611,12 +626,15 @@ window.initAvatar = function (config, port) {
           node.getWorldQuaternion(bindWorldQuat);
           const worldPos = new THREE.Vector3();
           node.getWorldPosition(worldPos);
+          const isElastic = key === 'neck' || key === 'head';
           gazeBonesByKey[key] = {
             bone: node,
             restLocalQuat: node.quaternion.clone(),
             bindWorldQuat,
             bindForwardWorld: camera.position.clone().sub(worldPos).normalize(),
             maxAngle: gazeMaxAngles[key],
+            elastic: isElastic,
+            currentQuat: isElastic ? node.quaternion.clone() : null,
           };
         }
       }
@@ -646,7 +664,7 @@ function _tick() {
   if (mixer) mixer.update(delta);
   channelMixer?.cleanup();
   if (currentVrm) currentVrm.update(delta);
-  _updateGazeTracking();
+  _updateGazeTracking(delta);
   compositor.tick(delta);
   renderer.render(scene, camera);
 }
