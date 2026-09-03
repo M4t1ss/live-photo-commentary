@@ -22,9 +22,13 @@ let _talkingClips = [];
 let _walkInClips  = [];
 let _walkOutClips = [];
 let _helloClips   = [];
+let _dancingClips = [];
 let sceneModel    = null;
 // hidden → walk_in → greeting → running → walking_out → hidden
 let _lifecycleState = 'hidden';
+const IDLE_TO_DANCE_SECS = 180;
+let _idleTimer  = 0;
+let _isDancing  = false;
 
 // Model state — populated by initAvatar after the GLB loads.
 const morphMeshes = new Map();  // Map<Mesh, morphTargetDictionary>
@@ -455,6 +459,8 @@ function _onWalkInDone() {
 function _onGreetingDone() {
   if (_lifecycleState !== 'greeting') return;
   _lifecycleState = 'running';
+  _idleTimer = 0;
+  _isDancing = false;
   if (_idleClips.length) channelMixer.play('idle', _idleClips);
 }
 
@@ -474,8 +480,11 @@ window.stopAvatar = function () {
   if (_lifecycleState === 'hidden' || _lifecycleState === 'walking_out') return;
   if (!channelMixer) { _lifecycleState = 'hidden'; if (sceneModel) sceneModel.visible = false; return; }
   _lifecycleState = 'walking_out';
+  _isDancing = false;
+  _idleTimer = 0;
   channelMixer.stop('idle');
   channelMixer.stop('talking');
+  channelMixer.stop('dancing');
   channelMixer.stop('walk_in');
   channelMixer.stop('greeting');
   channelMixer.playOnce('walk_out', _walkOutClips, { onFinish: _onWalkOutDone });
@@ -614,11 +623,16 @@ window.setLipSyncData = function (timeline, audio) {
   _gazeSuspendDriver?.setTalking(!!audio);
   if (channelMixer && _lifecycleState === 'running') {
     if (audio && _talkingClips.length) {
+      if (_isDancing) { _isDancing = false; channelMixer.stop('dancing'); }
+      _idleTimer = 0;
       channelMixer.play('talking', _talkingClips);
       channelMixer.stop('idle');
     } else {
+      _isDancing = false;
+      _idleTimer = 0;
       channelMixer.play('idle', _idleClips);
       channelMixer.stop('talking');
+      channelMixer.stop('dancing');
     }
   }
 };
@@ -736,12 +750,13 @@ window.initAvatar = function (config, port) {
     _headShotCam = { camY: size.y * 0.90, camZ: dist * 0.18, lookY: size.y * 0.90 };
 
     mixer = new THREE.AnimationMixer(model);
-    [_idleClips, _talkingClips, _walkInClips, _walkOutClips, _helloClips] = await Promise.all([
-      _resolveAnimClips(config.idleAnimation,   port, gltf, vrm),
+    [_idleClips, _talkingClips, _walkInClips, _walkOutClips, _helloClips, _dancingClips] = await Promise.all([
+      _resolveAnimClips(config.idleAnimation,    port, gltf, vrm),
       _resolveAnimClips(config.talkingAnimation, port, gltf, vrm),
       _resolveAnimClips(config.walkInAnimation,  port, gltf, vrm),
       _resolveAnimClips(config.walkOutAnimation, port, gltf, vrm),
       _resolveAnimClips(config.helloAnimation,   port, gltf, vrm),
+      _resolveAnimClips(config.dancingAnimation, port, gltf, vrm),
     ]);
     channelMixer = new ChannelMixer(mixer);
     // Idle starts after the walk_in → greeting sequence via startAvatar().
@@ -811,12 +826,23 @@ resize();
 
 // ── Render loop ───────────────────────────────────────────────────────────────
 
+function _tickIdleTimer(delta) {
+  if (_lifecycleState !== 'running' || _isDancing) return;
+  _idleTimer += delta;
+  if (_idleTimer >= IDLE_TO_DANCE_SECS && _dancingClips.length) {
+    _isDancing = true;
+    channelMixer.play('dancing', _dancingClips);
+    channelMixer.stop('idle');
+  }
+}
+
 function _tick() {
   const delta = clock.getDelta();
   if (mixer) mixer.update(delta);
   channelMixer?.cleanup();
   if (currentVrm) currentVrm.update(delta);
   _updateGazeTracking(delta);
+  _tickIdleTimer(delta);
   compositor.tick(delta);
   renderer.render(scene, camera);
 }
