@@ -516,6 +516,7 @@ function stopCycle() {
   setRunning(false);
   resetAudio();
   window.clearSubtitle?.();
+  window.stopAvatar?.();
   setPhase("Idle", "none");
   if (!pendingStart) send({ type: "stop_cycle" });
 }
@@ -525,6 +526,7 @@ startStopBtn.addEventListener("click", () => {
     stopCycle();
   } else {
     setRunning(true);
+    window.startAvatar?.();
     currentFrameUrl = null;
     currentFrameEl.src = "";
     currentFrameEl.classList.add("hidden");
