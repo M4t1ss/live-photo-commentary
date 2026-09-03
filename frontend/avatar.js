@@ -39,7 +39,8 @@ const GAZE_DEFAULT_MAX_ANGLE = { neck: 0.3, head: 0.5, leftEye: 0.15, rightEye: 
 //              elastic, currentQuat }
 // elastic=true for neck/head (spring-smoothed); eyes snap directly to target.
 let _gazeChain = [];
-let _gazeSpeed = 4.0; // exponential-smoothing speed for neck/head (rad⁻¹)
+let _gazeSpeed = 4.0;          // exponential-smoothing speed for neck/head (rad⁻¹)
+let _gazeSuspendDriver = null; // GazeSuspendDriver instance, or null if not configured
 
 let _visemeMap   = {};   // phoneme → {morph: value, ...}; used by showPhoneme
 let _tagsConfig  = {};   // tag name → {morph: value, ...}; used by setEmotion
@@ -252,6 +253,57 @@ class EmotionDriver {
   }
 }
 
+// Alternates between "tracking" (gaze aimed at camera) and "suspended" (let
+// animation drive the bones). Durations use the same OU process as BlinkDriver.
+// Two mode configs (idle / talking) are selected via setTalking(); the active
+// config is applied on the next duration sample — no mid-phase reset.
+//
+// No explicit blend states: the elastic spring in _updateGazeTracking provides
+// smooth transitions automatically — the target just changes, the spring does
+// the rest.
+class GazeSuspendDriver {
+  constructor(cfg = {}) {
+    this._state      = 'tracking';
+    this._isTalking  = false;
+    this._idleCfg    = cfg.idle    ?? {};
+    this._talkingCfg = cfg.talking ?? {};
+    this._lastContactIBI = null;
+    this._lastAwayIBI    = null;
+    this._countdown  = this._sampleDuration(this._idleCfg, true);
+  }
+
+  setTalking(isTalking) { this._isTalking = isTalking; }
+
+  // Returns 'tracking' or 'suspended'.
+  tick(delta) {
+    this._countdown -= delta;
+    if (this._countdown <= 0) {
+      const modeCfg = this._isTalking ? this._talkingCfg : this._idleCfg;
+      if (this._state === 'tracking') {
+        this._state     = 'suspended';
+        this._countdown = this._sampleDuration(modeCfg, false);
+      } else {
+        this._state     = 'tracking';
+        this._countdown = this._sampleDuration(modeCfg, true);
+      }
+    }
+    return this._state;
+  }
+
+  _sampleDuration(cfg, isContact) {
+    const mu   = isContact ? (cfg.contact_mean ?? 3.0) : (cfg.away_mean ?? 5.0);
+    const minV = isContact ? (cfg.contact_min  ?? 1.0) : (cfg.away_min  ?? 1.0);
+    const maxV = isContact ? (cfg.contact_max  ?? 8.0) : (cfg.away_max  ?? 12.0);
+    const rho  = Math.exp(-(cfg.ou_theta ?? 0.5));
+    const sig  = (cfg.ou_sigma ?? 1.0) * Math.sqrt(1 - rho ** 2);
+    const last = isContact ? (this._lastContactIBI ?? mu) : (this._lastAwayIBI ?? mu);
+    const raw  = mu + rho * (last - mu) + sig * _randn();
+    const v    = Math.max(minV, Math.min(maxV, raw));
+    if (isContact) this._lastContactIBI = v; else this._lastAwayIBI = v;
+    return v;
+  }
+}
+
 // Generic multi-channel animation mixer. Each named channel holds a clip pool
 // and a single active Three.js action. Channels fade in/out independently;
 // channels that reach weight 0 are removed on the next cleanup() call.
@@ -433,24 +485,34 @@ function _computeSwingClampedLookAt(bone, restLocalQuat, bindForwardWorld, bindW
   return restLocalQuat.clone().multiply(clampedSwing);
 }
 
-// Re-aims each configured gaze bone in chain order (neck → head → eyes), so
-// eyes only pick up whatever angle neck+head couldn't reach within their own
-// swing limits. Neck and head are spring-smoothed (elastic=true); eyes snap.
+// Re-aims each configured gaze bone in chain order (neck → head → eyes).
+//
+// The key insight: whether tracking the camera or returning to animation, it's
+// always the same spring — currentQuat.slerp(target, alpha). Only the target
+// changes:
+//   tracking  → target is the clamped camera direction
+//   suspended → target is the live animation pose (mixer.update() already wrote
+//               it to bone.quaternion before this function runs each frame)
+//
+// This gives elastic easing in both directions with no separate blend logic.
+// Neck/head use _gazeSpeed; eyes snap to the tracking target (alpha=1) but
+// spring back toward animation when suspended, so suspension is still smooth.
 function _updateGazeTracking(delta) {
+  const isTracking = !_gazeSuspendDriver || _gazeSuspendDriver.tick(delta) === 'tracking';
+  const alpha = 1 - Math.exp(-_gazeSpeed * delta);
+
   for (const g of _gazeChain) {
-    const targetQuat = _computeSwingClampedLookAt(
-      g.bone, g.restLocalQuat, g.bindForwardWorld, g.bindWorldQuat, camera.position, g.maxAngle
-    );
-    if (g.elastic) {
-      // Exponential smoothing — slerp takes the shortest arc, so a target that
-      // flips from extreme-right to extreme-left rotates through forward, not
-      // around the back of the head.
-      const alpha = 1 - Math.exp(-_gazeSpeed * delta);
-      g.currentQuat.slerp(targetQuat, alpha);
-      g.bone.quaternion.copy(g.currentQuat);
+    if (isTracking) {
+      const target = _computeSwingClampedLookAt(
+        g.bone, g.restLocalQuat, g.bindForwardWorld, g.bindWorldQuat, camera.position, g.maxAngle
+      );
+      // Neck/head: elastic approach. Eyes: snap (alpha=1) per original design.
+      g.currentQuat.slerp(target, g.elastic ? alpha : 1);
     } else {
-      g.bone.quaternion.copy(targetQuat);
+      // Suspended: spring toward the animation pose the mixer wrote this frame.
+      g.currentQuat.slerp(g.bone.quaternion, alpha);
     }
+    g.bone.quaternion.copy(g.currentQuat);
   }
 }
 
@@ -466,6 +528,7 @@ const emotionDriver = compositor.register('emotion', new EmotionDriver(), 'add')
 // Called by app.js when a new audio chunk starts playing.
 window.setLipSyncData = function (timeline, audio) {
   lipSyncDriver.setData(timeline, audio);
+  _gazeSuspendDriver?.setTalking(!!audio);
   if (channelMixer) {
     if (audio && _talkingClips.length) {
       channelMixer.play('talking', _talkingClips);
@@ -532,6 +595,7 @@ window.initAvatar = function (config, port) {
   _visemeMap  = config.visemeMap   ?? {};
   _tagsConfig = config.tags        ?? {};
   _gazeSpeed  = config.gazeSpeed   ?? 4.0;
+  if (config.gazeSuspension) _gazeSuspendDriver = new GazeSuspendDriver(config.gazeSuspension);
   jawAxis     = config.jawAxis     ?? 'x';
   minJawAngle = config.minJawAngle ?? 0;
   maxJawAngle = config.maxJawAngle ?? 0.15;
@@ -633,8 +697,8 @@ window.initAvatar = function (config, port) {
             bindWorldQuat,
             bindForwardWorld: camera.position.clone().sub(worldPos).normalize(),
             maxAngle: gazeMaxAngles[key],
-            elastic: isElastic,
-            currentQuat: isElastic ? node.quaternion.clone() : null,
+            elastic:     isElastic,
+            currentQuat: node.quaternion.clone(), // spring state; all bones need it
           };
         }
       }

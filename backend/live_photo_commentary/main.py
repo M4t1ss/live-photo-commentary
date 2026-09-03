@@ -484,6 +484,7 @@ async def get_model_config():
         "idleAnimation": raw.get("animations", {}).get("idle"),
         "talkingAnimation": raw.get("animations", {}).get("talking"),
         "gazeSpeed": raw.get("gaze_speed", 4.0),
+        "gazeSuspension": raw.get("gaze_suspension"),
         "lighting": raw.get("lighting"),
     }
 
