@@ -21,10 +21,11 @@ let _idleClips    = [];
 let _talkingClips = [];
 let _walkInClips  = [];
 let _walkOutClips = [];
-let _helloClips   = [];
-let _dancingClips = [];
+let _helloClips    = [];
+let _goodbyeClips  = [];
+let _dancingClips  = [];
 let sceneModel    = null;
-// hidden → walk_in → greeting → running → walking_out → hidden
+// hidden → walk_in → greeting → running → farewell → walking_out → hidden
 let _lifecycleState = 'hidden';
 const IDLE_TO_DANCE_SECS = 180;
 let _idleTimer  = 0;
@@ -344,6 +345,7 @@ class ChannelMixer {
       existing.action.stopFading();
       existing.action.enabled = true;
       existing.action.setEffectiveWeight(1).play();
+      console.log(`[anim] resume ${name}: "${existing.action.getClip().name}"`);
       return;
     }
 
@@ -360,6 +362,7 @@ class ChannelMixer {
     } else {
       action.setEffectiveWeight(1).play();
     }
+    console.log(`[anim] play ${name} (${clips.length} clips): "${clip.name}"`);
     this._channels.set(name, { clips, action, targetWeight: 1, blendDuration });
   }
 
@@ -375,7 +378,7 @@ class ChannelMixer {
   // Play a clip once (LoopOnce). When the animation finishes naturally it fades
   // out and calls onFinish. If clips is empty, onFinish is called immediately.
   playOnce(name, clips, { blendDuration = 0.4, onFinish = null } = {}) {
-    if (!clips.length) { onFinish?.(); return; }
+    if (!clips.length) { console.log(`[anim] playOnce ${name}: no clips, skipping`); onFinish?.(); return; }
     const existing = this._channels.get(name);
     if (existing) { existing.action.stop(); this._channels.delete(name); }
     const clip   = this._pickRandom(clips);
@@ -390,6 +393,7 @@ class ChannelMixer {
     } else {
       action.setEffectiveWeight(1).play();
     }
+    console.log(`[anim] playOnce ${name} (${clips.length} clips): "${clip.name}" duration=${clip.duration.toFixed(2)}s`);
     this._channels.set(name, { clips, action, targetWeight: 1, blendDuration, once: true, onFinish });
   }
 
@@ -439,12 +443,13 @@ class ChannelMixer {
     newAct.enabled = true;
     newAct.setLoop(THREE.LoopRepeat, Infinity).setEffectiveWeight(1).fadeIn(ch.blendDuration).play();
     ch.action.fadeOut(ch.blendDuration);
+    console.log(`[anim] swap → "${newClip.name}"`);
     ch.action = newAct;
   }
 }
 
 // ── Avatar lifecycle ──────────────────────────────────────────────────────────
-// hidden → (startAvatar) → walk_in → greeting → running → (stopAvatar) → walking_out → hidden
+// hidden → (startAvatar) → walk_in → greeting → running → (stopAvatar) → farewell → walking_out → hidden
 //
 // startAvatar / stopAvatar are called from app.js on Play / Stop. If walk_in /
 // walk_out / hello clip lists are empty (model.yaml omits them), the
@@ -464,6 +469,12 @@ function _onGreetingDone() {
   if (_idleClips.length) channelMixer.play('idle', _idleClips);
 }
 
+function _onFarewellDone() {
+  if (_lifecycleState !== 'farewell') return;
+  _lifecycleState = 'walking_out';
+  channelMixer.playOnce('walk_out', _walkOutClips, { onFinish: _onWalkOutDone });
+}
+
 function _onWalkOutDone() {
   _lifecycleState = 'hidden';
   if (sceneModel) sceneModel.visible = false;
@@ -477,9 +488,9 @@ window.startAvatar = function () {
 };
 
 window.stopAvatar = function () {
-  if (_lifecycleState === 'hidden' || _lifecycleState === 'walking_out') return;
+  if (_lifecycleState === 'hidden' || _lifecycleState === 'farewell' || _lifecycleState === 'walking_out') return;
   if (!channelMixer) { _lifecycleState = 'hidden'; if (sceneModel) sceneModel.visible = false; return; }
-  _lifecycleState = 'walking_out';
+  _lifecycleState = 'farewell';
   _isDancing = false;
   _idleTimer = 0;
   channelMixer.stop('idle');
@@ -487,7 +498,7 @@ window.stopAvatar = function () {
   channelMixer.stop('dancing');
   channelMixer.stop('walk_in');
   channelMixer.stop('greeting');
-  channelMixer.playOnce('walk_out', _walkOutClips, { onFinish: _onWalkOutDone });
+  channelMixer.playOnce('farewell', _goodbyeClips, { onFinish: _onFarewellDone });
 };
 
 // ── Animation compositor ──────────────────────────────────────────────────────
@@ -667,7 +678,9 @@ function _resolveAnimClip(nameOrPath, port, gltf, vrm) {
             console.warn(`[avatar] no VRM animation found in ${nameOrPath}`);
             resolve(null);
           } else {
-            resolve(createVRMAnimationClip(vrmAnimation, vrm));
+            const clip = createVRMAnimationClip(vrmAnimation, vrm);
+            clip.name = nameOrPath;
+            resolve(clip);
           }
         },
         undefined,
@@ -684,7 +697,9 @@ function _resolveAnimClip(nameOrPath, port, gltf, vrm) {
 async function _resolveAnimClips(namesOrPaths, port, gltf, vrm) {
   const names = Array.isArray(namesOrPaths) ? namesOrPaths : (namesOrPaths ? [namesOrPaths] : []);
   const clips = await Promise.all(names.map(n => _resolveAnimClip(n, port, gltf, vrm)));
-  return clips.filter(Boolean);
+  const resolved = clips.filter(Boolean);
+  console.log(`[anim] resolved [${names.join(', ')}] → ${resolved.length}/${names.length} clips`);
+  return resolved;
 }
 
 // Called by app.js after it resolves the backend port and fetches /model-config.
@@ -729,8 +744,7 @@ window.initAvatar = function (config, port) {
     const vrm = gltf.userData.vrm;
     currentVrm = vrm;
     window.gltf = gltf;
-    sceneModel = vrm ? vrm.scene : gltf.scene;
-    const model = sceneModel;
+    const model = vrm ? vrm.scene : gltf.scene;
 
     // Center horizontally, feet at y=0.
     const box    = new THREE.Box3().setFromObject(model);
@@ -743,22 +757,24 @@ window.initAvatar = function (config, port) {
     // Frame camera to fit full character height.
     const halfFov = (camera.fov / 2) * (Math.PI / 180);
     const dist    = (size.y / 2) / Math.tan(halfFov) * 1.15;
-    camera.position.set(0, size.y * 0.5, dist);
+    camera.position.set(0, size.y * 0.9, dist);
     camera.lookAt(0, size.y * 0.5, 0);
 
-    _fullBodyCam = { camY: size.y * 0.50, camZ: dist,        lookY: size.y * 0.50 };
+    _fullBodyCam = { camY: size.y * 0.90, camZ: dist,        lookY: size.y * 0.50 };
     _headShotCam = { camY: size.y * 0.90, camZ: dist * 0.18, lookY: size.y * 0.90 };
 
     mixer = new THREE.AnimationMixer(model);
-    [_idleClips, _talkingClips, _walkInClips, _walkOutClips, _helloClips, _dancingClips] = await Promise.all([
+    [_idleClips, _talkingClips, _walkInClips, _walkOutClips, _helloClips, _goodbyeClips, _dancingClips] = await Promise.all([
       _resolveAnimClips(config.idleAnimation,    port, gltf, vrm),
       _resolveAnimClips(config.talkingAnimation, port, gltf, vrm),
       _resolveAnimClips(config.walkInAnimation,  port, gltf, vrm),
       _resolveAnimClips(config.walkOutAnimation, port, gltf, vrm),
       _resolveAnimClips(config.helloAnimation,   port, gltf, vrm),
+      _resolveAnimClips(config.goodbyeAnimation, port, gltf, vrm),
       _resolveAnimClips(config.dancingAnimation, port, gltf, vrm),
     ]);
     channelMixer = new ChannelMixer(mixer);
+    sceneModel = model; // set only after channelMixer is ready; startAvatar() uses !sceneModel as its "fully initialized" guard
     // Idle starts after the walk_in → greeting sequence via startAvatar().
 
     const jawBoneName = config.jawBone ?? 'CC_Base_JawRoot';

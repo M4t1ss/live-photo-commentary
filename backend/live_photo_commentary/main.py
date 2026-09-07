@@ -484,6 +484,7 @@ async def get_model_config():
         "walkInAnimation":  raw.get("animations", {}).get("walk_in"),
         "walkOutAnimation": raw.get("animations", {}).get("walk_out"),
         "helloAnimation":   raw.get("animations", {}).get("hello"),
+        "goodbyeAnimation": raw.get("animations", {}).get("goodbye"),
         "idleAnimation":    raw.get("animations", {}).get("idle"),
         "dancingAnimation": raw.get("animations", {}).get("dancing"),
         "talkingAnimation": raw.get("animations", {}).get("talking"),
