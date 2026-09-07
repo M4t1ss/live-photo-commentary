@@ -28,6 +28,7 @@ let sceneModel    = null;
 // hidden → walk_in → greeting → running → farewell → walking_out → hidden
 let _lifecycleState = 'hidden';
 const IDLE_TO_DANCE_SECS = 180;
+const AVATAR_FADE_SECS = 2;   // canvas opacity fade on spawn / despawn
 let _idleTimer  = 0;
 let _isDancing  = false;
 
@@ -409,6 +410,23 @@ class ChannelMixer {
     }
   }
 
+  // Duration (s) of the clip currently active on a channel, or 0 if none.
+  channelDuration(name) {
+    return this._channels.get(name)?.action.getClip().duration ?? 0;
+  }
+
+  // Returns true/false if any active clip has a non-null eyeContact value, else null.
+  // Scans channels in insertion order; first non-null wins.
+  getEyeContactOverride() {
+    for (const [, ch] of this._channels) {
+      if (ch.targetWeight > 0) {
+        const ec = ch.action.getClip().userData?.eyeContact;
+        if (ec !== null && ec !== undefined) return ec;
+      }
+    }
+    return null;
+  }
+
   _pickRandom(clips) {
     return clips[Math.floor(Math.random() * clips.length)];
   }
@@ -473,17 +491,39 @@ function _onFarewellDone() {
   if (_lifecycleState !== 'farewell') return;
   _lifecycleState = 'walking_out';
   channelMixer.playOnce('walk_out', _walkOutClips, { onFinish: _onWalkOutDone });
+
+  // Fade the canvas out so it hits 0 exactly as she's hidden — in case the
+  // camera is aimed at where she vanishes. No-op if walk_out was skipped.
+  const walkOutSecs = channelMixer.channelDuration('walk_out');
+  if (walkOutSecs > 0) {
+    setTimeout(() => {
+      canvas.style.transition = `opacity ${AVATAR_FADE_SECS}s linear`;
+      canvas.style.opacity = '0';
+    }, Math.max(0, walkOutSecs - AVATAR_FADE_SECS) * 1000);
+  }
 }
 
 function _onWalkOutDone() {
   _lifecycleState = 'hidden';
   if (sceneModel) sceneModel.visible = false;
+  canvas.style.transition = 'none';
+  canvas.style.opacity = '1';
 }
 
 window.startAvatar = function () {
   if (_lifecycleState !== 'hidden' || !sceneModel) return;
   _lifecycleState = 'walk_in';
   sceneModel.visible = true;
+
+  // Fade the canvas in over the walk-in — in case the camera is aimed at where
+  // she appears. Snap to 0 with no transition, flush that so the browser commits
+  // it, then transition up to 1.
+  canvas.style.transition = 'none';
+  canvas.style.opacity = '0';
+  void canvas.offsetHeight;
+  canvas.style.transition = `opacity ${AVATAR_FADE_SECS}s linear`;
+  canvas.style.opacity = '1';
+
   channelMixer.playOnce('walk_in', _walkInClips, { onFinish: _onWalkInDone });
 };
 
@@ -599,7 +639,9 @@ function _computeSwingClampedLookAt(bone, restLocalQuat, bindForwardWorld, bindW
 // Neck/head use _gazeSpeed; eyes snap to the tracking target (alpha=1) but
 // spring back toward animation when suspended, so suspension is still smooth.
 function _updateGazeTracking(delta) {
-  const isTracking = !_gazeSuspendDriver || _gazeSuspendDriver.tick(delta) === 'tracking';
+  const suspendState  = _gazeSuspendDriver ? _gazeSuspendDriver.tick(delta) : 'tracking';
+  const ecOverride    = channelMixer?.getEyeContactOverride() ?? null;
+  const isTracking    = ecOverride !== null ? ecOverride : (suspendState === 'tracking');
   const alpha = 1 - Math.exp(-_gazeSpeed * delta);
 
   for (const g of _gazeChain) {
@@ -657,10 +699,37 @@ window.setEmotion = function (tagOrMorphs) {
   emotionDriver.setMorphs(morphs);
 };
 
-// Resolves an animation clip by name: if nameOrPath ends in ".vrma", loads the
-// file from the backend and converts it via createVRMAnimationClip; otherwise
-// looks up the clip by name inside the already-loaded gltf.animations array.
-function _resolveAnimClip(nameOrPath, port, gltf, vrm) {
+// Resolves a trim bound to seconds: a number passes through unchanged; a string
+// ending in '%' is read as a fraction of the clip's duration ("50%" of a 4 s
+// clip → 2). null/undefined → null.
+function _resolveTrimBound(bound, duration) {
+  if (bound == null) return null;
+  if (typeof bound === 'string' && bound.trim().endsWith('%')) return duration * parseFloat(bound) / 100;
+  return bound;
+}
+
+// Applies start/end trimming to a clip by sub-clipping it to [start, end].
+// Bounds are seconds (number) or a percentage of the clip's duration (string
+// ending in '%'). Uses subclip with fps=1000 to treat milliseconds as integer
+// "frames".
+function _trimClip(clip, start, end) {
+  const s = _resolveTrimBound(start, clip.duration) ?? 0;
+  const e = _resolveTrimBound(end,   clip.duration) ?? clip.duration;
+  if (s === 0 && e === clip.duration) return clip;
+  const trimmed = THREE.AnimationUtils.subclip(clip, clip.name, Math.round(s * 1000), Math.round(e * 1000), 1000);
+  trimmed.userData = clip.userData;
+  return trimmed;
+}
+
+// Resolves an animation clip from an entry (string filename, or object with
+// {filename, eyeContact, start, end}). eyeContact (true/false/null) and any
+// trim bounds are stored/applied so callers don't need to know the difference.
+// Loads .vrma files from the backend; looks up other names in gltf.animations.
+function _resolveAnimClip(entry, port, gltf, vrm) {
+  const nameOrPath = typeof entry === 'string' ? entry : entry?.filename;
+  const eyeContact = typeof entry === 'string' ? null  : (entry?.eyeContact ?? null);
+  const start      = typeof entry === 'string' ? null  : (entry?.start      ?? null);
+  const end        = typeof entry === 'string' ? null  : (entry?.end        ?? null);
   if (!nameOrPath) return Promise.resolve(null);
   if (nameOrPath.endsWith('.vrma')) {
     if (!vrm) {
@@ -673,14 +742,21 @@ function _resolveAnimClip(nameOrPath, port, gltf, vrm) {
       vrmaLoader.load(
         `http://127.0.0.1:${port}/animation/${encodeURIComponent(nameOrPath)}`,
         (vrmaGltf) => {
-          const vrmAnimation = vrmaGltf.userData.vrmAnimations?.[0];
-          if (!vrmAnimation) {
-            console.warn(`[avatar] no VRM animation found in ${nameOrPath}`);
-            resolve(null);
-          } else {
-            const clip = createVRMAnimationClip(vrmAnimation, vrm);
+          try {
+            const vrmAnimation = vrmaGltf.userData.vrmAnimations?.[0];
+            if (!vrmAnimation) {
+              console.warn(`[avatar] no VRM animation found in ${nameOrPath}`);
+              resolve(null);
+              return;
+            }
+            let clip = createVRMAnimationClip(vrmAnimation, vrm);
             clip.name = nameOrPath;
+            clip.userData = { eyeContact };
+            clip = _trimClip(clip, start, end);
             resolve(clip);
+          } catch (err) {
+            console.warn(`[avatar] failed to build clip from ${nameOrPath}:`, err);
+            resolve(null);
           }
         },
         undefined,
@@ -688,17 +764,21 @@ function _resolveAnimClip(nameOrPath, port, gltf, vrm) {
       );
     });
   }
-  const clip = THREE.AnimationClip.findByName(gltf.animations, nameOrPath);
-  if (!clip) console.warn(`[avatar] animation "${nameOrPath}" not found in model`);
+  let clip = THREE.AnimationClip.findByName(gltf.animations, nameOrPath);
+  if (!clip) { console.warn(`[avatar] animation "${nameOrPath}" not found in model`); return Promise.resolve(null); }
+  clip = clip.clone();
+  clip.userData = { eyeContact };
+  clip = _trimClip(clip, start, end);
   return Promise.resolve(clip);
 }
 
-// Normalises a single name or list of names, loads all clips, returns the array.
+// Normalises a single entry or list of entries, loads all clips, returns the array.
 async function _resolveAnimClips(namesOrPaths, port, gltf, vrm) {
   const names = Array.isArray(namesOrPaths) ? namesOrPaths : (namesOrPaths ? [namesOrPaths] : []);
   const clips = await Promise.all(names.map(n => _resolveAnimClip(n, port, gltf, vrm)));
   const resolved = clips.filter(Boolean);
-  console.log(`[anim] resolved [${names.join(', ')}] → ${resolved.length}/${names.length} clips`);
+  const label = names.map(n => (typeof n === 'string' ? n : n?.filename ?? '?')).join(', ');
+  console.log(`[anim] resolved [${label}] → ${resolved.length}/${names.length} clips`);
   return resolved;
 }
 
@@ -796,6 +876,13 @@ window.initAvatar = function (config, port) {
     const gazeBonesByKey = {};
 
     model.traverse(node => {
+      if (node.isMesh) {
+        // Skinned meshes cache their frustum-cull sphere from the first pose
+        // they're tested in and never refresh it, so a clip that displaces the
+        // avatar on spawn (a trimmed walk_in) leaves the sphere stranded and the
+        // mesh culled forever. The avatar is always framed — just never cull it.
+        node.frustumCulled = false;
+      }
       if (node.isMesh && node.morphTargetDictionary && node.morphTargetInfluences) {
         morphMeshes.set(node, node.morphTargetDictionary);
       }
