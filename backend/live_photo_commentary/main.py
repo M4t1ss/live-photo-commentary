@@ -16,11 +16,13 @@ if sys.platform == "win32":
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import os
+import subprocess
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from . import config, prompts
+from . import config, models as avatar_models, prompts
 from .pipeline import Pipeline
 from .prompts import DEFAULT_NAME as _DEFAULT_PROMPTSET
 
@@ -160,12 +162,7 @@ def _make_describer(on_progress=None, local_path=None):
 
 
 def _load_tag_names() -> list[str]:
-    yaml_path = config.get().model_dir / "model.yaml"
-    if not yaml_path.exists():
-        return []
-    with open(yaml_path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-    return list(raw.get("tags", {}).keys())
+    return avatar_models.load_tag_names(config.get().active_model)
 
 
 def _apply_prompt_fields(fields: dict) -> None:
@@ -422,6 +419,7 @@ async def lifespan(app: FastAPI):
         _pkg_log.addHandler(_h)
         _pkg_log.propagate = False
     prompts.set_dir(Path("prompts"))
+    avatar_models.set_dirs(config.get().model_dir, Path("user_models"))
     loop = asyncio.get_running_loop()
     if sys.platform == "win32":
         loop.set_exception_handler(_suppress_pipe_reset)
@@ -460,7 +458,7 @@ async def get_audio_chunk(gen: int, index: int):
 
 @app.get("/model-config")
 async def get_model_config():
-    yaml_path = config.get().model_dir / "model.yaml"
+    _, yaml_path = avatar_models.resolve(config.get().active_model)
     if not yaml_path.exists():
         return {}
     with open(yaml_path, encoding="utf-8") as f:
@@ -496,10 +494,36 @@ async def get_model_config():
 
 @app.get("/model")
 async def get_model():
-    model_path = config.get().model_dir / "model.glb"
+    model_path, _ = avatar_models.resolve(config.get().active_model)
     if not model_path.exists():
         raise HTTPException(status_code=404, detail="Model not found")
     return FileResponse(str(model_path), media_type="model/gltf-binary")
+
+
+@app.get("/avatar-models")
+async def get_avatar_models():
+    return {"names": avatar_models.list_names()}
+
+
+@app.get("/open_model_dir")
+async def open_model_dir():
+    path = avatar_models.get_user_dir().resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        subprocess.Popen(["explorer", str(path)])
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path)])
+    return {"ok": True}
+
+
+@app.post("/upload_model")
+async def upload_model(request: Request):
+    filename = request.headers.get("X-Filename", "model.glb")
+    data = await request.body()
+    name = await asyncio.to_thread(avatar_models.save_user_model, filename, data)
+    return {"name": name, "names": avatar_models.list_names()}
 
 
 @app.get("/animation/{filename}")

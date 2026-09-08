@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     openai_compat_api_key: str | None = None
     model_dir: Path = Path("../models")
     active_promptset: str = "default"
+    active_model: str = "default"
 
 
 _API_KEY_FIELDS = frozenset({"gemini_api_key", "openai_api_key", "openai_compat_api_key"})

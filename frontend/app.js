@@ -63,6 +63,11 @@ const cfgHighlightEnabled = document.getElementById("cfg-highlight-enabled");
 const cfgHlColor          = document.getElementById("cfg-hl-color");
 const cfgAutoplay         = document.getElementById("cfg-autoplay");
 const cfgHlPreview        = document.getElementById("cfg-hl-preview");
+const cfgAvatarModel        = document.getElementById("cfg-avatar-model");
+const avatarModelComboBtn   = document.getElementById("avatar-model-combo-btn");
+const avatarModelDropdown   = document.getElementById("avatar-model-dropdown");
+const openModelFolderBtn    = document.getElementById("open-model-folder-btn");
+const dropOverlay           = document.getElementById("drop-overlay");
 const cfgPromptset       = document.getElementById("cfg-promptset");
 const promptsetComboBtn  = document.getElementById("promptset-combo-btn");
 const promptsetDropdown  = document.getElementById("promptset-dropdown");
@@ -123,6 +128,11 @@ let vlmCatalogue = {};
 let ttsVoices = [];
 let promptsetNames = [];
 let currentPromptsetName = "default";
+let avatarModelNames = [];
+// Strip "user/" prefix for display while keeping the full name as the value.
+function _toModelCandidates(names) {
+  return names.map(n => n.startsWith("user/") ? { name: n, display_name: n.slice(5) } : n);
+}
 let autoplay = localStorage.getItem("lpc_autoplay") === "1";
 
 let currentFrameUrl = null;
@@ -607,6 +617,13 @@ function populateModal() {
   cfgSubtitleMode.checked = subtitleMode === "separated";
   cfgPromptset.value = currentPromptsetName;
   _updatePromptsetBtns();
+  cfgAvatarModel.value = currentConfig.active_model ?? "default";
+  if (port) {
+    fetch(`http://127.0.0.1:${port}/avatar-models`)
+      .then(r => r.json())
+      .then(d => { avatarModelNames = _toModelCandidates(d.names ?? ["default"]); })
+      .catch(() => {});
+  }
   cfgBgColor.value = bgColor;
   cfgBgPreview.style.background = bgColor;
   cfgFgColor.value = fgColor;
@@ -728,6 +745,20 @@ function _initCombo(inputEl, dropdownEl, wrapperEl, getCandidates, onSelect = nu
 
 _initCombo(vlmModelInput, vlmModelDropdown, vlmModelCombo, () => vlmCatalogue[vlmProviderSelect.value] ?? [], _onVlmModelSelected);
 _initCombo(ttsVoiceInput, ttsVoiceDropdown, ttsVoiceCombo, () => ttsVoices);
+_initCombo(cfgAvatarModel, avatarModelDropdown, document.getElementById("avatar-model-combo"), () => avatarModelNames);
+
+avatarModelComboBtn.addEventListener("mousedown", (e) => {
+  e.preventDefault(); // keep focus on input
+  if (avatarModelDropdown.classList.contains("hidden")) {
+    cfgAvatarModel.focus();
+  } else {
+    cfgAvatarModel.blur();
+  }
+});
+
+openModelFolderBtn.addEventListener("click", () => {
+  if (port) fetch(`http://127.0.0.1:${port}/open_model_dir`);
+});
 
 function setVolume(v, save = false) {
   volume = v;
@@ -760,6 +791,10 @@ barMuteBtn.addEventListener("click", () => {
   }
 });
 
+// Prevent focus shift on mousedown so blur doesn't fire before the click
+// handler reads input values (especially the avatar model combo).
+modalOk.addEventListener("mousedown", (e) => e.preventDefault());
+
 modalOk.addEventListener("click", () => {
   const overridesRaw = vlmModelOverridesInput.value.trim();
   if (overridesRaw) {
@@ -774,6 +809,7 @@ modalOk.addEventListener("click", () => {
     vlm_model: vlmModelInput.value.trim() || null,
     vlm_model_overrides: overridesRaw || null,
     tts_voice: ttsVoiceInput.value.trim() || "af_heart",
+    active_model: cfgAvatarModel.value.trim() || "default",
     pre_screenshot_delay: parseFloat(preScreenshotInput.value) || 2.0,
     difference_threshold: parseFloat(diffThreshInput.value) || 0.0,
     difference_measure: diffMeasureSelect.value || "mse",
@@ -835,6 +871,14 @@ modalOk.addEventListener("click", () => {
   localStorage.setItem("lpc_clip", selectedClip ? JSON.stringify(selectedClip) : "");
 
   send({ type: "set_config", data: updates, persist: true });
+
+  const avatarModelChanged = updates.active_model !== (currentConfig.active_model ?? "default");
+  if (avatarModelChanged) {
+    closeModal();
+    setPhase("Reloading for model change…", "up");
+    setTimeout(() => location.reload(), 500);
+    return;
+  }
 
   // Apply the prompt fields exactly as shown, whether or not they were saved as
   // a named promptset. Session-only — a Save persists them, a restart reverts.
@@ -994,7 +1038,7 @@ let _avatarInitStarted = false;
 async function initAvatarOnce() {
   if (_avatarInitStarted) return;
   _avatarInitStarted = true;
-  const modelCfg = await fetch(`http://127.0.0.1:${port}/model-config`).then(r => r.json()).catch(() => ({}));
+  const modelCfg = await fetch(`http://127.0.0.1:${port}/model-config?t=${Date.now()}`).then(r => r.json()).catch(() => ({}));
   window.initLipSync?.(modelCfg);
   window.initAvatar?.(modelCfg, port);
 }
@@ -1490,3 +1534,53 @@ dividerEl.addEventListener('mousedown', (e) => {
   document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseup', onUp);
 });
+
+// --- Avatar model drag-drop upload ---
+// dragover/drop are on document so they fire even if the overlay is not yet
+// visible. dragenter uses dataTransfer.types (not items) because WebView2 on
+// Windows often exposes empty items during dragenter for external file drags.
+let _dragDepth = 0;
+
+document.addEventListener("dragenter", (e) => {
+  if (!e.dataTransfer.types.includes("Files")) return;
+  if (++_dragDepth === 1) dropOverlay.classList.remove("hidden");
+});
+
+document.addEventListener("dragleave", () => {
+  if (--_dragDepth <= 0) { _dragDepth = 0; dropOverlay.classList.add("hidden"); }
+});
+
+document.addEventListener("dragover", (e) => {
+  if (!e.dataTransfer.types.includes("Files")) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+});
+
+document.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  _dragDepth = 0;
+  dropOverlay.classList.add("hidden");
+  if (!port) return;
+  const files = [...(e.dataTransfer.files ?? [])].filter(f => /\.(glb|vrm)$/i.test(f.name));
+  if (!files.length) return;
+  for (const file of files) await _uploadModelFile(file);
+});
+
+async function _uploadModelFile(file) {
+  setPhase(`Uploading ${file.name}…`, "up");
+  try {
+    const resp = await fetch(`http://127.0.0.1:${port}/upload_model`, {
+      method: "POST",
+      headers: { "X-Filename": file.name },
+      body: await file.arrayBuffer(),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    avatarModelNames = _toModelCandidates(data.names ?? []);
+    send({ type: "set_config", data: { active_model: data.name }, persist: true });
+    setPhase("Reloading for new model…", "up");
+    setTimeout(() => location.reload(), 500);
+  } catch (err) {
+    setPhase(`Upload failed: ${err}`, "none");
+  }
+}

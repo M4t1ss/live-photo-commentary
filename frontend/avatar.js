@@ -473,6 +473,8 @@ class ChannelMixer {
 // walk_out / hello clip lists are empty (model.yaml omits them), the
 // corresponding phase is skipped (playOnce calls onFinish immediately).
 
+let _pendingStart = false;
+
 function _onWalkInDone() {
   if (_lifecycleState !== 'walk_in') return;
   _lifecycleState = 'greeting';
@@ -511,7 +513,8 @@ function _onWalkOutDone() {
 }
 
 window.startAvatar = function () {
-  if (_lifecycleState !== 'hidden' || !sceneModel) return;
+  if (_lifecycleState !== 'hidden') return;
+  if (!sceneModel) { _pendingStart = true; return; }
   _lifecycleState = 'walk_in';
   sceneModel.visible = true;
 
@@ -819,7 +822,7 @@ window.initAvatar = function (config, port) {
   const loader = new GLTFLoader();
   loader.register((parser) => new VRMLoaderPlugin(parser));
   loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
-  loader.load(`http://127.0.0.1:${port}/model`, async (gltf) => {
+  loader.load(`http://127.0.0.1:${port}/model?t=${Date.now()}`, async (gltf) => {
     // const model = gltf.scene;
     const vrm = gltf.userData.vrm;
     currentVrm = vrm;
@@ -855,6 +858,7 @@ window.initAvatar = function (config, port) {
     ]);
     channelMixer = new ChannelMixer(mixer);
     sceneModel = model; // set only after channelMixer is ready; startAvatar() uses !sceneModel as its "fully initialized" guard
+    if (_pendingStart) { _pendingStart = false; window.startAvatar(); }
     // Idle starts after the walk_in → greeting sequence via startAvatar().
 
     const jawBoneName = config.jawBone ?? 'CC_Base_JawRoot';

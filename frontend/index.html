@@ -168,6 +168,22 @@
       </div><!-- #tab-capture -->
 
       <div id="tab-ui" class="hidden">
+      <section id="avatar-section">
+        <h3>Avatar</h3>
+        <label>Model
+          <div class="combo" id="avatar-model-combo">
+            <input id="cfg-avatar-model" type="text"
+                   placeholder="default" autocomplete="off" spellcheck="false" />
+            <button id="avatar-model-combo-btn" tabindex="-1">&#9662;</button>
+            <ul id="avatar-model-dropdown" class="combo-dropdown hidden"></ul>
+          </div>
+        </label>
+        <div class="hint-row">
+          <p class="hint">Drag a <code>.glb</code> or <code>.vrm</code> file onto the window to add a custom model.</p>
+          <button id="open-model-folder-btn" class="small-btn">Open folder</button>
+        </div>
+      </section>
+
       <section>
         <h3>Audio</h3>
         <label>Voice
@@ -299,6 +315,13 @@
     <div class="splash-spinner"></div>
     <div id="splash-status">Starting up…</div>
     <button id="splash-restart-btn" class="hidden">Restart Backend</button>
+  </div>
+
+  <div id="drop-overlay" class="hidden">
+    <div id="drop-overlay-inner">
+      <div id="drop-icon">&#8671;</div>
+      <div>Drop .glb / .vrm to add model</div>
+    </div>
   </div>
 
   <script src="lipsync.js"></script>
