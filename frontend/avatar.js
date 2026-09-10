@@ -24,14 +24,28 @@ let _walkOutClips = [];
 let _helloClips    = [];
 let _goodbyeClips  = [];
 let _dancingClips  = [];
+let _lonelyClips   = [];
+let _tagAnimClips  = {};   // tag name → [clip, ...] for one-shot emotion animations
 let sceneModel    = null;
 // hidden → walk_in → greeting → running → farewell → walking_out → hidden
 let _lifecycleState = 'hidden';
+// Sub-state within 'running': 'idle' | 'lonely' | 'dancing'
+let _runSubstate  = 'idle';
 let _idleToDanceSecs = 180;
 const AVATAR_FADE_SECS = 2;   // canvas opacity fade on spawn / despawn
-let _idleTimer  = 0;
-let _isDancing  = false;
-let _isTalking  = false;
+let _idleTimer       = 0;
+let _isTalking       = false;   // pipeline TTS overlay
+let _isSystemTalking = false;   // system message TTS overlay
+let _systemTtsActive = false;   // synthesis request in-flight
+let _greetingNeedsTransition = false;
+let _farewellNeedsTransition = false;
+let _isEmotionAnimPlaying    = false;
+let _requestSynthesis = null;   // fn(text) — set by app.js
+
+// Hardcoded messages — placeholders until configurable per-model.
+const WELCOME_MESSAGE = "Hello! I'm your interactive live commentary assistant. I'll be watching what you do and sharing my thoughts!";
+const FAREWELL_MESSAGE = "Goodbye! It was lovely watching over you today. See you next time!";
+const LONELY_MESSAGE   = "Hey... are you still there? It's getting a bit quiet. I'm starting to feel lonely.";
 
 // Model state — populated by initAvatar after the GLB loads.
 const morphMeshes = new Map();  // Map<Mesh, morphTargetDictionary>
@@ -56,7 +70,7 @@ let _gazeSpeed = 4.0;          // exponential-smoothing speed for neck/head (rad
 let _gazeSuspendDriver = null; // GazeSuspendDriver instance, or null if not configured
 
 let _visemeMap   = {};   // phoneme → {morph: value, ...}; used by showPhoneme
-let _tagsConfig  = {};   // tag name → {morph: value, ...}; used by setEmotion
+let _tagMorphs   = {};   // tag name → {morph: value, ...}; used by setEmotion
 let _emotionRampDuration = 0.3;  // seconds for a full 0→1 emotion sweep; reuses maxEnvelopeDuration
 
 // Scroll-wheel zoom — 0 = full body, 1 = head shot.
@@ -476,24 +490,59 @@ class ChannelMixer {
 
 let _pendingStart = false;
 
+// Starts a system TTS synthesis; returns true if the request was dispatched,
+// false if no synthesis callback is configured (transition should be skipped).
+function _startSystemTts(text) {
+  if (!_requestSynthesis) return false;
+  _systemTtsActive = true;
+  _requestSynthesis(text);
+  return true;
+}
+
 function _onWalkInDone() {
   if (_lifecycleState !== 'walk_in') return;
   _lifecycleState = 'greeting';
-  channelMixer.playOnce('greeting', _helloClips, { onFinish: _onGreetingDone });
+  _greetingNeedsTransition = false;
+  const hasTts = _startSystemTts(WELCOME_MESSAGE);
+  channelMixer.playOnce('greeting', _helloClips, { onFinish: hasTts ? _onHelloDone : _onGreetingDone });
+}
+
+function _onHelloDone() {
+  if (_lifecycleState !== 'greeting') return;
+  if (!_systemTtsActive) {
+    _onGreetingDone();
+  } else {
+    // Hello finished but message still in-flight — idle fills the wait.
+    _greetingNeedsTransition = true;
+    if (_idleClips.length) channelMixer.play('idle', _idleClips);
+  }
 }
 
 function _onGreetingDone() {
   if (_lifecycleState !== 'greeting') return;
   _lifecycleState = 'running';
+  _runSubstate = 'idle';
   _idleTimer = 0;
-  _isDancing = false;
   _isTalking = false;
+  channelMixer.stop('greeting');
   if (_idleClips.length) channelMixer.play('idle', _idleClips);
+}
+
+function _onGoodbyeDone() {
+  if (_lifecycleState !== 'farewell') return;
+  if (!_systemTtsActive) {
+    _onFarewellDone();
+  } else {
+    // Goodbye finished but message still in-flight — idle fills the wait.
+    _farewellNeedsTransition = true;
+    if (_idleClips.length) channelMixer.play('idle', _idleClips);
+  }
 }
 
 function _onFarewellDone() {
   if (_lifecycleState !== 'farewell') return;
   _lifecycleState = 'walking_out';
+  channelMixer.stop('idle');
   channelMixer.playOnce('walk_out', _walkOutClips, { onFinish: _onWalkOutDone });
 
   // Fade the canvas out so it hits 0 exactly as she's hidden — in case the
@@ -504,6 +553,19 @@ function _onFarewellDone() {
       canvas.style.transition = `opacity ${AVATAR_FADE_SECS}s linear`;
       canvas.style.opacity = '0';
     }, Math.max(0, walkOutSecs - AVATAR_FADE_SECS) * 1000);
+  }
+}
+
+function _onLonelyMessageDone() {
+  if (_lifecycleState !== 'running' || _runSubstate !== 'lonely') return;
+  if (_dancingClips.length) {
+    _runSubstate = 'dancing';
+    channelMixer.play('dancing', _dancingClips);
+    channelMixer.stop('lonely');
+  } else {
+    _runSubstate = 'idle';
+    channelMixer.play('idle', _idleClips);
+    channelMixer.stop('lonely');
   }
 }
 
@@ -536,15 +598,19 @@ window.stopAvatar = function () {
   if (_lifecycleState === 'hidden' || _lifecycleState === 'farewell' || _lifecycleState === 'walking_out') return;
   if (!channelMixer) { _lifecycleState = 'hidden'; if (sceneModel) sceneModel.visible = false; return; }
   _lifecycleState = 'farewell';
-  _isDancing = false;
+  _runSubstate = 'idle';
   _isTalking = false;
   _idleTimer = 0;
+  _farewellNeedsTransition = false;
   channelMixer.stop('idle');
   channelMixer.stop('talking');
   channelMixer.stop('dancing');
+  channelMixer.stop('lonely');
   channelMixer.stop('walk_in');
   channelMixer.stop('greeting');
-  channelMixer.playOnce('farewell', _goodbyeClips, { onFinish: _onFarewellDone });
+  channelMixer.stop('emotion_anim');
+  const hasTts = _startSystemTts(FAREWELL_MESSAGE);
+  channelMixer.playOnce('farewell', _goodbyeClips, { onFinish: hasTts ? _onGoodbyeDone : _onFarewellDone });
 };
 
 // ── Animation compositor ──────────────────────────────────────────────────────
@@ -676,24 +742,39 @@ const emotionDriver = compositor.register('emotion', new EmotionDriver(), 'add')
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-// Called by app.js when a new audio chunk starts playing.
+// Called by app.js when a pipeline TTS chunk starts or ends (audio=null).
 window.setLipSyncData = function (timeline, audio) {
   lipSyncDriver.setData(timeline, audio);
   _gazeSuspendDriver?.setTalking(!!audio);
-  if (channelMixer && _lifecycleState === 'running') {
-    if (audio && _talkingClips.length) {
-      if (_isDancing) { _isDancing = false; channelMixer.stop('dancing'); }
-      _idleTimer = 0;
-      _isTalking = true;
-      channelMixer.play('talking', _talkingClips);
-      channelMixer.stop('idle');
-    } else {
-      _isDancing = false;
-      if (_isTalking) _idleTimer = 0;
-      _isTalking = false;
+  if (!channelMixer || _lifecycleState !== 'running') return;
+  if (audio && _talkingClips.length) {
+    if (_runSubstate === 'lonely') {
+      // Pipeline TTS interrupts the lonely sequence.
+      _systemTtsActive = false;
+      window.cancelSystemTts?.();
+      channelMixer.stop('lonely');
+      _runSubstate = 'idle';
+    } else if (_runSubstate === 'dancing') {
+      channelMixer.stop('dancing');
+      _runSubstate = 'idle';
+    }
+    _idleTimer = 0;
+    _isTalking = true;
+    channelMixer.play('talking', _talkingClips);
+    channelMixer.stop('idle');
+  } else {
+    if (_isTalking) _idleTimer = 0;
+    _isTalking = false;
+    _isEmotionAnimPlaying = false;
+    channelMixer.stop('emotion_anim');
+    if (_runSubstate === 'idle') {
       channelMixer.play('idle', _idleClips);
       channelMixer.stop('talking');
-      channelMixer.stop('dancing');
+    } else if (_runSubstate === 'lonely') {
+      channelMixer.stop('talking');
+      if (!_systemTtsActive) _onLonelyMessageDone();
+    } else if (_runSubstate === 'dancing') {
+      channelMixer.stop('talking');
     }
   }
 };
@@ -703,8 +784,24 @@ window.setLipSyncData = function (timeline, audio) {
 // A plain object is also accepted (e.g. from the console while tuning
 // model.yaml) and used as the morph definition directly, bypassing tags config.
 window.setEmotion = function (tagOrMorphs) {
-  const morphs = typeof tagOrMorphs === 'string' ? (_tagsConfig[tagOrMorphs] ?? {}) : (tagOrMorphs ?? {});
+  const morphs = typeof tagOrMorphs === 'string' ? (_tagMorphs[tagOrMorphs] ?? {}) : (tagOrMorphs ?? {});
   emotionDriver.setMorphs(morphs);
+
+  if (typeof tagOrMorphs === 'string' && tagOrMorphs && tagOrMorphs !== 'neutral') {
+    const clips = _tagAnimClips[tagOrMorphs];
+    if (clips && clips.length && (_isTalking || _isSystemTalking) && channelMixer) {
+      _isEmotionAnimPlaying = true;
+      channelMixer.stop('talking');
+      channelMixer.playOnce('emotion_anim', clips, {
+        onFinish: () => {
+          _isEmotionAnimPlaying = false;
+          if ((_isTalking || _isSystemTalking) && _talkingClips.length && channelMixer) {
+            channelMixer.play('talking', _talkingClips);
+          }
+        }
+      });
+    }
+  }
 };
 
 // Resolves a trim bound to seconds: a number passes through unchanged; a string
@@ -790,10 +887,34 @@ async function _resolveAnimClips(namesOrPaths, port, gltf, vrm) {
   return resolved;
 }
 
+// Parse tags config — supports both old flat format ({ tag: {morph: v} }) and new
+// format ({ tag: { morphs: {...}, animation: [...] } }). Returns morph-only dict.
+function _parseTagMorphs(rawTags) {
+  const result = {};
+  for (const [tag, def] of Object.entries(rawTags)) {
+    if (!def || typeof def !== 'object') { result[tag] = {}; continue; }
+    result[tag] = ('morphs' in def || 'animation' in def) ? (def.morphs ?? {}) : def;
+  }
+  return result;
+}
+
+// Load one-shot animation clips for any tag that has an 'animation' array.
+async function _loadTagAnimClips(rawTags, port, gltf, vrm) {
+  const result = {};
+  for (const [tag, def] of Object.entries(rawTags)) {
+    if (def && typeof def === 'object' && Array.isArray(def.animation) && def.animation.length) {
+      const clips = await _resolveAnimClips(def.animation, port, gltf, vrm);
+      if (clips.length) result[tag] = clips;
+    }
+  }
+  return result;
+}
+
 // Called by app.js after it resolves the backend port and fetches /model-config.
 window.initAvatar = function (config, port) {
   _visemeMap  = config.visemeMap   ?? {};
-  _tagsConfig = config.tags        ?? {};
+  const rawTags = config.tags ?? {};
+  _tagMorphs  = _parseTagMorphs(rawTags);
   _gazeSpeed  = config.gazeSpeed   ?? 4.0;
   if (config.gazeSuspension) _gazeSuspendDriver = new GazeSuspendDriver(config.gazeSuspension);
   jawAxis     = config.jawAxis     ?? 'x';
@@ -852,7 +973,7 @@ window.initAvatar = function (config, port) {
     _headShotCam = { camY: size.y * 0.90, camZ: dist * 0.18, lookY: size.y * 0.90 };
 
     mixer = new THREE.AnimationMixer(model);
-    [_idleClips, _talkingClips, _walkInClips, _walkOutClips, _helloClips, _goodbyeClips, _dancingClips] = await Promise.all([
+    [_idleClips, _talkingClips, _walkInClips, _walkOutClips, _helloClips, _goodbyeClips, _dancingClips, _lonelyClips] = await Promise.all([
       _resolveAnimClips(config.idleAnimation,    port, gltf, vrm),
       _resolveAnimClips(config.talkingAnimation, port, gltf, vrm),
       _resolveAnimClips(config.walkInAnimation,  port, gltf, vrm),
@@ -860,7 +981,9 @@ window.initAvatar = function (config, port) {
       _resolveAnimClips(config.helloAnimation,   port, gltf, vrm),
       _resolveAnimClips(config.goodbyeAnimation, port, gltf, vrm),
       _resolveAnimClips(config.dancingAnimation, port, gltf, vrm),
+      _resolveAnimClips(config.lonelyAnimation,  port, gltf, vrm),
     ]);
+    _tagAnimClips = await _loadTagAnimClips(rawTags, port, gltf, vrm);
     channelMixer = new ChannelMixer(mixer);
     sceneModel = model; // set only after channelMixer is ready; startAvatar() uses !sceneModel as its "fully initialized" guard
     if (_pendingStart) { _pendingStart = false; window.startAvatar(); }
@@ -939,10 +1062,17 @@ resize();
 // ── Render loop ───────────────────────────────────────────────────────────────
 
 function _tickIdleTimer(delta) {
-  if (_lifecycleState !== 'running' || _isDancing) return;
+  if (_lifecycleState !== 'running' || _runSubstate !== 'idle' || _isTalking) return;
   _idleTimer += delta;
-  if (_idleTimer >= _idleToDanceSecs && _dancingClips.length) {
-    _isDancing = true;
+  if (_idleTimer < _idleToDanceSecs) return;
+  _idleTimer = 0;
+  if (_lonelyClips.length) {
+    _runSubstate = 'lonely';
+    channelMixer.play('lonely', _lonelyClips);
+    channelMixer.stop('idle');
+    if (!_startSystemTts(LONELY_MESSAGE)) _onLonelyMessageDone();
+  } else if (_dancingClips.length) {
+    _runSubstate = 'dancing';
     channelMixer.play('dancing', _dancingClips);
     channelMixer.stop('idle');
   }
@@ -991,6 +1121,48 @@ document.addEventListener('visibilitychange', () => {
 // Usage: showPhoneme('ɑ')  or  showPhoneme('p', 'ə', 0.5)
 window.setIdleToDanceSecs = function (secs) {
   _idleToDanceSecs = (Number.isFinite(secs) && secs > 0) ? secs : 180;
+};
+
+window.setSynthesisCallback = function (fn) {
+  _requestSynthesis = fn;
+};
+
+// Called by app.js for each system (non-pipeline) audio chunk.
+window.setSystemLipSyncData = function (timeline, audio) {
+  lipSyncDriver.setData(timeline, audio);
+  _gazeSuspendDriver?.setTalking(!!audio);
+  _isSystemTalking = !!audio;
+  if (channelMixer) {
+    if (audio && _talkingClips.length) {
+      channelMixer.play('talking', _talkingClips);
+    } else if (!audio) {
+      _isEmotionAnimPlaying = false;
+      channelMixer.stop('emotion_anim');
+      channelMixer.stop('talking');
+    }
+  }
+};
+
+// Called by app.js when the system audio queue is fully drained.
+window.systemAudioEnded = function () {
+  _isSystemTalking = false;
+  _systemTtsActive = false;
+  lipSyncDriver.setData([], null);
+  _gazeSuspendDriver?.setTalking(false);
+  if (channelMixer) {
+    _isEmotionAnimPlaying = false;
+    channelMixer.stop('emotion_anim');
+    channelMixer.stop('talking');
+  }
+  if (_greetingNeedsTransition) {
+    _greetingNeedsTransition = false;
+    _onGreetingDone();
+  } else if (_farewellNeedsTransition) {
+    _farewellNeedsTransition = false;
+    _onFarewellDone();
+  } else if (_lifecycleState === 'running' && _runSubstate === 'lonely') {
+    _onLonelyMessageDone();
+  }
 };
 
 window.showPhoneme = function (ph1, ph2 = null, ratio = 1.0) {

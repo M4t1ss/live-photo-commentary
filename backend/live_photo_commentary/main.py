@@ -21,6 +21,7 @@ import subprocess
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from . import config, models as avatar_models, prompts
 from .pipeline import Pipeline
@@ -456,6 +457,28 @@ async def get_audio_chunk(gen: int, index: int):
     return FileResponse(str(path), media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 
+@app.get("/audio/sys/{index}")
+async def get_sys_chunk(index: int):
+    path = pipeline.sys_chunk_path(index) if pipeline else None
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="System chunk not available")
+    return FileResponse(str(path), media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+
+class SynthesizeRequest(BaseModel):
+    text: str
+
+
+@app.post("/synthesize")
+async def synthesize(req: SynthesizeRequest):
+    if pipeline is None or pipeline.synthesizer is None:
+        await _send({"type": "system_tts_done"})
+        return {"status": "no_tts"}
+    loop = asyncio.get_running_loop()
+    pipeline.synthesize_system(req.text, loop)
+    return {"status": "started"}
+
+
 @app.get("/model-config")
 async def get_model_config():
     _, yaml_path = avatar_models.resolve(config.get().active_model)
@@ -484,6 +507,7 @@ async def get_model_config():
         "helloAnimation":   raw.get("animations", {}).get("hello"),
         "goodbyeAnimation": raw.get("animations", {}).get("goodbye"),
         "idleAnimation":    raw.get("animations", {}).get("idle"),
+        "lonelyAnimation":  raw.get("animations", {}).get("lonely"),
         "dancingAnimation": raw.get("animations", {}).get("dancing"),
         "talkingAnimation": raw.get("animations", {}).get("talking"),
         "gazeSpeed": raw.get("gaze_speed", 4.0),

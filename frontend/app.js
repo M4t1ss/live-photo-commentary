@@ -187,6 +187,14 @@ let _currentAudioGen = -1;
 // True from first chunk of a batch until sendSpeechEnded, to gate "Synthesizing" phase
 let firstChunkReceived = false;
 
+// System audio queue (welcome / farewell / lonely messages)
+let systemAudioQueue = [];
+let systemTtsAllReceived = false;
+let systemPlaying = false;
+let currentSystemAudio = null;
+let _systemTagTimer = null;
+let _systemTtsCancelled = false;
+
 let _startCycleTimer = null;
 
 let _subtitleTimer = null;
@@ -324,13 +332,28 @@ function handleMessage(data) {
       break;
     }
     case "chunk":
-      if (running) {
+      if (data.source === 'system') {
+        enqueueSystemChunk(data);
+      } else if (running) {
         if (data.gen !== undefined && data.gen !== _currentAudioGen) break;
         if (!firstChunkReceived) {
           firstChunkReceived = true;
           setPhase("Synthesizing…", "up");
         }
         enqueueChunk(data);
+      }
+      break;
+
+    case "system_tts_done":
+      if (_systemTtsCancelled) {
+        _systemTtsCancelled = false;
+        systemTtsAllReceived = false;
+        break;
+      }
+      systemTtsAllReceived = true;
+      if (!systemPlaying) {
+        systemTtsAllReceived = false;
+        window.systemAudioEnded?.();
       }
       break;
 
@@ -503,6 +526,60 @@ function sendSpeechEnded() {
     if (running) takeScreenshot();
   }, delayMs);
 }
+
+function enqueueSystemChunk({ audio_url, phonemes, tags }) {
+  if (_systemTtsCancelled) return;
+  systemAudioQueue.push({
+    audio_url,
+    timeline: buildTimeline(phonemes ?? []),
+    tags: tags ?? [],
+  });
+  if (!systemPlaying) playNextSystemAudio();
+}
+
+function playNextSystemAudio() {
+  if (_systemTagTimer !== null) { clearInterval(_systemTagTimer); _systemTagTimer = null; }
+  if (systemAudioQueue.length === 0) {
+    systemPlaying = false;
+    currentSystemAudio = null;
+    if (systemTtsAllReceived) {
+      systemTtsAllReceived = false;
+      window.systemAudioEnded?.();
+    }
+    return;
+  }
+  systemPlaying = true;
+  const { audio_url, timeline, tags } = systemAudioQueue.shift();
+  const audio = new Audio(`http://127.0.0.1:${port}${audio_url}`);
+  audio.volume = volume;
+  currentSystemAudio = audio;
+  window.setSystemLipSyncData?.(timeline, audio);
+  let sysTagIdx = 0;
+  _systemTagTimer = setInterval(() => {
+    if (!currentSystemAudio) return;
+    const t = currentSystemAudio.currentTime;
+    while (sysTagIdx < tags.length && tags[sysTagIdx].time <= t) {
+      window.setEmotion?.(tags[sysTagIdx].name);
+      sysTagIdx++;
+    }
+  }, 50);
+  audio.addEventListener("ended", playNextSystemAudio);
+  audio.addEventListener("error", playNextSystemAudio);
+  audio.play().catch(playNextSystemAudio);
+}
+
+window.cancelSystemTts = function() {
+  _systemTtsCancelled = true;
+  systemAudioQueue = [];
+  systemTtsAllReceived = false;
+  if (_systemTagTimer !== null) { clearInterval(_systemTagTimer); _systemTagTimer = null; }
+  if (currentSystemAudio) {
+    currentSystemAudio.pause();
+    currentSystemAudio.src = '';
+    currentSystemAudio = null;
+  }
+  systemPlaying = false;
+};
 
 async function takeScreenshot() {
   try {
@@ -1046,6 +1123,14 @@ async function initAvatarOnce() {
   const modelCfg = await fetch(`http://127.0.0.1:${port}/model-config?t=${Date.now()}`).then(r => r.json()).catch(() => ({}));
   window.initLipSync?.(modelCfg);
   window.initAvatar?.(modelCfg, port);
+  window.setSynthesisCallback?.((text) => {
+    _systemTtsCancelled = false;
+    fetch(`http://127.0.0.1:${port}/synthesize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    }).catch(() => window.systemAudioEnded?.());
+  });
 }
 
 main();

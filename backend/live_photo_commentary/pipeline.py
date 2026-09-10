@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import queue
 import threading
 from pathlib import Path
 from tempfile import mkdtemp
+
+_log = logging.getLogger(__name__)
 
 from PIL import Image
 
@@ -33,6 +36,7 @@ class Pipeline:
         self._vlm_q: queue.Queue = queue.Queue(maxsize=1)
         self._tts_q: queue.Queue = queue.Queue(maxsize=1)
         self._describer_lock = threading.Lock()
+        self._sys_chunks: dict[int, Path] = {}
 
         threading.Thread(target=self._vlm_worker, daemon=True).start()
         threading.Thread(target=self._tts_worker, daemon=True).start()
@@ -113,6 +117,45 @@ class Pipeline:
 
     def chunk_path(self, index: int) -> Path | None:
         return self._audio_chunks.get(index)
+
+    def sys_chunk_path(self, index: int) -> Path | None:
+        return self._sys_chunks.get(index)
+
+    def synthesize_system(self, text: str, loop: asyncio.AbstractEventLoop) -> None:
+        """Synthesize text in a background thread and stream system chunks over WS."""
+        threading.Thread(target=self._sys_tts_thread, args=(text, loop), daemon=True).start()
+
+    def _sys_tts_thread(self, text: str, loop: asyncio.AbstractEventLoop) -> None:
+        def _send(data):
+            asyncio.run_coroutine_threadsafe(self._broadcast_fn(data), loop)
+
+        if self.synthesizer is None:
+            _send({"type": "system_tts_done"})
+            return
+        self._sys_chunks.clear()
+        try:
+            for i, (audio, fragment, chunk_phonemes, word_timings, tag_timings) in enumerate(self.synthesizer(text)):
+                path = self._tmp_dir / f"sys_{i}.wav"
+                path.write_bytes(self.synthesizer.to_wav_bytes(audio))
+                self._sys_chunks[i] = path
+                msg = {
+                    "type": "chunk",
+                    "source": "system",
+                    "index": i,
+                    "text": fragment,
+                    "audio_url": f"/audio/sys/{i}",
+                    "phonemes": [[ph, round(t, 4)] for ph, t in chunk_phonemes],
+                    "tags": [{"name": name, "time": round(t, 4)} for name, t in tag_timings],
+                }
+                if word_timings is not None:
+                    msg["words"] = [
+                        {"s": s, "cs": cs, "ce": ce, "ts": ts, "te": te}
+                        for s, cs, ce, ts, te in word_timings
+                    ]
+                _send(msg)
+        except Exception as exc:
+            _log.warning("System TTS error: %s", exc)
+        _send({"type": "system_tts_done"})
 
     async def start_loop(self) -> None:
         if self._auto_loop_running:
