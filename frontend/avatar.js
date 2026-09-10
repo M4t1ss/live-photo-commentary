@@ -27,10 +27,11 @@ let _dancingClips  = [];
 let sceneModel    = null;
 // hidden → walk_in → greeting → running → farewell → walking_out → hidden
 let _lifecycleState = 'hidden';
-const IDLE_TO_DANCE_SECS = 180;
+let _idleToDanceSecs = 180;
 const AVATAR_FADE_SECS = 2;   // canvas opacity fade on spawn / despawn
 let _idleTimer  = 0;
 let _isDancing  = false;
+let _isTalking  = false;
 
 // Model state — populated by initAvatar after the GLB loads.
 const morphMeshes = new Map();  // Map<Mesh, morphTargetDictionary>
@@ -486,6 +487,7 @@ function _onGreetingDone() {
   _lifecycleState = 'running';
   _idleTimer = 0;
   _isDancing = false;
+  _isTalking = false;
   if (_idleClips.length) channelMixer.play('idle', _idleClips);
 }
 
@@ -535,6 +537,7 @@ window.stopAvatar = function () {
   if (!channelMixer) { _lifecycleState = 'hidden'; if (sceneModel) sceneModel.visible = false; return; }
   _lifecycleState = 'farewell';
   _isDancing = false;
+  _isTalking = false;
   _idleTimer = 0;
   channelMixer.stop('idle');
   channelMixer.stop('talking');
@@ -681,11 +684,13 @@ window.setLipSyncData = function (timeline, audio) {
     if (audio && _talkingClips.length) {
       if (_isDancing) { _isDancing = false; channelMixer.stop('dancing'); }
       _idleTimer = 0;
+      _isTalking = true;
       channelMixer.play('talking', _talkingClips);
       channelMixer.stop('idle');
     } else {
       _isDancing = false;
-      _idleTimer = 0;
+      if (_isTalking) _idleTimer = 0;
+      _isTalking = false;
       channelMixer.play('idle', _idleClips);
       channelMixer.stop('talking');
       channelMixer.stop('dancing');
@@ -936,7 +941,7 @@ resize();
 function _tickIdleTimer(delta) {
   if (_lifecycleState !== 'running' || _isDancing) return;
   _idleTimer += delta;
-  if (_idleTimer >= IDLE_TO_DANCE_SECS && _dancingClips.length) {
+  if (_idleTimer >= _idleToDanceSecs && _dancingClips.length) {
     _isDancing = true;
     channelMixer.play('dancing', _dancingClips);
     channelMixer.stop('idle');
@@ -984,6 +989,10 @@ document.addEventListener('visibilitychange', () => {
 // Show a phoneme shape, optionally blending to another.
 // ratio: 1.0 = fully ph1, 0.0 = fully ph2, 0.5 = blend (using max)
 // Usage: showPhoneme('ɑ')  or  showPhoneme('p', 'ə', 0.5)
+window.setIdleToDanceSecs = function (secs) {
+  _idleToDanceSecs = (Number.isFinite(secs) && secs > 0) ? secs : 180;
+};
+
 window.showPhoneme = function (ph1, ph2 = null, ratio = 1.0) {
   compositor.bypass = true;
   lipSyncDriver.setData([], null);

@@ -64,6 +64,7 @@ const cfgHlColor          = document.getElementById("cfg-hl-color");
 const cfgAutoplay         = document.getElementById("cfg-autoplay");
 const cfgHlPreview        = document.getElementById("cfg-hl-preview");
 const cfgAvatarModel        = document.getElementById("cfg-avatar-model");
+const cfgIdleToDance        = document.getElementById("cfg-idle-to-dance");
 const avatarModelComboBtn   = document.getElementById("avatar-model-combo-btn");
 const avatarModelDropdown   = document.getElementById("avatar-model-dropdown");
 const openModelFolderBtn    = document.getElementById("open-model-folder-btn");
@@ -407,6 +408,7 @@ function handleMessage(data) {
     case "config":
       currentConfig = data.data ?? {};
       configReceived = true;
+      window.setIdleToDanceSecs?.(currentConfig.idle_to_dance_secs ?? 180);
       checkReady();
       break;
 
@@ -618,6 +620,7 @@ function populateModal() {
   cfgPromptset.value = currentPromptsetName;
   _updatePromptsetBtns();
   cfgAvatarModel.value = currentConfig.active_model ?? "default";
+  cfgIdleToDance.value = currentConfig.idle_to_dance_secs ?? 180;
   if (port) {
     fetch(`http://127.0.0.1:${port}/avatar-models`)
       .then(r => r.json())
@@ -810,6 +813,7 @@ modalOk.addEventListener("click", () => {
     vlm_model_overrides: overridesRaw || null,
     tts_voice: ttsVoiceInput.value.trim() || "af_heart",
     active_model: cfgAvatarModel.value.trim() || "default",
+    idle_to_dance_secs: parseInt(cfgIdleToDance.value, 10) || 180,
     pre_screenshot_delay: parseFloat(preScreenshotInput.value) || 2.0,
     difference_threshold: parseFloat(diffThreshInput.value) || 0.0,
     difference_measure: diffMeasureSelect.value || "mse",
@@ -871,6 +875,7 @@ modalOk.addEventListener("click", () => {
   localStorage.setItem("lpc_clip", selectedClip ? JSON.stringify(selectedClip) : "");
 
   send({ type: "set_config", data: updates, persist: true });
+  window.setIdleToDanceSecs?.(updates.idle_to_dance_secs);
 
   const avatarModelChanged = updates.active_model !== (currentConfig.active_model ?? "default");
   if (avatarModelChanged) {

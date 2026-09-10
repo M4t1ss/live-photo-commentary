@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     model_dir: Path = Path("../models")
     active_promptset: str = "default"
     active_model: str = "default"
+    idle_to_dance_secs: int = 180
 
 
 _API_KEY_FIELDS = frozenset({"gemini_api_key", "openai_api_key", "openai_compat_api_key"})
