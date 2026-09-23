@@ -80,6 +80,9 @@ const cfgPromptText      = document.getElementById("cfg-prompt");
 const cfgFirstPrompt     = document.getElementById("cfg-first-prompt");
 const cfgHistoryPrompt   = document.getElementById("cfg-history-prompt");
 const cfgCompactPrompt   = document.getElementById("cfg-compact-prompt");
+const cfgGreetingPrompt  = document.getElementById("cfg-greeting-prompt");
+const cfgFarewellPrompt  = document.getElementById("cfg-farewell-prompt");
+const cfgLonelyPrompt    = document.getElementById("cfg-lonely-prompt");
 
 // Capture section (settings modal)
 const cfgMonitorSelect   = document.getElementById("cfg-monitor");
@@ -142,6 +145,8 @@ let currentFrameUrl = null;
 let configReceived = false;
 let modelsReceived = false;
 let backendReady    = false;
+let _modelsReady    = false;   // vlm + tts only; pregen status does not affect this
+let _stopPending    = false;   // true from user-Stop until walk-off animation completes
 
 function checkReady() {
   // Settings must stay reachable even if the VLM/TTS model failed to load
@@ -149,7 +154,7 @@ function checkReady() {
   // only the connection to the backend process itself gates the splash/settings.
   const connected = configReceived && modelsReceived;
   const ready = connected && backendReady;
-  startStopBtn.disabled = !ready;
+  startStopBtn.disabled = !ready || _stopPending;
   settingsBtn.disabled  = !connected;
   if (connected) dismissSplash();
   if (ready && !running) {
@@ -158,6 +163,8 @@ function checkReady() {
     } else {
       setPhase("Idle", "none");
     }
+  } else if (connected && !_modelsReady && running) {
+    stopCycle();
   } else if (connected && !running && !currentConfig.vlm_provider) {
     setPhase("Select a VLM model in Settings", "none");
   }
@@ -339,6 +346,7 @@ function handleMessage(data) {
         if (!firstChunkReceived) {
           firstChunkReceived = true;
           setPhase("Synthesizing…", "up");
+          window.onFrameAccepted?.();
         }
         enqueueChunk(data);
       }
@@ -361,7 +369,7 @@ function handleMessage(data) {
       if (running) {
         if (data.gen !== undefined && data.gen !== _currentAudioGen) break;
         ttsAllReceived = true;
-        if (!isPlaying) sendSpeechEnded();
+        if (!isPlaying && audioQueue.length === 0) sendSpeechEnded();
       }
       break;
 
@@ -377,6 +385,7 @@ function handleMessage(data) {
 
     case "skipped":
       setPhase(`Skipped  Δ=${data.diff}`, "none");
+      window.onFrameSkipped?.();
       break;
 
     case "busy":
@@ -390,6 +399,7 @@ function handleMessage(data) {
 
     case "ready_state":
       backendReady = data.ready;
+      _modelsReady = (data.vlm ?? true) && (data.tts ?? true);
       if (typeof data.running === "boolean" && data.running !== running) {
         setRunning(data.running);
       }
@@ -451,6 +461,9 @@ function handleMessage(data) {
       cfgFirstPrompt.value   = data.fields?.first_prompt ?? "";
       cfgHistoryPrompt.value = data.fields?.history_prompt ?? "";
       cfgCompactPrompt.value = data.fields?.compact_prompt ?? "";
+      cfgGreetingPrompt.value = data.fields?.greeting_prompt ?? "";
+      cfgFarewellPrompt.value = data.fields?.farewell_prompt ?? "";
+      cfgLonelyPrompt.value   = data.fields?.lonely_prompt ?? "";
       _updatePromptsetBtns();
       break;
 
@@ -491,6 +504,10 @@ function enqueueChunk({ audio_url, text, phonemes, words, tags }) {
 
 function playNext() {
   _clearSubtitleTimer();
+  if (systemPlaying) {
+    isPlaying = false;
+    return;
+  }
   if (audioQueue.length === 0) {
     isPlaying = false;
     currentAudio = null;
@@ -527,12 +544,14 @@ function sendSpeechEnded() {
   }, delayMs);
 }
 
-function enqueueSystemChunk({ audio_url, phonemes, tags }) {
+function enqueueSystemChunk({ audio_url, phonemes, tags, text, words }) {
   if (_systemTtsCancelled) return;
   systemAudioQueue.push({
     audio_url,
     timeline: buildTimeline(phonemes ?? []),
     tags: tags ?? [],
+    text: text ?? '',
+    words: words ?? null,
   });
   if (!systemPlaying) playNextSystemAudio();
 }
@@ -542,14 +561,18 @@ function playNextSystemAudio() {
   if (systemAudioQueue.length === 0) {
     systemPlaying = false;
     currentSystemAudio = null;
+    window.clearSubtitle?.();
     if (systemTtsAllReceived) {
       systemTtsAllReceived = false;
       window.systemAudioEnded?.();
     }
+    if (!isPlaying && audioQueue.length > 0) playNext();
     return;
   }
   systemPlaying = true;
-  const { audio_url, timeline, tags } = systemAudioQueue.shift();
+  const { audio_url, timeline, tags, text, words } = systemAudioQueue.shift();
+  _clearSubtitleTimer();
+  window.setSubtitleChunk?.(words, text);
   const audio = new Audio(`http://127.0.0.1:${port}${audio_url}`);
   audio.volume = volume;
   currentSystemAudio = audio;
@@ -558,6 +581,7 @@ function playNextSystemAudio() {
   _systemTagTimer = setInterval(() => {
     if (!currentSystemAudio) return;
     const t = currentSystemAudio.currentTime;
+    window.tickSubtitle?.(t);
     while (sysTagIdx < tags.length && tags[sysTagIdx].time <= t) {
       window.setEmotion?.(tags[sysTagIdx].name);
       sysTagIdx++;
@@ -579,6 +603,7 @@ window.cancelSystemTts = function() {
     currentSystemAudio = null;
   }
   systemPlaying = false;
+  window.clearSubtitle?.();
 };
 
 async function takeScreenshot() {
@@ -605,6 +630,8 @@ function stopCycle() {
   setRunning(false);
   resetAudio();
   window.clearSubtitle?.();
+  _stopPending = true;
+  startStopBtn.disabled = true;
   window.stopAvatar?.();
   setPhase("Idle", "none");
   if (!pendingStart) send({ type: "stop_cycle" });
@@ -967,11 +994,14 @@ modalOk.addEventListener("click", () => {
   send({
     type: "apply_prompts",
     fields: {
-      system_prompt:  cfgSystemPrompt.value,
-      prompt:         cfgPromptText.value,
-      first_prompt:   cfgFirstPrompt.value,
-      history_prompt: cfgHistoryPrompt.value,
-      compact_prompt: cfgCompactPrompt.value,
+      system_prompt:   cfgSystemPrompt.value,
+      prompt:          cfgPromptText.value,
+      first_prompt:    cfgFirstPrompt.value,
+      history_prompt:  cfgHistoryPrompt.value,
+      compact_prompt:  cfgCompactPrompt.value,
+      greeting_prompt: cfgGreetingPrompt.value,
+      farewell_prompt: cfgFarewellPrompt.value,
+      lonely_prompt:   cfgLonelyPrompt.value,
     },
   });
   closeModal();
@@ -1033,11 +1063,14 @@ promptsetSave.addEventListener("click", () => {
     type: "save_promptset",
     name,
     fields: {
-      system_prompt:  cfgSystemPrompt.value,
-      prompt:         cfgPromptText.value,
-      first_prompt:   cfgFirstPrompt.value,
-      history_prompt: cfgHistoryPrompt.value,
-      compact_prompt: cfgCompactPrompt.value,
+      system_prompt:   cfgSystemPrompt.value,
+      prompt:          cfgPromptText.value,
+      first_prompt:    cfgFirstPrompt.value,
+      history_prompt:  cfgHistoryPrompt.value,
+      compact_prompt:  cfgCompactPrompt.value,
+      greeting_prompt: cfgGreetingPrompt.value,
+      farewell_prompt: cfgFarewellPrompt.value,
+      lonely_prompt:   cfgLonelyPrompt.value,
     },
   });
 });
@@ -1123,12 +1156,15 @@ async function initAvatarOnce() {
   const modelCfg = await fetch(`http://127.0.0.1:${port}/model-config?t=${Date.now()}`).then(r => r.json()).catch(() => ({}));
   window.initLipSync?.(modelCfg);
   window.initAvatar?.(modelCfg, port);
-  window.setSynthesisCallback?.((text) => {
+  const _SYSTEM_MSG_NAMES = new Set(['greeting', 'farewell', 'lonely']);
+  window.onAvatarHidden = function () { _stopPending = false; checkReady(); };
+  window.setSynthesisCallback?.((payload) => {
     _systemTtsCancelled = false;
+    const body = _SYSTEM_MSG_NAMES.has(payload) ? { name: payload } : { text: payload };
     fetch(`http://127.0.0.1:${port}/synthesize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(body),
     }).catch(() => window.systemAudioEnded?.());
   });
 }

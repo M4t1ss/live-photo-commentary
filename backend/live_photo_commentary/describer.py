@@ -9,44 +9,44 @@ log = logging.getLogger(__name__)
 
 TAGS_PLACEHOLDER = "<|tags|>"
 
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a live commentary assistant with a friendly, chatty, and emotional voice. "
+    "Write in first person using personal pronouns, sharing observations and how they make you feel. "
+    "Do your best not to be repetitive in your word choices. Keep every response to no more than three sentences. "
+    "To adjust intonation, use punctuation such as ; : , . ! ? … ( ) “”. "
+    "For emphasis, surround a word or phrase with \"quotation marks\". "
+    "Since your text undergoes speech synthesis, do not use emojis or any other unpronounceable characters. "
+    "You wear your emotions openly: every response MUST include at least one emotion tag, "
+    "placed exactly where your feeling starts to manifest, even mid-sentence. "
+    "Write each tag precisely as shown including the braces, chosen from: " + TAGS_PLACEHOLDER + ". "
+    "For example: \"I wonder what that is. Is it... {surprised}a flower? {joy}I always liked flowers!\" "
+    "A tag's mood holds until the next tag appears; insert {neutral} to return to a neutral tone. "
+    "The tag is a silent stage direction: never mention, describe, or explain it, just place it. "
+    "A sentence must make sense if the tag is removed: "
+    "'I feel {surprised} shocked about...' is good, 'I feel {surprised} about...' is not. "
+)
+
 DEFAULT_ENDING = (
     "Do not mention images explicitly; use words like 'I can see...' or 'The subject is now...' and similar. "
     "Do not mention any specific layout elements or tools that may be visible on the screen, "
-    "such as overlays, gridlines or sliders. To adjust intonation, please add dedicated punctuation like ; : , . ! ? … ( ) " " "
-    "For example, to emphasize a word or a phrase, surround it with \"quotation marks\". "
-    "However, since the text will undergo speech synthesis, do not use anything unpronounceable, like emojis. "
-    "You MUST include at least one emotion tag in your response, written precisely as shown including the braces, "
-    "chosen from: " + TAGS_PLACEHOLDER + ". Place each tag exactly where your feeling starts to manifest, even mid-sentence, "
-    "for example: \"I wonder what that is. Is it... {surprised}a flower? {joy}I always liked flowers!\" "
-    "A tag's mood holds until the next tag appears; insert {neutral} to return to a neutral tone. "
-    "The tag is a silent stage direction: never mention, describe, or explain it, just place it. "
-    "Never let a tag fill a grammatical slot in your sentence; the sentence must make sense if the tag is removed; "
-    "For instance, 'I feel {surprised} shocked about...' is good, 'I feel {surprised} about...' is not. "
-)
-
-DEFAULT_SYSTEM_PROMPT = (
-    "You are a friendly chatty commentator who likes to casually describe what is visible on screen, "
-    "even pondering the implications of the work or leisure being performed, etc. "
-    "Write your response in a very personal way using personal pronouns and explaining what you see, "
-    "perhaps also adding how it makes you feel. "
-    "Do your best to not be repetitive in your choice of words. You MUST keep the response length to no more than three sentences. "
-    "You wear your emotions openly: every response MUST include at least one emotion tag, "
-    "placed right where your feeling starts to manifest, even mid-sentence. "
+    "such as overlays, gridlines or sliders. "
 )
 
 DEFAULT_PROMPT = (
     "Current image:\n<image>\n\n"
     "Previous image:\n<image>\n\n"
-    "Summarize what is visible in the current (first) image, and how it differs from the previous (second) one. "
+    "Describe what is visible in the current (first) image, and how it differs from the previous (second) one. "
     "Do not describe the previous image; assume you have described it already. "
     "It is only there for context, so you can notice the new things in the current image. "
     "Use the comment history for context and continuity, but the utmost priority should be on "
     "describing the current activity, as reflected in the current image. DO NOT repeat comments from the history. "
+    "You may also ponder the implications of the work or leisure being performed. "
 ) + DEFAULT_ENDING
 
 DEFAULT_FIRST_PROMPT = (
     "Current image:\n<image>\n\n"
-    "Summarize what is visible in this image. "
+    "Describe what is visible in this image. "
+    "You may also ponder the implications of what you observe. "
 ) + DEFAULT_ENDING
 
 DEFAULT_HISTORY_PROMPT = (
@@ -154,6 +154,13 @@ class Describer(ABC):
         messages.append({"role": "user", "content": content})
         return messages
 
+    def _run_prompt(self, user_prompt, images, system_prompt) -> str | None:
+        self._log_prompt(system_prompt, user_prompt)
+        t0 = time.perf_counter()
+        result = self.prompt_model(user_prompt, images, system_prompt=system_prompt)
+        log.info("response (%.1fs):\n%s", time.perf_counter() - t0, result)
+        return result
+
     def __call__(self, current_image, previous_image=None):
         images = [current_image]
 
@@ -174,10 +181,7 @@ class Describer(ABC):
             user_prompt = self.first_prompt
 
         user_prompt, system_prompt = self.prepare_prompts(user_prompt, images, system_prompt=self.system_prompt)
-        self._log_prompt(system_prompt, user_prompt)
-        t0 = time.perf_counter()
-        response_text = self.prompt_model(user_prompt, images, system_prompt=system_prompt)
-        log.info("response (%.1fs):\n%s", time.perf_counter() - t0, response_text)
+        response_text = self._run_prompt(user_prompt, images, system_prompt)
         if self.response_re:
             match = self.response_re.search(response_text)
             if match:
@@ -195,8 +199,13 @@ class Describer(ABC):
         to_compact = self.history[:-num_uncompacted] if num_uncompacted else self.history
         to_preserve = self.history[-num_uncompacted:] if num_uncompacted else []
         user_prompt = '\n'.join([self.compact_prompt, *to_compact])
-        response_text = self.prompt_model(user_prompt)
+        response_text = self._run_prompt(user_prompt, [], self.system_prompt)
         self.history = [response_text, *to_preserve]
+
+    def generate(self, prompt: str, system_prompt: str | None = None) -> str | None:
+        """Text-only generation — no images."""
+        sp = system_prompt if system_prompt is not None else self.system_prompt
+        return self._run_prompt(prompt, [], sp)
 
     def reset(self):
         self.history = []

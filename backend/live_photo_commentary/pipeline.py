@@ -37,6 +37,8 @@ class Pipeline:
         self._tts_q: queue.Queue = queue.Queue(maxsize=1)
         self._describer_lock = threading.Lock()
         self._sys_chunks: dict[int, Path] = {}
+        self._pregen_chunks: dict[str, dict[int, Path]] = {}
+        self._pregen_messages: dict[str, list[dict]] = {}
 
         threading.Thread(target=self._vlm_worker, daemon=True).start()
         threading.Thread(target=self._tts_worker, daemon=True).start()
@@ -120,6 +122,86 @@ class Pipeline:
 
     def sys_chunk_path(self, index: int) -> Path | None:
         return self._sys_chunks.get(index)
+
+    def pregen_sys_chunk_path(self, name: str, index: int) -> Path | None:
+        return self._pregen_chunks.get(name, {}).get(index)
+
+    def pregen_system_messages(
+        self,
+        prompts: dict[str, str],
+        system_prompt: str,
+        loop: asyncio.AbstractEventLoop,
+        on_done,
+    ) -> None:
+        """Pre-generate named system messages (greeting/farewell/lonely) in a thread."""
+        threading.Thread(
+            target=self._pregen_thread,
+            args=(prompts, system_prompt, loop, on_done),
+            daemon=True,
+        ).start()
+
+    def _pregen_thread(self, prompts, system_prompt, loop, on_done) -> None:
+        describer = self.describer
+        synthesizer = self.synthesizer
+        # Reset so stale clips don't survive if one generation fails mid-way.
+        self._pregen_chunks = {}
+        self._pregen_messages = {}
+        if describer is None or synthesizer is None:
+            asyncio.run_coroutine_threadsafe(on_done(), loop)
+            return
+        for name, prompt in prompts.items():
+            if not prompt.strip():
+                continue
+            try:
+                text = describer.generate(prompt, system_prompt=system_prompt)
+            except Exception as exc:
+                _log.warning("System message generation for %r failed: %s", name, exc)
+                continue
+            if not text:
+                continue
+            try:
+                msgs = []
+                audio_files = {}
+                for i, (audio, fragment, chunk_phonemes, word_timings, tag_timings) in enumerate(synthesizer(text)):
+                    path = self._tmp_dir / f"pregen_{name}_{i}.wav"
+                    path.write_bytes(synthesizer.to_wav_bytes(audio))
+                    audio_files[i] = path
+                    msg = {
+                        "type": "chunk",
+                        "source": "system",
+                        "index": i,
+                        "text": fragment,
+                        "audio_url": f"/audio/pregen/{name}/{i}",
+                        "phonemes": [[ph, round(t, 4)] for ph, t in chunk_phonemes],
+                        "tags": [{"name": n, "time": round(t, 4)} for n, t in tag_timings],
+                    }
+                    if word_timings is not None:
+                        msg["words"] = [
+                            {"s": s, "cs": cs, "ce": ce, "ts": ts, "te": te}
+                            for s, cs, ce, ts, te in word_timings
+                        ]
+                    msgs.append(msg)
+                self._pregen_chunks[name] = audio_files
+                self._pregen_messages[name] = msgs
+            except Exception as exc:
+                _log.warning("System message synthesis for %r failed: %s", name, exc)
+        asyncio.run_coroutine_threadsafe(on_done(), loop)
+
+    def play_system_message(self, name: str, loop: asyncio.AbstractEventLoop) -> None:
+        """Stream pre-generated chunks for a named message over the WebSocket."""
+        threading.Thread(
+            target=self._play_pregen_thread,
+            args=(name, loop),
+            daemon=True,
+        ).start()
+
+    def _play_pregen_thread(self, name: str, loop: asyncio.AbstractEventLoop) -> None:
+        def _send(data):
+            asyncio.run_coroutine_threadsafe(self._broadcast_fn(data), loop)
+
+        for msg in self._pregen_messages.get(name, []):
+            _send(msg)
+        _send({"type": "system_tts_done"})
 
     def synthesize_system(self, text: str, loop: asyncio.AbstractEventLoop) -> None:
         """Synthesize text in a background thread and stream system chunks over WS."""

@@ -34,6 +34,7 @@ let _runSubstate  = 'idle';
 let _idleToDanceSecs = 180;
 const AVATAR_FADE_SECS = 2;   // canvas opacity fade on spawn / despawn
 let _idleTimer       = 0;
+let _screenIdle      = false;   // true while frames are being skipped (diff threshold not met)
 let _isTalking       = false;   // pipeline TTS overlay
 let _isSystemTalking = false;   // system message TTS overlay
 let _systemTtsActive = false;   // synthesis request in-flight
@@ -42,10 +43,6 @@ let _farewellNeedsTransition = false;
 let _isEmotionAnimPlaying    = false;
 let _requestSynthesis = null;   // fn(text) — set by app.js
 
-// Hardcoded messages — placeholders until configurable per-model.
-const WELCOME_MESSAGE = "Hello! I'm your interactive live commentary assistant. I'll be watching what you do and sharing my thoughts!";
-const FAREWELL_MESSAGE = "Goodbye! It was lovely watching over you today. See you next time!";
-const LONELY_MESSAGE   = "Hey... are you still there? It's getting a bit quiet. I'm starting to feel lonely.";
 
 // Model state — populated by initAvatar after the GLB loads.
 const morphMeshes = new Map();  // Map<Mesh, morphTargetDictionary>
@@ -503,7 +500,7 @@ function _onWalkInDone() {
   if (_lifecycleState !== 'walk_in') return;
   _lifecycleState = 'greeting';
   _greetingNeedsTransition = false;
-  const hasTts = _startSystemTts(WELCOME_MESSAGE);
+  const hasTts = _startSystemTts('greeting');
   channelMixer.playOnce('greeting', _helloClips, { onFinish: hasTts ? _onHelloDone : _onGreetingDone });
 }
 
@@ -523,6 +520,7 @@ function _onGreetingDone() {
   _lifecycleState = 'running';
   _runSubstate = 'idle';
   _idleTimer = 0;
+  _screenIdle = false;
   _isTalking = false;
   channelMixer.stop('greeting');
   if (_idleClips.length) channelMixer.play('idle', _idleClips);
@@ -574,6 +572,7 @@ function _onWalkOutDone() {
   if (sceneModel) sceneModel.visible = false;
   canvas.style.transition = 'none';
   canvas.style.opacity = '1';
+  window.onAvatarHidden?.();
 }
 
 window.startAvatar = function () {
@@ -595,8 +594,11 @@ window.startAvatar = function () {
 };
 
 window.stopAvatar = function () {
-  if (_lifecycleState === 'hidden' || _lifecycleState === 'farewell' || _lifecycleState === 'walking_out') return;
-  if (!channelMixer) { _lifecycleState = 'hidden'; if (sceneModel) sceneModel.visible = false; return; }
+  if (_lifecycleState === 'hidden' || _lifecycleState === 'farewell' || _lifecycleState === 'walking_out') {
+    if (_lifecycleState === 'hidden') window.onAvatarHidden?.();
+    return;
+  }
+  if (!channelMixer) { _lifecycleState = 'hidden'; if (sceneModel) sceneModel.visible = false; window.onAvatarHidden?.(); return; }
   _lifecycleState = 'farewell';
   _runSubstate = 'idle';
   _isTalking = false;
@@ -609,7 +611,7 @@ window.stopAvatar = function () {
   channelMixer.stop('walk_in');
   channelMixer.stop('greeting');
   channelMixer.stop('emotion_anim');
-  const hasTts = _startSystemTts(FAREWELL_MESSAGE);
+  const hasTts = _startSystemTts('farewell');
   channelMixer.playOnce('farewell', _goodbyeClips, { onFinish: hasTts ? _onGoodbyeDone : _onFarewellDone });
 };
 
@@ -1063,6 +1065,7 @@ resize();
 
 function _tickIdleTimer(delta) {
   if (_lifecycleState !== 'running' || _runSubstate !== 'idle' || _isTalking) return;
+  if (!_screenIdle) return;
   _idleTimer += delta;
   if (_idleTimer < _idleToDanceSecs) return;
   _idleTimer = 0;
@@ -1070,7 +1073,7 @@ function _tickIdleTimer(delta) {
     _runSubstate = 'lonely';
     channelMixer.play('lonely', _lonelyClips);
     channelMixer.stop('idle');
-    if (!_startSystemTts(LONELY_MESSAGE)) _onLonelyMessageDone();
+    if (!_startSystemTts('lonely')) _onLonelyMessageDone();
   } else if (_dancingClips.length) {
     _runSubstate = 'dancing';
     channelMixer.play('dancing', _dancingClips);
@@ -1121,6 +1124,17 @@ document.addEventListener('visibilitychange', () => {
 // Usage: showPhoneme('ɑ')  or  showPhoneme('p', 'ə', 0.5)
 window.setIdleToDanceSecs = function (secs) {
   _idleToDanceSecs = (Number.isFinite(secs) && secs > 0) ? secs : 180;
+};
+
+window.onFrameSkipped  = function () { _screenIdle = true; };
+window.onFrameAccepted = function () {
+  _screenIdle = false;
+  _idleTimer = 0;
+  if (_lifecycleState === 'running' && _runSubstate === 'dancing' && channelMixer) {
+    _runSubstate = 'idle';
+    channelMixer.play('idle', _idleClips);
+    channelMixer.stop('dancing');
+  }
 };
 
 window.setSynthesisCallback = function (fn) {

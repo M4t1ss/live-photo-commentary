@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.16"
+version = "0.1.17"
 description = "Interactive Live Commentary Assistant desktop app"
 authors = ["Goran Topic", "Matiss Rikters"]
 license = "MIT"

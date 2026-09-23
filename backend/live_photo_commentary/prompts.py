@@ -11,7 +11,18 @@ from .describer import (
 )
 
 FIELDS = ["system_prompt", "prompt", "first_prompt", "history_prompt", "compact_prompt"]
+SYSTEM_MESSAGE_FIELDS = ["greeting_prompt", "farewell_prompt", "lonely_prompt"]
 DEFAULT_NAME = "default"
+
+_DEFAULT_GREETING_PROMPT = (
+    "Give a single short sentence greeting to introduce yourself as a live commentary assistant."
+)
+_DEFAULT_FAREWELL_PROMPT = (
+    "Give a single short sentence farewell for when you are done observing."
+)
+_DEFAULT_LONELY_PROMPT = (
+    "Give a single short sentence expressing that you are bored waiting for the user."
+)
 
 _dir: Path = Path("prompts")
 
@@ -29,6 +40,9 @@ def defaults() -> dict:
         "first_prompt": DEFAULT_FIRST_PROMPT,
         "history_prompt": DEFAULT_HISTORY_PROMPT,
         "compact_prompt": DEFAULT_COMPACT_PROMPT,
+        "greeting_prompt": _DEFAULT_GREETING_PROMPT,
+        "farewell_prompt": _DEFAULT_FAREWELL_PROMPT,
+        "lonely_prompt": _DEFAULT_LONELY_PROMPT,
     }
 
 
@@ -46,14 +60,14 @@ def load(name: str) -> dict:
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     base = defaults()
-    return {k: data.get(k, base[k]) for k in FIELDS}
+    return {k: data.get(k, base[k]) for k in FIELDS + SYSTEM_MESSAGE_FIELDS}
 
 
 def save(name: str, fields: dict) -> None:
     if name == DEFAULT_NAME:
         raise ValueError("Cannot overwrite the default promptset")
     path = _dir / f"{name}.yaml"
-    data = {k: fields.get(k, "") for k in FIELDS}
+    data = {k: fields.get(k, "") for k in FIELDS + SYSTEM_MESSAGE_FIELDS}
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False, width=10000)
 

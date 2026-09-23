@@ -36,10 +36,13 @@ pipeline: Pipeline | None = None
 _model_errors: dict[str, str] = {}      # "vlm" | "tts" → last error message
 _vlm_ready: bool = False
 _tts_ready: bool = False
+_system_messages_ready: bool = True     # False while pre-generating greeting/farewell/lonely
+_pregen_seq: int = 0                    # Incremented each pregen; on_done ignores stale completions
 # Ad-hoc prompt fields applied via the Settings "OK" button — overrides the
 # active promptset on the live describer for this session only (not persisted;
 # cleared by an explicit promptset load/delete).
 _prompt_override: dict | None = None
+_sys_msg_override: dict[str, str] = {}  # system message field overrides from Settings "OK"
 
 # Serialises code that writes into the running venv's site-packages
 # (_reinit_synthesizer: `uv pip install` of the Japanese deps, plus misaki's
@@ -66,11 +69,48 @@ def _send_threadsafe(data: dict, loop: asyncio.AbstractEventLoop) -> None:
 async def _send_ready_state() -> None:
     await _send({
         "type": "ready_state",
-        "ready": _vlm_ready and _tts_ready,
+        "ready": _vlm_ready and _tts_ready and _system_messages_ready,
         "vlm": _vlm_ready,
         "tts": _tts_ready,
+        "system_messages": _system_messages_ready,
         "running": pipeline.running if pipeline is not None else False,
     })
+
+
+async def _trigger_pregen() -> None:
+    global _system_messages_ready, _pregen_seq
+    if pipeline is None or pipeline.describer is None or pipeline.synthesizer is None:
+        return
+    cfg = config.get()
+    all_fields = prompts.load(cfg.active_promptset)
+    if _prompt_override:
+        all_fields.update({k: v for k, v in _prompt_override.items()})
+    all_fields.update(_sys_msg_override)
+    sys_msg_prompts = {
+        k.removesuffix("_prompt"): all_fields.get(k, "")
+        for k in prompts.SYSTEM_MESSAGE_FIELDS
+    }
+    if not any(v.strip() for v in sys_msg_prompts.values()):
+        _system_messages_ready = True
+        await _send_ready_state()
+        return
+    _system_messages_ready = False
+    _pregen_seq += 1
+    seq = _pregen_seq
+    await _send({"type": "load_progress", "message": "Generating messages…"})
+    await _send_ready_state()
+    subst = prompts.substitute_tags(all_fields, _load_tag_names())
+    system_prompt = subst.get("system_prompt", "")
+    loop = asyncio.get_running_loop()
+
+    async def _on_done():
+        global _system_messages_ready
+        if _pregen_seq != seq:
+            return
+        _system_messages_ready = True
+        await _send_ready_state()
+
+    pipeline.pregen_system_messages(sys_msg_prompts, system_prompt, loop, _on_done)
 
 
 def _load_vlm_catalogue() -> dict[str, list]:
@@ -362,6 +402,8 @@ async def _reinit_describer() -> None:
         _vlm_ready = True
         await _send({"type": "model_ready", "model": "vlm"})
         await _send_ready_state()
+        if _tts_ready:
+            asyncio.create_task(_trigger_pregen())
     except Exception as exc:
         msg = f"VLM init failed: {_exc_summary(exc)}"
         _model_errors["vlm"] = msg
@@ -389,6 +431,8 @@ async def _reinit_synthesizer() -> None:
         _tts_ready = True
         await _send({"type": "model_ready", "model": "tts"})
         await _send_ready_state()
+        if _vlm_ready:
+            asyncio.create_task(_trigger_pregen())
     except Exception as exc:
         msg = f"TTS init failed: {_exc_summary(exc)}"
         _model_errors["tts"] = msg
@@ -466,17 +510,35 @@ async def get_sys_chunk(index: int):
 
 
 class SynthesizeRequest(BaseModel):
-    text: str
+    text: str | None = None
+    name: str | None = None
 
 
 @app.post("/synthesize")
 async def synthesize(req: SynthesizeRequest):
-    if pipeline is None or pipeline.synthesizer is None:
-        await _send({"type": "system_tts_done"})
-        return {"status": "no_tts"}
     loop = asyncio.get_running_loop()
-    pipeline.synthesize_system(req.text, loop)
-    return {"status": "started"}
+    if req.name:
+        if pipeline is None or not pipeline._pregen_messages.get(req.name):
+            await _send({"type": "system_tts_done"})
+            return {"status": "no_pregen"}
+        pipeline.play_system_message(req.name, loop)
+        return {"status": "playing"}
+    if req.text:
+        if pipeline is None or pipeline.synthesizer is None:
+            await _send({"type": "system_tts_done"})
+            return {"status": "no_tts"}
+        pipeline.synthesize_system(req.text, loop)
+        return {"status": "started"}
+    await _send({"type": "system_tts_done"})
+    return {"status": "empty"}
+
+
+@app.get("/audio/pregen/{name}/{index}")
+async def get_pregen_chunk(name: str, index: int):
+    path = pipeline.pregen_sys_chunk_path(name, index) if pipeline else None
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="Pre-generated chunk not available")
+    return FileResponse(str(path), media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/model-config")
@@ -578,7 +640,7 @@ async def _send_models() -> None:
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    global _ws, _prompt_override
+    global _ws, _prompt_override, _sys_msg_override
     await ws.accept()
     _ws = ws
     await _send({"type": "config", "data": config.as_dict()})
@@ -644,10 +706,16 @@ async def websocket_endpoint(ws: WebSocket):
                     } or None
                     if _prompt_override:
                         _apply_prompt_fields(_prompt_override)
+                    _sys_msg_override = {
+                        k: v for k, v in given.items()
+                        if k in prompts.SYSTEM_MESSAGE_FIELDS and isinstance(v, str)
+                    }
+                    asyncio.create_task(_trigger_pregen())
                 case "load_promptset":
                     name = (data.get("name") or "").strip() or _DEFAULT_PROMPTSET
                     fields = prompts.load(name)
                     _prompt_override = None
+                    _sys_msg_override = {}
                     config.apply({"active_promptset": name})
                     await asyncio.to_thread(config.persist, Path(".env"))
                     _apply_promptset(name)
@@ -659,6 +727,7 @@ async def websocket_endpoint(ws: WebSocket):
                         "fields": fields,
                         "names": prompts.list_names(),
                     })
+                    asyncio.create_task(_trigger_pregen())
                 case "save_promptset":
                     name = (data.get("name") or "").strip()
                     if not name or name == _DEFAULT_PROMPTSET:
@@ -677,9 +746,11 @@ async def websocket_endpoint(ws: WebSocket):
                         prompts.delete(name)
                         if was_active:
                             _prompt_override = None
+                            _sys_msg_override = {}
                             config.apply({"active_promptset": _DEFAULT_PROMPTSET})
                             await asyncio.to_thread(config.persist, Path(".env"))
                             _apply_promptset(_DEFAULT_PROMPTSET)
+                            asyncio.create_task(_trigger_pregen())
                         active = config.get().active_promptset
                         await _send({
                             "type": "promptset_loaded",
