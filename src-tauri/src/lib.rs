@@ -13,6 +13,17 @@ mod screenshot;
 mod util;
 mod uv;
 
+// Phase 1 of RUSTIFICATION.md: pure Rust ports with unit tests, not yet wired
+// into the running app (that starts in phase 3/4), hence `allow(dead_code)`.
+#[allow(dead_code)]
+mod avatar;
+#[allow(dead_code)]
+mod catalogue;
+#[allow(dead_code)]
+mod config;
+#[allow(dead_code)]
+mod promptsets;
+
 use backend::{BackendProcess, BackendState};
 use cuda::InstallState;
 use screenshot::ScreenshotState;
