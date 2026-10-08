@@ -89,6 +89,7 @@ enum VlmJob<D> {
     Reset,
     /// Replies once dequeued; lets a caller wait for everything sent before
     /// it to have been fully processed (tests only, see `flush_vlm`).
+    #[cfg_attr(not(test), allow(dead_code))]
     Sync(mpsc::Sender<()>),
 }
 
@@ -100,6 +101,7 @@ enum TtsJob<S> {
     Collect { text: String, reply: mpsc::Sender<Result<Vec<ChunkEvent>, String>> },
     SetSynthesizer(Option<S>, mpsc::Sender<()>),
     /// See [`VlmJob::Sync`].
+    #[cfg_attr(not(test), allow(dead_code))]
     Sync(mpsc::Sender<()>),
 }
 
@@ -315,6 +317,10 @@ pub struct Pipeline<D, S> {
     running: Arc<AtomicBool>,
     frame_state: Mutex<FrameState>,
     pending_frame: Arc<AtomicBool>,
+    /// Only the clone handed to the TTS worker is read in production; this
+    /// copy exists so tests can simulate "already queued" directly (see the
+    /// `tts_busy_error...` test).
+    #[cfg_attr(not(test), allow(dead_code))]
     pending_cycle_tts: Arc<AtomicBool>,
     pregen_messages: Mutex<HashMap<String, Vec<ChunkEvent>>>,
     vlm_tx: mpsc::Sender<VlmJob<D>>,
@@ -392,6 +398,13 @@ where
     /// (`_apply_prompt_fields` in Python); a no-op if there's no describer.
     pub fn set_prompts(&self, prompts: vlm_describer::Prompts) {
         let _ = self.vlm_tx.send(VlmJob::SetPrompts(prompts));
+    }
+
+    /// Forgets the describer's comment history without touching anything
+    /// else (`pipeline.describer.reset()` in Python's `load_promptset`
+    /// websocket case).
+    pub fn reset_describer_history(&self) {
+        let _ = self.vlm_tx.send(VlmJob::Reset);
     }
 
     /// Diffs `image` against the previous frame, decides whether to push it

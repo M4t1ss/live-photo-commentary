@@ -10,12 +10,19 @@
 //! reports that clearly instead of guessing.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
-use kokoro_timestamped::{Voice, VoiceBlendPart};
+use kokoro_timestamped::{KokoroSynthesizer, Voice, VoiceBlendPart};
+use tauri::Manager;
 
+use crate::avatar::AvatarModels;
+use crate::catalogue::Catalogue;
 use crate::config::Config;
-use crate::promptsets::Promptset;
+use crate::events::{Event, ModelKind};
+use crate::pipeline::Pipeline;
+use crate::promptsets::{Promptset, Promptsets};
 
 /// The five fields pushed onto the live describer (`prompts.FIELDS` in
 /// Python).
@@ -214,6 +221,399 @@ impl PregenSequencer {
     /// i.e. whether its completion should still be acted on.
     pub fn is_current(&self, seq: u64) -> bool {
         self.seq.load(Ordering::SeqCst) == seq
+    }
+}
+
+/// The real pipeline type the running app uses (as opposed to the fakes
+/// `pipeline.rs`'s own tests drive it with).
+pub type AppPipeline = Pipeline<vlm_describer::Describer, KokoroSynthesizer>;
+
+/// Where bundled avatar models (and, in debug builds, the catalogue YAML)
+/// live: the repo's own folders in debug, the bundled resources in release
+/// (`tauri.bundle.conf.json`'s `resources` list; mirrors `locate_screenshot_exe`
+/// in `screenshot.rs` and `get_backend_dir` in `backend.rs`).
+fn bundled_models_dir(app: &tauri::AppHandle) -> PathBuf {
+    if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("has a parent").join("models")
+    } else {
+        app.path().resource_dir().expect("resource dir unavailable").join("resources").join("models")
+    }
+}
+
+/// `.vrma` animation clips referenced by avatar YAML files (top-level
+/// `animations/` in the repo; bundled under the model resources in release,
+/// per `tauri.bundle.conf.json`'s `resources/models/animations/*`).
+fn animations_dir(app: &tauri::AppHandle) -> PathBuf {
+    if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("has a parent").join("animations")
+    } else {
+        app.path().resource_dir().expect("resource dir unavailable").join("resources").join("models").join("animations")
+    }
+}
+
+fn vlm_catalogue_path(app: &tauri::AppHandle) -> PathBuf {
+    if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("has a parent")
+            .join("backend/live_photo_commentary/vlm_models.yaml")
+    } else {
+        app.path()
+            .resource_dir()
+            .expect("resource dir unavailable")
+            .join("resources/backend/live_photo_commentary/vlm_models.yaml")
+    }
+}
+
+/// Everything the Tauri commands (`commands.rs`) need: settings, promptsets,
+/// avatar models, the VLM catalogue, the pipeline, the event channel, and
+/// the model-lifecycle/session state that used to be `main.py`'s module
+/// globals. Managed as `Arc<AppState>` so background work (model loads,
+/// pre-generation) can hold its own reference.
+pub struct AppState {
+    config: Mutex<Config>,
+    settings_path: PathBuf,
+    promptsets: Promptsets,
+    avatar_models: AvatarModels,
+    catalogue: Catalogue,
+    pipeline: Arc<AppPipeline>,
+    /// Shared with the `EventSink` closure `pipeline` was built with, so
+    /// `set_channel` can change what that closure sends to.
+    channel: Arc<Mutex<Option<tauri::ipc::Channel<serde_json::Value>>>>,
+    session: Mutex<SessionState>,
+    pregen_sequencer: PregenSequencer,
+    vlm_ready: AtomicBool,
+    tts_ready: AtomicBool,
+    system_messages_ready: AtomicBool,
+    model_errors: Mutex<HashMap<String, String>>,
+    model_dir: PathBuf,
+    animations_dir: PathBuf,
+}
+
+impl AppState {
+    /// Loads settings (migrating `.env` once if needed), promptsets and user
+    /// avatar models (migrating from the old backend's folders once), and
+    /// the VLM catalogue; starts the VLM/TTS worker threads with no model
+    /// loaded yet. Pure local filesystem work — no network, nothing async.
+    pub fn new(app: &tauri::AppHandle) -> Result<AppState, String> {
+        let settings_path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("settings.json");
+        let old_backend_dir = crate::backend::get_backend_dir(app);
+        let config = Config::load_or_migrate(&settings_path, &old_backend_dir.join(".env"))?;
+
+        let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let prompts_dir = app_data_dir.join("prompts");
+        crate::promptsets::migrate(&old_backend_dir.join("prompts"), &prompts_dir)?;
+        let promptsets = Promptsets::new(prompts_dir)?;
+
+        let user_models_dir = app_data_dir.join("user_models");
+        crate::avatar::migrate_user_models(&old_backend_dir.join("user_models"), &user_models_dir)?;
+        let model_dir = bundled_models_dir(app);
+        let avatar_models = AvatarModels::new(model_dir.clone(), user_models_dir)?;
+
+        let catalogue = Catalogue::load(&vlm_catalogue_path(app))?;
+
+        let channel: Arc<Mutex<Option<tauri::ipc::Channel<serde_json::Value>>>> = Arc::new(Mutex::new(None));
+        let sink: crate::events::EventSink = {
+            let channel = Arc::clone(&channel);
+            Arc::new(move |event: Event| {
+                if let Some(channel) = channel.lock().expect("channel mutex").as_ref() {
+                    let _ = channel.send(event.to_json());
+                }
+            })
+        };
+        let pipeline = Arc::new(AppPipeline::new(sink));
+
+        Ok(AppState {
+            config: Mutex::new(config),
+            settings_path,
+            promptsets,
+            avatar_models,
+            catalogue,
+            pipeline,
+            channel,
+            session: Mutex::new(SessionState::default()),
+            pregen_sequencer: PregenSequencer::default(),
+            vlm_ready: AtomicBool::new(false),
+            tts_ready: AtomicBool::new(false),
+            system_messages_ready: AtomicBool::new(true),
+            model_errors: Mutex::new(HashMap::new()),
+            model_dir,
+            animations_dir: animations_dir(app),
+        })
+    }
+
+    pub fn pipeline(&self) -> &Arc<AppPipeline> {
+        &self.pipeline
+    }
+
+    pub fn promptsets(&self) -> &Promptsets {
+        &self.promptsets
+    }
+
+    pub fn avatar_models(&self) -> &AvatarModels {
+        &self.avatar_models
+    }
+
+    pub fn model_dir(&self) -> &PathBuf {
+        &self.model_dir
+    }
+
+    pub fn animations_dir(&self) -> &PathBuf {
+        &self.animations_dir
+    }
+
+    pub fn config(&self) -> Config {
+        self.config.lock().expect("config mutex").clone()
+    }
+
+    pub fn settings_path(&self) -> &PathBuf {
+        &self.settings_path
+    }
+
+    /// Replaces `set_config`'s updates onto the stored config, returning
+    /// `(old, new)`. Doesn't persist or reload anything — the caller (the
+    /// `set_config` command) decides that.
+    pub fn apply_config(&self, updates: &serde_json::Map<String, serde_json::Value>) -> Result<(Config, Config), String> {
+        let mut guard = self.config.lock().expect("config mutex");
+        let old = guard.clone();
+        let new = old.apply(updates)?;
+        *guard = new.clone();
+        Ok((old, new))
+    }
+
+    pub fn set_channel(&self, channel: tauri::ipc::Channel<serde_json::Value>) {
+        *self.channel.lock().expect("channel mutex") = Some(channel);
+    }
+
+    pub fn send(&self, event: Event) {
+        if let Some(channel) = self.channel.lock().expect("channel mutex").as_ref() {
+            let _ = channel.send(event.to_json());
+        }
+    }
+
+    pub fn send_ready_state(&self) {
+        let vlm = self.vlm_ready.load(Ordering::SeqCst);
+        let tts = self.tts_ready.load(Ordering::SeqCst);
+        let system_messages = self.system_messages_ready.load(Ordering::SeqCst);
+        self.send(Event::ReadyState {
+            ready: vlm && tts && system_messages,
+            vlm,
+            tts,
+            system_messages,
+            running: self.pipeline.running(),
+        });
+    }
+
+    pub fn model_errors(&self) -> Vec<String> {
+        self.model_errors.lock().expect("model_errors mutex").values().cloned().collect()
+    }
+
+    /// Lists Kokoro's voices and sends `models` (`_send_models` in Python).
+    pub async fn send_models(&self) {
+        let voices = match KokoroSynthesizer::list_voices().await {
+            Ok(voices) => voices,
+            Err(e) => {
+                log::warn!("Could not list Kokoro voices: {e}");
+                Vec::new()
+            }
+        };
+        let vlm = self.catalogue.providers().iter().map(|(provider, entries)| (provider.clone(), entries.clone())).collect();
+        self.send(Event::Models { vlm, tts: voices });
+    }
+
+    fn active_promptset(&self) -> Promptset {
+        let name = self.config().active_promptset;
+        self.promptsets.load(&name).unwrap_or_default()
+    }
+
+    fn active_tag_names(&self) -> Vec<String> {
+        let model = self.config().active_model;
+        self.avatar_models.tag_names(&model).unwrap_or_default()
+    }
+
+    /// The five describer fields for the active promptset, with the
+    /// session's ad-hoc override layered on top (`_apply_promptset` in
+    /// Python).
+    pub fn describer_fields(&self) -> Promptset {
+        let base = self.active_promptset();
+        let tag_names = self.active_tag_names();
+        let tag_refs: Vec<&str> = tag_names.iter().map(String::as_str).collect();
+        self.session.lock().expect("session mutex").describer_fields(&base, &tag_refs)
+    }
+
+    fn pregen_fields(&self) -> Promptset {
+        let base = self.active_promptset();
+        let tag_names = self.active_tag_names();
+        let tag_refs: Vec<&str> = tag_names.iter().map(String::as_str).collect();
+        self.session.lock().expect("session mutex").pregen_fields(&base, &tag_refs)
+    }
+
+    /// Pushes the active promptset (plus any session override) onto the
+    /// live describer, without a model reload.
+    pub fn apply_active_promptset_to_describer(&self) {
+        self.pipeline.set_prompts(self.describer_fields().describer_prompts());
+    }
+
+    /// Sets the session's ad-hoc prompt override (Settings "OK"), applies it
+    /// to the live describer, and re-triggers pre-generation
+    /// (`apply_prompts` in Python's websocket handler).
+    pub fn apply_prompt_override(self: &Arc<Self>, given: &HashMap<String, String>) {
+        self.session.lock().expect("session mutex").set_override(given);
+        self.apply_active_promptset_to_describer();
+        self.trigger_pregen();
+    }
+
+    /// Clears the session override, persists `name` as the active promptset,
+    /// pushes it onto the describer, resets the describer's history, and
+    /// re-triggers pre-generation (`load_promptset` in Python's websocket
+    /// handler). Returns the loaded fields for the `promptset_loaded` event.
+    pub fn load_promptset(self: &Arc<Self>, name: &str) -> Result<Promptset, String> {
+        let fields = self.promptsets.load(name)?;
+        self.session.lock().expect("session mutex").clear();
+        {
+            let mut cfg = self.config.lock().expect("config mutex");
+            *cfg = cfg.apply(&serde_json::Map::from_iter([("active_promptset".to_string(), serde_json::json!(name))]))?;
+        }
+        self.config().save(&self.settings_path)?;
+        self.apply_active_promptset_to_describer();
+        self.pipeline.reset_describer_history();
+        self.trigger_pregen();
+        Ok(fields)
+    }
+
+    /// Deletes `name`; if it was active, falls back to `default` the same
+    /// way `load_promptset` does (`delete_promptset` in Python's websocket
+    /// handler). Returns the now-active name and its fields.
+    pub fn delete_promptset(self: &Arc<Self>, name: &str) -> Result<(String, Promptset), String> {
+        let was_active = self.config().active_promptset == name;
+        self.promptsets.delete(name)?;
+        if was_active {
+            self.load_promptset(crate::promptsets::DEFAULT_NAME)?;
+        }
+        let active = self.config().active_promptset;
+        let fields = self.promptsets.load(&active)?;
+        Ok((active, fields))
+    }
+
+    /// Generates and synthesizes the greeting/farewell/lonely messages if
+    /// both models are ready and at least one of them has text
+    /// (`_trigger_pregen` in Python).
+    pub fn trigger_pregen(self: &Arc<Self>) {
+        if !(self.vlm_ready.load(Ordering::SeqCst) && self.tts_ready.load(Ordering::SeqCst)) {
+            return;
+        }
+        let fields = self.pregen_fields();
+        if system_messages_are_empty(&fields) {
+            self.system_messages_ready.store(true, Ordering::SeqCst);
+            self.send_ready_state();
+            return;
+        }
+        self.system_messages_ready.store(false, Ordering::SeqCst);
+        let seq = self.pregen_sequencer.begin();
+        self.send(Event::LoadProgress { message: "Generating messages…".to_string() });
+        self.send_ready_state();
+
+        let prompts = system_message_prompts(&fields);
+        let system_prompt = fields.system_prompt.clone();
+        let this = Arc::clone(self);
+        Arc::clone(&self.pipeline).pregen_system_messages(prompts, system_prompt, move || {
+            if !this.pregen_sequencer.is_current(seq) {
+                return;
+            }
+            this.system_messages_ready.store(true, Ordering::SeqCst);
+            this.send_ready_state();
+        });
+    }
+
+    /// (Re)loads the VLM describer for the current config, reporting
+    /// progress and errors on the channel (`_reinit_describer` in Python).
+    /// A no-op (besides a `ready_state`) when no provider or model is
+    /// configured yet.
+    pub async fn reinit_describer(self: &Arc<Self>) {
+        self.model_errors.lock().expect("model_errors mutex").remove("vlm");
+        let had_describer = self.vlm_ready.swap(false, Ordering::SeqCst);
+        let cfg = self.config();
+        if cfg.vlm_provider.is_none() || cfg.vlm_model.is_none() {
+            self.send_ready_state();
+            return;
+        }
+        self.send(Event::ModelLoading { model: ModelKind::Vlm });
+        self.send_ready_state();
+
+        if had_describer {
+            self.send(Event::LoadProgress { message: "Waiting for current generation to finish…".to_string() });
+        }
+        self.set_describer_blocking(None).await;
+        if had_describer {
+            self.send(Event::LoadProgress { message: "Releasing previous model…".to_string() });
+        }
+
+        match build_describer_backend(&cfg) {
+            Ok(backend) => {
+                self.set_describer_blocking(Some(vlm_describer::Describer::new(backend))).await;
+                self.apply_active_promptset_to_describer();
+                self.vlm_ready.store(true, Ordering::SeqCst);
+                self.send(Event::ModelReady { model: ModelKind::Vlm });
+                self.send_ready_state();
+                if self.tts_ready.load(Ordering::SeqCst) {
+                    self.trigger_pregen();
+                }
+            }
+            Err(message) => {
+                let message = format!("VLM init failed: {message}");
+                self.model_errors.lock().expect("model_errors mutex").insert("vlm".to_string(), message.clone());
+                self.send(Event::Error { message });
+                self.send_ready_state();
+            }
+        }
+    }
+
+    /// (Re)loads the Kokoro synthesizer for the current config
+    /// (`_reinit_synthesizer` in Python).
+    pub async fn reinit_synthesizer(self: &Arc<Self>) {
+        self.set_synthesizer_blocking(None).await;
+        self.model_errors.lock().expect("model_errors mutex").remove("tts");
+        self.tts_ready.store(false, Ordering::SeqCst);
+        self.send(Event::ModelLoading { model: ModelKind::Tts });
+        self.send_ready_state();
+
+        let cfg = self.config();
+        match build_synthesizer(&cfg).await {
+            Ok(synthesizer) => {
+                self.set_synthesizer_blocking(Some(synthesizer)).await;
+                self.tts_ready.store(true, Ordering::SeqCst);
+                self.send(Event::ModelReady { model: ModelKind::Tts });
+                self.send_ready_state();
+                if self.vlm_ready.load(Ordering::SeqCst) {
+                    self.trigger_pregen();
+                }
+            }
+            Err(message) => {
+                let message = format!("TTS init failed: {message}");
+                self.model_errors.lock().expect("model_errors mutex").insert("tts".to_string(), message.clone());
+                self.send(Event::Error { message });
+                self.send_ready_state();
+            }
+        }
+    }
+
+    /// Loads both models in parallel at startup (`_init_models` in Python).
+    pub async fn init_models(self: &Arc<Self>) {
+        tokio::join!(self.reinit_describer(), self.reinit_synthesizer());
+    }
+
+    /// `set_describer`/`set_synthesizer` block the calling thread until the
+    /// VLM/TTS worker acknowledges, so run them on a blocking thread when
+    /// called from async code (mirrors Python's `asyncio.to_thread` around
+    /// `take_describer_for_reinit`).
+    async fn set_describer_blocking(&self, describer: Option<vlm_describer::Describer>) {
+        let pipeline = Arc::clone(&self.pipeline);
+        let _ = tokio::task::spawn_blocking(move || pipeline.set_describer(describer)).await;
+    }
+
+    async fn set_synthesizer_blocking(&self, synthesizer: Option<KokoroSynthesizer>) {
+        let pipeline = Arc::clone(&self.pipeline);
+        let _ = tokio::task::spawn_blocking(move || pipeline.set_synthesizer(synthesizer)).await;
     }
 }
 

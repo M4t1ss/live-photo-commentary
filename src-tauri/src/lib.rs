@@ -5,32 +5,22 @@ use tauri::Manager;
 use tauri_plugin_window_state::WindowExt;
 
 mod antivirus;
+mod avatar;
 mod backend;
+mod catalogue;
+mod commands;
+mod config;
 mod cuda;
+mod difference;
+mod events;
 mod flash_attn;
+mod pipeline;
+mod promptsets;
 mod screensaver;
 mod screenshot;
+mod state;
 mod util;
 mod uv;
-
-// Phase 1 of RUSTIFICATION.md: pure Rust ports with unit tests, not yet wired
-// into the running app (that starts in phase 3/4), hence `allow(dead_code)`.
-#[allow(dead_code)]
-mod avatar;
-#[allow(dead_code)]
-mod catalogue;
-#[allow(dead_code)]
-mod config;
-#[allow(dead_code)]
-mod difference;
-#[allow(dead_code)]
-mod events;
-#[allow(dead_code)]
-mod pipeline;
-#[allow(dead_code)]
-mod promptsets;
-#[allow(dead_code)]
-mod state;
 
 use backend::{BackendProcess, BackendState};
 use cuda::InstallState;
@@ -121,8 +111,20 @@ pub fn run() {
 
             backend::spawn_backend_setup(app.handle().clone(), port, uv, inner);
 
+            // Phase 4: the Rust pipeline and its Tauri surface, developed
+            // and exercised alongside the Python backend above (which keeps
+            // running until phase 5 switches the frontend over).
+            let app_state = Arc::new(state::AppState::new(app.handle())?);
+            let scope = app.asset_protocol_scope();
+            let _ = scope.allow_directory(app_state.model_dir(), true);
+            let _ = scope.allow_directory(app_state.avatar_models().user_dir(), true);
+            let _ = scope.allow_directory(app_state.animations_dir(), true);
+            app.manage(Arc::clone(&app_state));
+            tauri::async_runtime::spawn(async move { app_state.init_models().await });
+
             Ok(())
         })
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             backend::get_backend_port,
             cuda::install_cuda_torch,
@@ -132,6 +134,23 @@ pub fn run() {
             screenshot::take_screenshot,
             screensaver::inhibit_screensaver,
             screensaver::allow_screensaver,
+            commands::connect,
+            commands::get_config,
+            commands::set_config,
+            commands::get_models,
+            commands::start_cycle,
+            commands::stop_cycle,
+            commands::list_promptsets,
+            commands::apply_prompts,
+            commands::load_promptset,
+            commands::save_promptset,
+            commands::delete_promptset,
+            commands::synthesize,
+            commands::play_system_message,
+            commands::model_config,
+            commands::avatar_models,
+            commands::open_model_dir,
+            commands::upload_model,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

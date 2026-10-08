@@ -52,7 +52,10 @@ impl Catalogue {
 
     /// The first entry named `model_id` across all providers, parsed as
     /// usual; a bare `{name, display_name: name}` if there's no such entry
-    /// (`_catalogue_entry_for_model` in Python).
+    /// (`_catalogue_entry_for_model` in Python). Not called yet: it's for
+    /// the `local` VLM provider's construction, which needs phase 6's
+    /// catalogue rework first (see `state::build_describer_backend`).
+    #[allow(dead_code)]
     pub fn entry_for_model(&self, model_id: &str) -> CatalogueEntry {
         for (_, entries) in &self.providers {
             if let Some(entry) = entries.iter().find(|e| e.name == model_id) {

@@ -123,17 +123,23 @@ pub fn capture_monitor_preview(
     png_to_data_url(&preview_path)
 }
 
+/// Captures a frame and hands it straight to the pipeline (`Pipeline::trigger`)
+/// instead of returning a path: the frontend no longer sends `frame_ready`
+/// over a WebSocket (phase 4, "Tauri surface"). Still writes the PNG to
+/// `frames_dir` as before, for the WSL path (which only knows how to write a
+/// file) and for debugging.
 #[tauri::command]
 pub fn take_screenshot(
     app: tauri::AppHandle,
     state: State<'_, ScreenshotState>,
+    app_state: State<'_, std::sync::Arc<crate::state::AppState>>,
     monitor_idx: Option<u32>,
     clip: Option<[i32; 4]>,
-) -> Result<String, String> {
+) -> Result<(), String> {
     let slot = state.frame_slot.fetch_xor(1, Ordering::Relaxed);
     let dest = state.frames_dir.join(format!("frame_{slot}.png"));
 
-    let result = (|| -> Result<String, String> {
+    let result = (|| -> Result<image::DynamicImage, String> {
         if state.is_wsl {
             let exe = locate_screenshot_exe(&app);
             let win_dest = wslpath_to_windows(&dest)?;
@@ -151,6 +157,7 @@ pub fn take_screenshot(
             if !status.success() {
                 return Err(format!("screenshot.exe exited with {:?}", status.code()));
             }
+            image::open(&dest).map_err(|e| format!("reload failed: {e}"))
         } else {
             let img = capture_monitor(monitor_idx)?;
             let img = if let Some([x, y, w, h]) = clip {
@@ -158,18 +165,23 @@ pub fn take_screenshot(
                 let iy = y.max(0) as u32;
                 let iw = (w as u32).min(img.width().saturating_sub(ix)).max(1);
                 let ih = (h as u32).min(img.height().saturating_sub(iy)).max(1);
-                image::DynamicImage::ImageRgba8(img).crop_imm(ix, iy, iw, ih)
-                    .into_rgba8()
+                image::DynamicImage::ImageRgba8(img).crop_imm(ix, iy, iw, ih).into_rgba8()
             } else {
                 img
             };
             img.save(&dest).map_err(|e| format!("save failed: {e}"))?;
+            Ok(image::DynamicImage::ImageRgba8(img))
         }
-        Ok(dest.to_string_lossy().into_owned())
     })();
 
-    if let Err(msg) = &result {
-        log::error!("take_screenshot (slot {slot}) failed: {msg}");
+    match result {
+        Ok(image) => {
+            app_state.pipeline().trigger(&app_state.config(), image);
+            Ok(())
+        }
+        Err(msg) => {
+            log::error!("take_screenshot (slot {slot}) failed: {msg}");
+            Err(msg)
+        }
     }
-    result
 }
