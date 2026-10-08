@@ -1,0 +1,10 @@
+[package]
+name = "kokoro-espeak"
+version = "0.1.0"
+license = "GPL-3.0-or-later"
+edition = "2024"
+description = "eSpeak NG phonemization for kokoro-timestamped, as a separate program"
+
+[dependencies]
+espeak-rs = "0.2.0"
+serde_json = "1.0.151"

@@ -1,6 +1,6 @@
 //! Monitor enumeration and desktop screenshot capture.
 //!
-//! Native capture uses the `screenshots` crate. When running inside WSL that
+//! Native capture uses the `xcap` crate. When running inside WSL that
 //! can't reach the Windows desktop, so we shell out to a cross-compiled
 //! `screenshot.exe` helper instead (see `src-screenshot/`).
 
@@ -69,21 +69,31 @@ fn wslpath_to_windows(path: &std::path::Path) -> Result<String, String> {
 
 #[tauri::command]
 pub fn list_monitors() -> Result<Vec<MonitorInfo>, String> {
-    use screenshots::Screen;
-    let screens = Screen::all().map_err(|e| format!("screen enumeration failed: {e}"))?;
-    Ok(screens
-        .into_iter()
-        .enumerate()
-        .map(|(i, s)| MonitorInfo {
+    let info = |i, m: &xcap::Monitor| -> xcap::XCapResult<MonitorInfo> {
+        Ok(MonitorInfo {
             index: i,
-            name: format!("Display {}", s.display_info.id),
-            x: s.display_info.x,
-            y: s.display_info.y,
-            width: s.display_info.width,
-            height: s.display_info.height,
-            is_primary: s.display_info.is_primary,
+            name: format!("Display {}", m.id()?),
+            x: m.x()?,
+            y: m.y()?,
+            width: m.width()?,
+            height: m.height()?,
+            is_primary: m.is_primary()?,
         })
-        .collect())
+    };
+    let monitors = xcap::Monitor::all().map_err(|e| format!("screen enumeration failed: {e}"))?;
+    monitors
+        .iter()
+        .enumerate()
+        .map(|(i, m)| info(i, m).map_err(|e| format!("monitor info failed: {e}")))
+        .collect()
+}
+
+/// Captures monitor `idx` (the first one if there's no such monitor).
+fn capture_monitor(idx: Option<u32>) -> Result<image::RgbaImage, String> {
+    let monitors = xcap::Monitor::all().map_err(|e| format!("screen enumeration failed: {e}"))?;
+    let idx = idx.unwrap_or(0) as usize;
+    let monitor = monitors.get(idx).or_else(|| monitors.first()).ok_or("no screens found")?;
+    monitor.capture_image().map_err(|e| format!("capture failed: {e}"))
 }
 
 #[tauri::command]
@@ -106,13 +116,7 @@ pub fn capture_monitor_preview(
             return Err(format!("screenshot.exe exited with {:?}", status.code()));
         }
     } else {
-        use screenshots::Screen;
-        let screens = Screen::all().map_err(|e| format!("screen enumeration failed: {e}"))?;
-        let idx = monitor_idx.unwrap_or(0) as usize;
-        let screen = screens.get(idx).or_else(|| screens.first()).ok_or("no screens found")?;
-        screen
-            .capture()
-            .map_err(|e| format!("capture failed: {e}"))?
+        capture_monitor(monitor_idx)?
             .save(&preview_path)
             .map_err(|e| format!("save failed: {e}"))?;
     }
@@ -148,11 +152,7 @@ pub fn take_screenshot(
                 return Err(format!("screenshot.exe exited with {:?}", status.code()));
             }
         } else {
-            use screenshots::Screen;
-            let screens = Screen::all().map_err(|e| format!("screen enumeration failed: {e}"))?;
-            let idx = monitor_idx.unwrap_or(0) as usize;
-            let screen = screens.get(idx).or_else(|| screens.first()).ok_or("no screens found")?;
-            let img = screen.capture().map_err(|e| format!("capture failed: {e}"))?;
+            let img = capture_monitor(monitor_idx)?;
             let img = if let Some([x, y, w, h]) = clip {
                 let ix = x.max(0) as u32;
                 let iy = y.max(0) as u32;

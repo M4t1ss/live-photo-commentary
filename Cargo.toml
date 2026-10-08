@@ -1,0 +1,9 @@
+# kokoro-espeak runs eSpeak NG (GPL) as a separate program. Building the
+# workspace builds it too, so kokoro-timestamped's tests and examples can find
+# it. src-screenshot is a separate project, cross-compiled for WSL.
+[workspace]
+# xtask holds development tasks (`cargo xtask ...`), and isn't built by default.
+members = ["src-tauri", "crates/*", "xtask"]
+default-members = ["src-tauri", "crates/*"]
+exclude = ["src-screenshot"]
+resolver = "3"

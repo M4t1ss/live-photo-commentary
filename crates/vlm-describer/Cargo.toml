@@ -1,0 +1,37 @@
+[package]
+name = "vlm-describer"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+edition = "2024"
+
+[dependencies]
+base64 = "0.23.1"
+hf-hub = { version = "1.0.0", optional = true }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+llama-cpp-2 = { version = "0.1.158", features = ["mtmd"], optional = true }
+log = "0.4.34"
+minijinja = { version = "2.24.0", optional = true }
+minijinja-contrib = { version = "2.24.0", features = ["pycompat"], optional = true }
+regex = "1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+anyhow = "1.0.104"
+env_logger = "0.11.11"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6.5"
+
+[features]
+# Local models with llama.cpp (GGUF models), and downloading them.
+llama-cpp = ["dep:llama-cpp-2", "dep:minijinja", "dep:minijinja-contrib", "dep:hf-hub"]
+# GPU support for llama.cpp, one per platform:
+# NVIDIA GPUs (Windows, Linux). Needs the CUDA Toolkit.
+cuda = ["llama-cpp-2?/cuda"]
+# Apple GPUs (macOS).
+metal = ["llama-cpp-2?/metal"]
+# Any GPU with Vulkan drivers (Windows, Linux). Needs the Vulkan SDK.
+vulkan = ["llama-cpp-2?/vulkan"]

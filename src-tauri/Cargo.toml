@@ -6,7 +6,8 @@ authors = ["Goran Topic", "Matiss Rikters"]
 license = "MIT"
 repository = "https://github.com/M4t1ss/live-photo-commentary"
 edition = "2021"
-rust-version = "1.77.2"
+# hf-hub (through kokoro-timestamped) pulls in sysinfo, which needs 1.95.
+rust-version = "1.95"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -30,10 +31,15 @@ tauri-plugin-log = "2"
 tauri-plugin-window-state = "2"
 reqwest = { version = "0.12", features = ["json"] }
 regex = "1"
-screenshots = "0.8"
-image = "0.24"
+xcap = "0.9"
+image = "0.25"
 base64 = "0.22"
 tokio = { version = "1", features = ["time"] }
+kokoro-timestamped = { path = "../crates/kokoro-timestamped" }
+vlm-describer = { path = "../crates/vlm-describer", features = ["llama-cpp"] }
+serde_yaml_ng = "0.10"
+hound = "3.5"
+tauri-plugin-opener = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
