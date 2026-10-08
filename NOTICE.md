@@ -16,9 +16,10 @@ it over stdin and stdout, so the library and the app that uses it are not
 covered by the GPL. Distributing `kokoro-espeak` (for example in an
 installer) requires offering its complete source, including eSpeak NG's.
 
-Third-party code and data ported into or bundled with the crates are listed
-in their own notices, with the original licence texts in their `LICENSES/`
-folders:
+Third-party code and data ported into or bundled with the app and the crates
+are listed in their own notices, with the original licence texts in their
+`LICENSES/` folders:
 
+- `src-tauri/NOTICE.md`
 - `crates/kokoro-timestamped/NOTICE.md` (and `data/README.md` there)
 - `crates/kokoro-espeak/NOTICE.md`

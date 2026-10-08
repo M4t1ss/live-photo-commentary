@@ -22,6 +22,8 @@ mod catalogue;
 #[allow(dead_code)]
 mod config;
 #[allow(dead_code)]
+mod difference;
+#[allow(dead_code)]
 mod promptsets;
 
 use backend::{BackendProcess, BackendState};
