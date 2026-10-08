@@ -1000,12 +1000,12 @@ mod tests {
     /// Runs the real pipeline (real `vlm_describer::Describer` and
     /// `kokoro_timestamped::KokoroSynthesizer`, no fakes) on the two sample
     /// frames, printing every event. Needs the local-only
-    /// `backend/frames/frame_{0,1}.png` and a `GEMINI_API_KEY`, so it only
+    /// `tests/data/frame_{0,1}.png` and a `GEMINI_API_KEY`, so it only
     /// runs on request: `cargo test -- --ignored real_pipeline`.
     #[tokio::test]
     #[ignore]
     async fn real_pipeline_describes_and_synthesizes_the_sample_frames() {
-        let frames_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("backend/frames");
+        let frames_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
         let (frame0, frame1) = (frames_dir.join("frame_0.png"), frames_dir.join("frame_1.png"));
         if !frame0.exists() || !frame1.exists() {
             eprintln!("skipping: {} not present on this machine", frames_dir.display());

@@ -3,6 +3,8 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin } from '@pixiv/three-vrm';
 import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation';
 
+const { convertFileSrc } = window.__TAURI__.core;
+
 const canvas = document.getElementById('avatar-canvas');
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -832,7 +834,7 @@ function _trimClip(clip, start, end) {
 // {filename, eyeContact, start, end}). eyeContact (true/false/null) and any
 // trim bounds are stored/applied so callers don't need to know the difference.
 // Loads .vrma files from the backend; looks up other names in gltf.animations.
-function _resolveAnimClip(entry, port, gltf, vrm) {
+function _resolveAnimClip(entry, animationsDir, gltf, vrm) {
   const nameOrPath = typeof entry === 'string' ? entry : entry?.filename;
   const eyeContact = typeof entry === 'string' ? null  : (entry?.eyeContact ?? null);
   const start      = typeof entry === 'string' ? null  : (entry?.start      ?? null);
@@ -847,7 +849,7 @@ function _resolveAnimClip(entry, port, gltf, vrm) {
       const vrmaLoader = new GLTFLoader();
       vrmaLoader.register((parser) => new VRMAnimationLoaderPlugin(parser));
       vrmaLoader.load(
-        `http://127.0.0.1:${port}/animation/${encodeURIComponent(nameOrPath)}`,
+        convertFileSrc(`${animationsDir}/${nameOrPath}`),
         (vrmaGltf) => {
           try {
             const vrmAnimation = vrmaGltf.userData.vrmAnimations?.[0];
@@ -880,9 +882,9 @@ function _resolveAnimClip(entry, port, gltf, vrm) {
 }
 
 // Normalises a single entry or list of entries, loads all clips, returns the array.
-async function _resolveAnimClips(namesOrPaths, port, gltf, vrm) {
+async function _resolveAnimClips(namesOrPaths, animationsDir, gltf, vrm) {
   const names = Array.isArray(namesOrPaths) ? namesOrPaths : (namesOrPaths ? [namesOrPaths] : []);
-  const clips = await Promise.all(names.map(n => _resolveAnimClip(n, port, gltf, vrm)));
+  const clips = await Promise.all(names.map(n => _resolveAnimClip(n, animationsDir, gltf, vrm)));
   const resolved = clips.filter(Boolean);
   const label = names.map(n => (typeof n === 'string' ? n : n?.filename ?? '?')).join(', ');
   console.log(`[anim] resolved [${label}] → ${resolved.length}/${names.length} clips`);
@@ -901,19 +903,21 @@ function _parseTagMorphs(rawTags) {
 }
 
 // Load one-shot animation clips for any tag that has an 'animation' array.
-async function _loadTagAnimClips(rawTags, port, gltf, vrm) {
+async function _loadTagAnimClips(rawTags, animationsDir, gltf, vrm) {
   const result = {};
   for (const [tag, def] of Object.entries(rawTags)) {
     if (def && typeof def === 'object' && Array.isArray(def.animation) && def.animation.length) {
-      const clips = await _resolveAnimClips(def.animation, port, gltf, vrm);
+      const clips = await _resolveAnimClips(def.animation, animationsDir, gltf, vrm);
       if (clips.length) result[tag] = clips;
     }
   }
   return result;
 }
 
-// Called by app.js after it resolves the backend port and fetches /model-config.
-window.initAvatar = function (config, port) {
+// Called by app.js after it fetches the model config (which carries the model
+// and animation paths).
+window.initAvatar = function (config) {
+  const { modelPath, animationsDir } = config;
   _visemeMap  = config.visemeMap   ?? {};
   const rawTags = config.tags ?? {};
   _tagMorphs  = _parseTagMorphs(rawTags);
@@ -950,7 +954,7 @@ window.initAvatar = function (config, port) {
   const loader = new GLTFLoader();
   loader.register((parser) => new VRMLoaderPlugin(parser));
   loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
-  loader.load(`http://127.0.0.1:${port}/model?t=${Date.now()}`, async (gltf) => {
+  loader.load(convertFileSrc(modelPath), async (gltf) => {
     // const model = gltf.scene;
     const vrm = gltf.userData.vrm;
     currentVrm = vrm;
@@ -976,16 +980,16 @@ window.initAvatar = function (config, port) {
 
     mixer = new THREE.AnimationMixer(model);
     [_idleClips, _talkingClips, _walkInClips, _walkOutClips, _helloClips, _goodbyeClips, _dancingClips, _lonelyClips] = await Promise.all([
-      _resolveAnimClips(config.idleAnimation,    port, gltf, vrm),
-      _resolveAnimClips(config.talkingAnimation, port, gltf, vrm),
-      _resolveAnimClips(config.walkInAnimation,  port, gltf, vrm),
-      _resolveAnimClips(config.walkOutAnimation, port, gltf, vrm),
-      _resolveAnimClips(config.helloAnimation,   port, gltf, vrm),
-      _resolveAnimClips(config.goodbyeAnimation, port, gltf, vrm),
-      _resolveAnimClips(config.dancingAnimation, port, gltf, vrm),
-      _resolveAnimClips(config.lonelyAnimation,  port, gltf, vrm),
+      _resolveAnimClips(config.idleAnimation,    animationsDir, gltf, vrm),
+      _resolveAnimClips(config.talkingAnimation, animationsDir, gltf, vrm),
+      _resolveAnimClips(config.walkInAnimation,  animationsDir, gltf, vrm),
+      _resolveAnimClips(config.walkOutAnimation, animationsDir, gltf, vrm),
+      _resolveAnimClips(config.helloAnimation,   animationsDir, gltf, vrm),
+      _resolveAnimClips(config.goodbyeAnimation, animationsDir, gltf, vrm),
+      _resolveAnimClips(config.dancingAnimation, animationsDir, gltf, vrm),
+      _resolveAnimClips(config.lonelyAnimation,  animationsDir, gltf, vrm),
     ]);
-    _tagAnimClips = await _loadTagAnimClips(rawTags, port, gltf, vrm);
+    _tagAnimClips = await _loadTagAnimClips(rawTags, animationsDir, gltf, vrm);
     channelMixer = new ChannelMixer(mixer);
     sceneModel = model; // set only after channelMixer is ready; startAvatar() uses !sceneModel as its "fully initialized" guard
     if (_pendingStart) { _pendingStart = false; window.startAvatar(); }

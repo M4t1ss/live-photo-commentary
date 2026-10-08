@@ -5,12 +5,12 @@
 //! `screenshot.exe` helper instead (see `src-screenshot/`).
 
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::{Manager, State};
 
 pub(crate) struct ScreenshotState {
+    /// Where `screenshot.exe` (WSL only) writes its PNGs. The native paths
+    /// never touch the disk.
     pub(crate) frames_dir: std::path::PathBuf,
-    pub(crate) frame_slot: AtomicUsize,
     pub(crate) is_wsl: bool,
 }
 
@@ -96,92 +96,162 @@ fn capture_monitor(idx: Option<u32>) -> Result<image::RgbaImage, String> {
     monitor.capture_image().map_err(|e| format!("capture failed: {e}"))
 }
 
+/// Async for the same reason as `take_screenshot`: the capture and PNG
+/// encoding run on a blocking-pool thread, not the main (UI) thread.
 #[tauri::command]
-pub fn capture_monitor_preview(
+pub async fn capture_monitor_preview(
     app: tauri::AppHandle,
     state: State<'_, ScreenshotState>,
     monitor_idx: Option<u32>,
 ) -> Result<String, String> {
     let preview_path = state.frames_dir.join("frame_preview.png");
-    if state.is_wsl {
-        let win_dest = wslpath_to_windows(&preview_path)?;
-        let exe = locate_screenshot_exe(&app);
-        let mut cmd = Command::new(&exe);
-        cmd.arg(&win_dest);
-        if let Some(idx) = monitor_idx {
-            cmd.args(["--monitor", &idx.to_string()]);
+    let is_wsl = state.is_wsl;
+    tauri::async_runtime::spawn_blocking(move || {
+        if is_wsl {
+            let win_dest = wslpath_to_windows(&preview_path)?;
+            let exe = locate_screenshot_exe(&app);
+            let mut cmd = Command::new(&exe);
+            cmd.arg(&win_dest);
+            if let Some(idx) = monitor_idx {
+                cmd.args(["--monitor", &idx.to_string()]);
+            }
+            let status = cmd.status().map_err(|e| format!("screenshot.exe failed: {e}"))?;
+            if !status.success() {
+                return Err(format!("screenshot.exe exited with {:?}", status.code()));
+            }
+            return png_to_data_url(&preview_path);
         }
-        let status = cmd.status().map_err(|e| format!("screenshot.exe failed: {e}"))?;
-        if !status.success() {
-            return Err(format!("screenshot.exe exited with {:?}", status.code()));
-        }
-    } else {
-        capture_monitor(monitor_idx)?
-            .save(&preview_path)
-            .map_err(|e| format!("save failed: {e}"))?;
-    }
-    png_to_data_url(&preview_path)
+        let image = image::DynamicImage::ImageRgba8(capture_monitor(monitor_idx)?);
+        Ok(crate::events::png_data_url(&image))
+    })
+    .await
+    .map_err(|e| format!("preview task failed: {e}"))?
 }
 
-/// Captures a frame and hands it straight to the pipeline (`Pipeline::trigger`)
-/// instead of returning a path: the frontend no longer sends `frame_ready`
-/// over a WebSocket (phase 4, "Tauri surface"). Still writes the PNG to
-/// `frames_dir` as before, for the WSL path (which only knows how to write a
-/// file) and for debugging.
+/// Captures a frame and hands it straight to the pipeline
+/// (`Pipeline::trigger`); the frontend no longer sends `frame_ready` over a
+/// WebSocket. Ignored while the cycle isn't running, like Python's frame
+/// queue.
+///
+/// Natively the frame stays in memory from capture to the channel. Only the
+/// WSL helper, `screenshot.exe`, can't return an image, so it writes a file
+/// that is read back.
+///
+/// Async so the work (capture, PNG encoding, frame differencing) runs on a
+/// blocking-pool thread: a synchronous command would run on the main (UI)
+/// thread.
 #[tauri::command]
-pub fn take_screenshot(
+pub async fn take_screenshot(
     app: tauri::AppHandle,
     state: State<'_, ScreenshotState>,
     app_state: State<'_, std::sync::Arc<crate::state::AppState>>,
     monitor_idx: Option<u32>,
     clip: Option<[i32; 4]>,
 ) -> Result<(), String> {
-    let slot = state.frame_slot.fetch_xor(1, Ordering::Relaxed);
-    let dest = state.frames_dir.join(format!("frame_{slot}.png"));
+    if !app_state.pipeline().running() {
+        return Ok(());
+    }
+    let wsl_file = state.frames_dir.join("frame_wsl.png");
+    let is_wsl = state.is_wsl;
+    let app_state = std::sync::Arc::clone(&app_state);
 
-    let result = (|| -> Result<image::DynamicImage, String> {
-        if state.is_wsl {
-            let exe = locate_screenshot_exe(&app);
-            let win_dest = wslpath_to_windows(&dest)?;
-            let mut cmd = Command::new(&exe);
-            cmd.arg(&win_dest);
-            if let Some(idx) = monitor_idx {
-                cmd.args(["--monitor", &idx.to_string()]);
-            }
-            if let Some([x, y, w, h]) = clip {
-                cmd.args(["--clip", &format!("{x},{y},{w},{h}")]);
-            }
-            let status = cmd
-                .status()
-                .map_err(|e| format!("screenshot.exe failed to start: {e}"))?;
-            if !status.success() {
-                return Err(format!("screenshot.exe exited with {:?}", status.code()));
-            }
-            image::open(&dest).map_err(|e| format!("reload failed: {e}"))
-        } else {
-            let img = capture_monitor(monitor_idx)?;
-            let img = if let Some([x, y, w, h]) = clip {
-                let ix = x.max(0) as u32;
-                let iy = y.max(0) as u32;
-                let iw = (w as u32).min(img.width().saturating_sub(ix)).max(1);
-                let ih = (h as u32).min(img.height().saturating_sub(iy)).max(1);
-                image::DynamicImage::ImageRgba8(img).crop_imm(ix, iy, iw, ih).into_rgba8()
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = (|| -> Result<image::DynamicImage, String> {
+            if is_wsl {
+                let exe = locate_screenshot_exe(&app);
+                let win_dest = wslpath_to_windows(&wsl_file)?;
+                let mut cmd = Command::new(&exe);
+                cmd.arg(&win_dest);
+                if let Some(idx) = monitor_idx {
+                    cmd.args(["--monitor", &idx.to_string()]);
+                }
+                if let Some([x, y, w, h]) = clip {
+                    cmd.args(["--clip", &format!("{x},{y},{w},{h}")]);
+                }
+                let status = cmd
+                    .status()
+                    .map_err(|e| format!("screenshot.exe failed to start: {e}"))?;
+                if !status.success() {
+                    return Err(format!("screenshot.exe exited with {:?}", status.code()));
+                }
+                image::open(&wsl_file).map_err(|e| format!("reload failed: {e}"))
             } else {
-                img
-            };
-            img.save(&dest).map_err(|e| format!("save failed: {e}"))?;
-            Ok(image::DynamicImage::ImageRgba8(img))
-        }
-    })();
+                let img = capture_monitor(monitor_idx)?;
+                let img = if let Some([x, y, w, h]) = clip {
+                    let ix = x.max(0) as u32;
+                    let iy = y.max(0) as u32;
+                    let iw = (w as u32).min(img.width().saturating_sub(ix)).max(1);
+                    let ih = (h as u32).min(img.height().saturating_sub(iy)).max(1);
+                    image::DynamicImage::ImageRgba8(img).crop_imm(ix, iy, iw, ih).into_rgba8()
+                } else {
+                    img
+                };
+                Ok(image::DynamicImage::ImageRgba8(img))
+            }
+        })();
 
-    match result {
-        Ok(image) => {
-            app_state.pipeline().trigger(&app_state.config(), image);
-            Ok(())
+        match result {
+            Ok(image) => {
+                // The cycle may have been stopped while the capture ran.
+                if app_state.pipeline().running() {
+                    app_state.pipeline().trigger(&app_state.config(), image);
+                }
+                Ok(())
+            }
+            Err(msg) => {
+                log::error!("take_screenshot failed: {msg}");
+                Err(msg)
+            }
         }
-        Err(msg) => {
-            log::error!("take_screenshot (slot {slot}) failed: {msg}");
-            Err(msg)
+    })
+    .await
+    .map_err(|e| format!("screenshot task failed: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// Times each step of `take_screenshot` on a real capture of monitor 0.
+    /// Needs a display, so it's ignored by default:
+    /// `cargo test -p app --lib -- --ignored --nocapture time_screenshot_steps`
+    #[test]
+    #[ignore]
+    fn time_screenshot_steps() {
+        for round in 0..4 {
+            let t = Instant::now();
+            let img = capture_monitor(Some(0)).expect("capture");
+            let capture = t.elapsed();
+
+            let (w, h) = (img.width(), img.height());
+            let image = std::sync::Arc::new(image::DynamicImage::ImageRgba8(img));
+
+            let t = Instant::now();
+            let json = crate::events::Event::Frame { image: image.clone(), push: true, gen: 1, diff: None, measure: None }.to_json();
+            let frame_event = t.elapsed();
+
+            let t = Instant::now();
+            let text = serde_json::to_string(&json).expect("serialize");
+            let serialize = t.elapsed();
+
+            // For comparison: the same encode with the fast PNG settings.
+            let t = Instant::now();
+            let mut fast = std::io::Cursor::new(Vec::new());
+            let encoder = image::codecs::png::PngEncoder::new_with_quality(
+                &mut fast,
+                image::codecs::png::CompressionType::Fast,
+                image::codecs::png::FilterType::Sub,
+            );
+            image.write_with_encoder(encoder).expect("fast encode");
+            let fast_encode = t.elapsed();
+
+            eprintln!(
+                "round {round}: {w}x{h}  capture {capture:?} | Frame event to_json {frame_event:?} \
+                 (JSON text {} KB, serialize {serialize:?}) | fast PNG encode {fast_encode:?} ({} KB)",
+                text.len() / 1024,
+                fast.get_ref().len() / 1024,
+            );
         }
     }
 }

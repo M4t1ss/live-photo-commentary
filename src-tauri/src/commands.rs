@@ -1,6 +1,7 @@
-//! Tauri commands (phase 4's "Tauri surface"): the command-mapping table in
-//! RUSTIFICATION.md. Registered in `lib.rs` next to the existing Python-era
-//! commands, which stay until phase 5 switches the frontend over.
+//! Tauri commands: the command-mapping table in RUSTIFICATION.md. Replies
+//! that were separate WebSocket messages in the Python backend are return
+//! values here; only `connect`'s initial burst and the pipeline's own events
+//! go over the channel.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -127,7 +128,6 @@ pub fn load_promptset(state: State<'_, Arc<AppState>>, name: Option<String>) -> 
     let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| DEFAULT_NAME.to_string());
     let fields = Arc::clone(state.inner()).load_promptset(&name)?;
     let names = state.promptsets().list_names()?;
-    state.send(Event::PromptsetLoaded { name: name.clone(), fields: fields.clone(), names: names.clone() });
     Ok(PromptsetPayload { name, fields, names })
 }
 
@@ -141,9 +141,7 @@ pub fn save_promptset(state: State<'_, Arc<AppState>>, name: String, fields: Pro
     if state.config().active_promptset == name {
         state.apply_active_promptset_to_describer();
     }
-    let names = state.promptsets().list_names()?;
-    state.send(Event::Promptsets { names: names.clone() });
-    Ok(names)
+    state.promptsets().list_names()
 }
 
 #[tauri::command]
@@ -154,7 +152,6 @@ pub fn delete_promptset(state: State<'_, Arc<AppState>>, name: String) -> Result
     }
     let (active, fields) = Arc::clone(state.inner()).delete_promptset(&name)?;
     let names = state.promptsets().list_names()?;
-    state.send(Event::PromptsetLoaded { name: active.clone(), fields: fields.clone(), names: names.clone() });
     Ok(PromptsetPayload { name: active, fields, names })
 }
 

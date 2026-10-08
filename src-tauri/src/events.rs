@@ -85,7 +85,6 @@ pub enum Event {
     /// (each becomes `{engine: "kokoro", voice}`).
     Models { vlm: Vec<(String, Vec<CatalogueEntry>)>, tts: Vec<String> },
     PromptsetLoaded { name: String, fields: Promptset, names: Vec<String> },
-    Promptsets { names: Vec<String> },
     Config { data: Config },
 }
 
@@ -108,7 +107,7 @@ fn round(value: f64, decimals: i32) -> f64 {
     (value * factor).round() / factor
 }
 
-fn png_data_url(image: &DynamicImage) -> String {
+pub(crate) fn png_data_url(image: &DynamicImage) -> String {
     let mut png = std::io::Cursor::new(Vec::new());
     image.write_to(&mut png, image::ImageFormat::Png).expect("encode PNG");
     format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png.into_inner()))
@@ -162,7 +161,6 @@ impl Event {
             Event::PromptsetLoaded { name, fields, names } => {
                 json!({ "type": "promptset_loaded", "name": name, "fields": fields, "names": names })
             }
-            Event::Promptsets { names } => json!({ "type": "promptsets", "names": names }),
             Event::Config { data } => json!({ "type": "config", "data": data }),
         }
     }
@@ -347,11 +345,6 @@ mod tests {
         assert_eq!(json["name"], "default");
         assert_eq!(json["fields"]["system_prompt"], fields.system_prompt);
         assert_eq!(json["names"], serde_json::json!(["default"]));
-
-        assert_eq!(
-            Event::Promptsets { names: vec!["a".to_string(), "b".to_string()] }.to_json(),
-            serde_json::json!({ "type": "promptsets", "names": ["a", "b"] })
-        );
     }
 
     #[test]

@@ -1,5 +1,4 @@
-const { invoke } = window.__TAURI__?.core ?? { invoke: () => Promise.resolve(0) };
-const { listen }  = window.__TAURI__?.event ?? { listen: () => Promise.resolve(() => {}) };
+const { invoke, Channel } = window.__TAURI__.core;
 
 // --- DOM refs ---
 const startStopBtn       = document.getElementById("start-stop");
@@ -40,13 +39,8 @@ const volumeInput        = document.getElementById("cfg-volume");
 const volumePctEl        = document.getElementById("cfg-volume-pct");
 const barVolumeInput     = document.getElementById("bar-volume");
 const barMuteBtn         = document.getElementById("bar-mute");
-const cudaBanner         = document.getElementById("cuda-banner");
-const cudaBannerMsg      = document.getElementById("cuda-banner-msg");
-const cudaInstallBtn     = document.getElementById("cuda-install-btn");
-const cudaDismissBtn     = document.getElementById("cuda-dismiss-btn");
 const splashEl           = document.getElementById("splash");
 const splashStatusEl     = document.getElementById("splash-status");
-const splashRestartBtn   = document.getElementById("splash-restart-btn");
 const leftPanelEl        = document.getElementById("left-panel");
 const subtitlePanelEl    = document.getElementById("subtitle-panel");
 const subtitleRowDivider = document.getElementById("subtitle-row-divider");
@@ -120,8 +114,6 @@ let volume = parseFloat(localStorage.getItem("lpc_volume") ?? "1");
 let preMuteVolume = null;
 barVolumeInput.value = volume;
 
-let port = null;
-let ws = null;
 let running = false;
 let subtitlesVisible = true;
 let subtitleMode = localStorage.getItem("lpc_subtitle_mode") ?? "overlay";
@@ -239,10 +231,6 @@ function dismissSplash() {
   splashDismissed = true;
   splashEl.classList.add("splash-gone");
 }
-function showSplash() {
-  splashDismissed = false;
-  splashEl.classList.remove("splash-gone");
-}
 
 function setPhase(label, mode = "up", durationMs = 0) {
   statusPhaseEl.textContent = label;
@@ -272,53 +260,39 @@ function setPhase(label, mode = "up", durationMs = 0) {
   }, 100);
 }
 
-// --- WebSocket ---
-let reconnectDelay = 500;
-const RECONNECT_MAX = 30_000;
-
-function send(data) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    console.debug("[ws ->]", data);
-    ws.send(JSON.stringify(data));
+// --- Backend connection ---
+// Everything the backend sends on its own initiative arrives on one Tauri
+// channel, in order. Calling `connect` again (a page reload) replaces it.
+async function connectBackend() {
+  const events = new Channel();
+  events.onmessage = (data) => {
+    console.debug("[backend <-]", data);
+    handleMessage(data);
+  };
+  configReceived = false;
+  modelsReceived = false;
+  backendReady   = false;
+  setRunning(false);
+  checkReady();
+  setPhase("Initializing…", "up");
+  initAvatarOnce();
+  try {
+    await invoke("connect", { events });
+  } catch (e) {
+    reportError(e);
   }
 }
 
-function connectWebSocket() {
-  ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-
-  ws.addEventListener("open", () => {
-    reconnectDelay = 500;
-    configReceived = false;
-    modelsReceived = false;
-    backendReady   = false;
-    setRunning(false);
-    checkReady();
-    setPhase("Initializing…", "up");
-    initAvatarOnce();
-  });
-
-  ws.addEventListener("message", (event) => {
-    let data;
-    try { data = JSON.parse(event.data); } catch { return; }
-    console.debug("[ws <-]", data);
-    handleMessage(data);
-  });
-
-  ws.addEventListener("close", () => {
-    ws = null;
-    setTimeout(connectWebSocket, reconnectDelay);
-    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX);
-  });
-
-  // Suppress browser console error; reconnect is driven by "close".
-  ws.addEventListener("error", () => {});
+// Shows a failed command the way an `error` event from the backend is shown.
+function reportError(e) {
+  handleMessage({ type: "error", message: String(e) });
 }
 
 // --- Message handler ---
 function handleMessage(data) {
   switch (data.type) {
     case "frame": {
-      const newUrl = `http://127.0.0.1:${port}${data.url}?t=${Date.now()}`;
+      const newUrl = data.url;
       if (data.push && currentFrameUrl) {
         prevFrameEl.src = currentFrameUrl;
         prevFrameEl.classList.remove("hidden");
@@ -524,7 +498,7 @@ function playNext() {
   _tags = tags;
   _tagIdx = 0;
   window.setSubtitleChunk?.(words, text);
-  const audio = new Audio(`http://127.0.0.1:${port}${audio_url}`);
+  const audio = new Audio(audio_url);
   audio.volume = volume;
   currentAudio = audio;
   window.setLipSyncData?.(timeline, audio);
@@ -573,7 +547,7 @@ function playNextSystemAudio() {
   const { audio_url, timeline, tags, text, words } = systemAudioQueue.shift();
   _clearSubtitleTimer();
   window.setSubtitleChunk?.(words, text);
-  const audio = new Audio(`http://127.0.0.1:${port}${audio_url}`);
+  const audio = new Audio(audio_url);
   audio.volume = volume;
   currentSystemAudio = audio;
   window.setSystemLipSyncData?.(timeline, audio);
@@ -608,11 +582,10 @@ window.cancelSystemTts = function() {
 
 async function takeScreenshot() {
   try {
-    const path = await invoke("take_screenshot", {
+    await invoke("take_screenshot", {
       monitorIdx: selectedMonitorIdx,
       clip: selectedClip,
     });
-    send({ type: "frame_ready", path });
   } catch (e) {
     console.error("[screenshot] take_screenshot failed:", e);
     setPhase(`Error: screenshot failed: ${e}`, "none");
@@ -634,7 +607,7 @@ function stopCycle() {
   startStopBtn.disabled = true;
   window.stopAvatar?.();
   setPhase("Idle", "none");
-  if (!pendingStart) send({ type: "stop_cycle" });
+  if (!pendingStart) invoke("stop_cycle").catch(reportError);
 }
 
 startStopBtn.addEventListener("click", () => {
@@ -654,8 +627,7 @@ startStopBtn.addEventListener("click", () => {
     _startCycleTimer = setTimeout(() => {
       _startCycleTimer = null;
       if (!running) return;
-      send({ type: "start_cycle" });
-      takeScreenshot();
+      invoke("start_cycle").then(takeScreenshot).catch(reportError);
     }, delayMs);
   }
 });
@@ -725,12 +697,9 @@ function populateModal() {
   _updatePromptsetBtns();
   cfgAvatarModel.value = currentConfig.active_model ?? "default";
   cfgIdleToDance.value = currentConfig.idle_to_dance_secs ?? 180;
-  if (port) {
-    fetch(`http://127.0.0.1:${port}/avatar-models`)
-      .then(r => r.json())
-      .then(d => { avatarModelNames = _toModelCandidates(d.names ?? ["default"]); })
-      .catch(() => {});
-  }
+  invoke("avatar_models")
+    .then(names => { avatarModelNames = _toModelCandidates(names); })
+    .catch(() => {});
   cfgBgColor.value = bgColor;
   cfgBgPreview.style.background = bgColor;
   cfgFgColor.value = fgColor;
@@ -864,7 +833,7 @@ avatarModelComboBtn.addEventListener("mousedown", (e) => {
 });
 
 openModelFolderBtn.addEventListener("click", () => {
-  if (port) fetch(`http://127.0.0.1:${port}/open_model_dir`);
+  invoke("open_model_dir").catch(reportError);
 });
 
 function setVolume(v, save = false) {
@@ -978,21 +947,20 @@ modalOk.addEventListener("click", () => {
   localStorage.setItem("lpc_monitor", String(selectedMonitorIdx));
   localStorage.setItem("lpc_clip", selectedClip ? JSON.stringify(selectedClip) : "");
 
-  send({ type: "set_config", data: updates, persist: true });
+  const configSaved = invoke("set_config", { data: updates, persist: true }).catch(reportError);
   window.setIdleToDanceSecs?.(updates.idle_to_dance_secs);
 
   const avatarModelChanged = updates.active_model !== (currentConfig.active_model ?? "default");
   if (avatarModelChanged) {
     closeModal();
     setPhase("Reloading for model change…", "up");
-    setTimeout(() => location.reload(), 500);
+    configSaved.then(() => setTimeout(() => location.reload(), 500));
     return;
   }
 
   // Apply the prompt fields exactly as shown, whether or not they were saved as
   // a named promptset. Session-only — a Save persists them, a restart reverts.
-  send({
-    type: "apply_prompts",
+  invoke("apply_prompts", {
     fields: {
       system_prompt:   cfgSystemPrompt.value,
       prompt:          cfgPromptText.value,
@@ -1003,7 +971,7 @@ modalOk.addEventListener("click", () => {
       farewell_prompt: cfgFarewellPrompt.value,
       lonely_prompt:   cfgLonelyPrompt.value,
     },
-  });
+  }).catch(reportError);
   closeModal();
 });
 
@@ -1053,14 +1021,15 @@ cfgPromptset.addEventListener("input", _updatePromptsetBtns);
 
 promptsetLoad.addEventListener("click", () => {
   const name = cfgPromptset.value.trim() || "default";
-  send({ type: "load_promptset", name });
+  invoke("load_promptset", { name })
+    .then(r => handleMessage({ type: "promptset_loaded", ...r }))
+    .catch(reportError);
 });
 
 promptsetSave.addEventListener("click", () => {
   const name = cfgPromptset.value.trim();
   if (!name || name === "default") return;
-  send({
-    type: "save_promptset",
+  invoke("save_promptset", {
     name,
     fields: {
       system_prompt:   cfgSystemPrompt.value,
@@ -1072,104 +1041,41 @@ promptsetSave.addEventListener("click", () => {
       farewell_prompt: cfgFarewellPrompt.value,
       lonely_prompt:   cfgLonelyPrompt.value,
     },
-  });
+  })
+    .then(names => handleMessage({ type: "promptsets", names }))
+    .catch(reportError);
 });
 
 promptsetDelete.addEventListener("click", () => {
   const name = cfgPromptset.value.trim();
   if (!name || name === "default") return;
-  send({ type: "delete_promptset", name });
+  invoke("delete_promptset", { name })
+    .then(r => handleMessage({ type: "promptset_loaded", ...r }))
+    .catch(reportError);
 });
 
-// --- CUDA upgrade banner ---
-let pendingCuIndex = null;
-
-cudaInstallBtn.addEventListener("click", () => {
-  if (!pendingCuIndex) return;
-  cudaInstallBtn.disabled = true;
-  cudaDismissBtn.disabled = true;
-  invoke("install_cuda_torch", { cuIndex: pendingCuIndex });
-});
-
-cudaDismissBtn.addEventListener("click", () => {
-  cudaBanner.classList.add("hidden");
-});
-
-splashRestartBtn.addEventListener("click", () => {
-  splashRestartBtn.classList.add("hidden");
-  setPhase("Restarting…", "up");
-  invoke("restart_backend");
-});
-
-// --- Init ---
-async function main() {
-  setPhase("Starting up…", "up");
-
-  // Register early so splash status updates during uv sync / backend setup,
-  // and so backend_crashed is never missed while invoke is still pending.
-  await listen("setup_progress", ({ payload }) => setPhase(payload, "up"));
-  await listen("backend_crashed", ({ payload }) => {
-    setRunning(false);
-    configReceived = false;
-    modelsReceived = false;
-    backendReady   = false;
-    checkReady();
-    showSplash();
-    setPhase(payload || "Backend crashed", "none");
-    splashRestartBtn.classList.remove("hidden");
-  });
-
-  await listen("cuda_install_progress", ({ payload }) => {
-    cudaBannerMsg.textContent = payload;
-  });
-  await listen("cuda_install_done", () => {
-    cudaBannerMsg.textContent = "CUDA PyTorch installed. Restart the backend to use GPU acceleration.";
-    cudaInstallBtn.textContent = "Restart";
-    cudaInstallBtn.disabled = false;
-    cudaInstallBtn.onclick = () => { stopCycle(); cudaBanner.classList.add("hidden"); showSplash(); invoke("restart_backend"); };
-    cudaDismissBtn.classList.add("hidden");
-  });
-  await listen("cuda_install_failed", ({ payload }) => {
-    cudaBannerMsg.textContent = `Installation failed: ${payload}`;
-    cudaInstallBtn.disabled = false;
-    cudaDismissBtn.disabled = false;
-  });
-
-  const [backendPort, cuIndex] = await invoke("get_backend_port");
-  port = backendPort;
-  if (cuIndex) {
-    pendingCuIndex = cuIndex;
-    cudaBannerMsg.textContent =
-      `NVIDIA GPU detected (${cuIndex}). Install CUDA-optimised PyTorch for faster inference?`;
-    cudaBanner.classList.remove("hidden");
-  }
-  connectWebSocket();
-}
-
-// Fetch model config and init avatar once the WebSocket confirms the backend
-// is up. Guarded to run only once — a WS reconnect (e.g. after a network
-// blip) shouldn't reload the avatar model.
+// Fetch model config and init avatar. Guarded to run only once.
 let _avatarInitStarted = false;
 async function initAvatarOnce() {
   if (_avatarInitStarted) return;
   _avatarInitStarted = true;
-  const modelCfg = await fetch(`http://127.0.0.1:${port}/model-config?t=${Date.now()}`).then(r => r.json()).catch(() => ({}));
+  const modelCfg = await invoke("model_config").catch(() => ({}));
   window.initLipSync?.(modelCfg);
-  window.initAvatar?.(modelCfg, port);
+  window.initAvatar?.(modelCfg);
   const _SYSTEM_MSG_NAMES = new Set(['greeting', 'farewell', 'lonely']);
   window.onAvatarHidden = function () { _stopPending = false; checkReady(); };
   window.setSynthesisCallback?.((payload) => {
     _systemTtsCancelled = false;
-    const body = _SYSTEM_MSG_NAMES.has(payload) ? { name: payload } : { text: payload };
-    fetch(`http://127.0.0.1:${port}/synthesize`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }).catch(() => window.systemAudioEnded?.());
+    const call = _SYSTEM_MSG_NAMES.has(payload)
+      ? invoke("play_system_message", { name: payload })
+      : invoke("synthesize", { text: payload });
+    call.catch(() => window.systemAudioEnded?.());
   });
 }
 
-main();
+// Wait for "load": the avatar module (imports from a CDN) only defines
+// window.initAvatar and friends once it has run, which "load" waits for.
+window.addEventListener("load", connectBackend);
 
 // --- Appearance colors ---
 function isValidHex(s) { return /^#[0-9a-fA-F]{6}$/.test(s); }
@@ -1686,7 +1592,6 @@ document.addEventListener("drop", async (e) => {
   e.preventDefault();
   _dragDepth = 0;
   dropOverlay.classList.add("hidden");
-  if (!port) return;
   const files = [...(e.dataTransfer.files ?? [])].filter(f => /\.(glb|vrm)$/i.test(f.name));
   if (!files.length) return;
   for (const file of files) await _uploadModelFile(file);
@@ -1695,15 +1600,11 @@ document.addEventListener("drop", async (e) => {
 async function _uploadModelFile(file) {
   setPhase(`Uploading ${file.name}…`, "up");
   try {
-    const resp = await fetch(`http://127.0.0.1:${port}/upload_model`, {
-      method: "POST",
+    const data = await invoke("upload_model", await file.arrayBuffer(), {
       headers: { "X-Filename": file.name },
-      body: await file.arrayBuffer(),
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
     avatarModelNames = _toModelCandidates(data.names ?? []);
-    send({ type: "set_config", data: { active_model: data.name }, persist: true });
+    await invoke("set_config", { data: { active_model: data.name }, persist: true });
     setPhase("Reloading for new model…", "up");
     setTimeout(() => location.reload(), 500);
   } catch (err) {

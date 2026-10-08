@@ -1,29 +1,35 @@
-use std::process::Child;
-use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tauri::Manager;
 use tauri_plugin_window_state::WindowExt;
 
+// The Python backend's supervision code. Nothing starts it any more (phase 5);
+// `AppState::new` still uses `backend::get_backend_dir` to find the old data
+// folders to migrate. All removed in phase 7.
+#[allow(dead_code)]
 mod antivirus;
-mod avatar;
+#[allow(dead_code)]
 mod backend;
+#[allow(dead_code)]
+mod cuda;
+#[allow(dead_code)]
+mod flash_attn;
+#[allow(dead_code)]
+mod util;
+#[allow(dead_code)]
+mod uv;
+
+mod avatar;
 mod catalogue;
 mod commands;
 mod config;
-mod cuda;
 mod difference;
 mod events;
-mod flash_attn;
 mod pipeline;
 mod promptsets;
 mod screensaver;
 mod screenshot;
 mod state;
-mod util;
-mod uv;
 
-use backend::{BackendProcess, BackendState};
-use cuda::InstallState;
 use screenshot::ScreenshotState;
 
 /// Installs the tauri-plugin-log logger. Release builds also write to a file in
@@ -63,57 +69,20 @@ fn restore_window(app: &tauri::App) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let port = util::find_free_port();
-
-    // Register signal handlers before spawning anything so Ctrl-C and SIGTERM
-    // always kill the backend process group before terminating.
-    #[cfg(unix)]
-    backend::install_signal_handlers();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
-        .setup(move |app| {
+        .setup(|app| {
             init_logging(app)?;
             restore_window(app);
 
-            let uv = uv::get_uv_path(app.handle());
-
-            // Manage InstallState immediately — get_backend_dir is a pure path
-            // computation and does not run uv sync.
-            let backend_dir = backend::get_backend_dir(app.handle());
-            app.manage(InstallState {
-                uv_path: uv.clone(),
-                backend_dir: backend_dir.clone(),
-            });
-
-            let frames_dir = backend_dir.join("frames");
+            let frames_dir = app.path().app_data_dir()?.join("frames");
             let _ = std::fs::create_dir_all(&frames_dir);
             app.manage(ScreenshotState {
                 frames_dir,
-                frame_slot: AtomicUsize::new(0),
                 is_wsl: screenshot::detect_wsl(),
-            });
-
-            // Run before managing state so the result is available synchronously
-            // when get_backend_port is called.
-            let cuda_suggestion = cuda::detect_cuda_suggestion(app.handle());
-
-            // Pre-allocate BackendState with the chosen port; the child process
-            // handle starts as None and is filled in once the background task
-            // spawns the backend (after uv sync completes).
-            let inner = Arc::new(Mutex::new(None::<Child>));
-            app.manage(BackendState {
-                port,
-                process: BackendProcess { inner: Arc::clone(&inner) },
-                cuda_suggestion,
             });
             app.manage(screensaver::ScreensaverState::default());
 
-            backend::spawn_backend_setup(app.handle().clone(), port, uv, inner);
-
-            // Phase 4: the Rust pipeline and its Tauri surface, developed
-            // and exercised alongside the Python backend above (which keeps
-            // running until phase 5 switches the frontend over).
             let app_state = Arc::new(state::AppState::new(app.handle())?);
             let scope = app.asset_protocol_scope();
             let _ = scope.allow_directory(app_state.model_dir(), true);
@@ -126,9 +95,6 @@ pub fn run() {
         })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            backend::get_backend_port,
-            cuda::install_cuda_torch,
-            backend::restart_backend,
             screenshot::list_monitors,
             screenshot::capture_monitor_preview,
             screenshot::take_screenshot,
@@ -154,15 +120,5 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                // Kill the backend here rather than relying solely on Drop.
-                // The monitor thread holds an AppHandle clone, which keeps
-                // BackendState (and its Drop) alive until the thread exits —
-                // but the thread only exits when it sees None in the mutex,
-                // which Drop sets... creating a cycle. RunEvent::Exit fires
-                // before that cycle becomes a problem.
-                app_handle.state::<BackendState>().process.kill();
-            }
-        });
+        .run(|_, _| {});
 }

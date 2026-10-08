@@ -569,8 +569,12 @@ mod tests {
         (DynamicImage::ImageRgb8(a), DynamicImage::ImageRgb8(b))
     }
 
+    /// `tests/data/frame_{0,1}.png` are two scans of Hokusai's "The Great Wave
+    /// off Kanagawa" (public domain), see `tests/data/README.md`. The tests
+    /// skip when either file is missing. The Python reference values below
+    /// were generated from this pair with the real `screenshot.difference`.
     fn real_frames() -> Option<(DynamicImage, DynamicImage)> {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("backend/frames");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
         let (p0, p1) = (dir.join("frame_0.png"), dir.join("frame_1.png"));
         if !p0.exists() || !p1.exists() {
             eprintln!("skipping: {} not present on this machine", dir.display());
@@ -603,7 +607,7 @@ mod tests {
 
         if let Some((f0, f1)) = real_frames() {
             let got = difference(&f0, &f1, "mse").unwrap();
-            assert!((got - 0.25891903042793274).abs() < 1e-6, "got {got}");
+            assert!((got - 0.0785212367773056).abs() < 1e-6, "got {got}");
         }
     }
 
@@ -615,7 +619,7 @@ mod tests {
 
         if let Some((f0, f1)) = real_frames() {
             let got = difference(&f0, &f1, "ssim").unwrap();
-            assert!((got - 0.3044187016073784).abs() < 1e-3, "got {got}");
+            assert!((got - 0.3787264328473226).abs() < 1e-3, "got {got}");
         }
     }
 
@@ -653,12 +657,12 @@ mod tests {
     fn hash_measures_are_close_to_python_on_real_frames() {
         let Some((f0, f1)) = real_frames() else { return };
         for (measure, expected) in [
-            ("average_hash", 0.296875),
-            ("phash", 0.53125),
-            ("phash_simple", 0.4375),
-            ("dhash", 0.4375),
-            ("dhash_vertical", 0.5),
-            ("whash", 0.4375),
+            ("average_hash", 0.125),
+            ("phash", 0.21875),
+            ("phash_simple", 0.078125),
+            ("dhash", 0.171875),
+            ("dhash_vertical", 0.21875),
+            ("whash", 0.125),
         ] {
             assert_close_to_python(measure, &f0, &f1, expected, 0.1);
         }
@@ -667,7 +671,7 @@ mod tests {
     /// `colorhash` deliberately diverges from Python here (see `hash_diff`'s
     /// doc comment): dividing by its 42 total bits instead of Python's
     /// `14**2 = 196` rescales the same Hamming distance, so these expected
-    /// values are Python's own (`3/196`, `8/196`) recomputed over 42 instead
+    /// values are Python's own (`3/196`, `1/196`) recomputed over 42 instead
     /// of 196. `colorhash` doesn't resize the image, so unlike the other
     /// hash measures this should match closely, not just approximately.
     #[test]
@@ -676,7 +680,7 @@ mod tests {
         assert_close_to_python("colorhash", &a, &b, 3.0 / 42.0, 1e-9);
 
         if let Some((f0, f1)) = real_frames() {
-            assert_close_to_python("colorhash", &f0, &f1, 8.0 / 42.0, 1e-9);
+            assert_close_to_python("colorhash", &f0, &f1, 1.0 / 42.0, 1e-9);
         }
     }
 
