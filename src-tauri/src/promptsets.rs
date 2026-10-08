@@ -90,6 +90,22 @@ impl Promptset {
     }
 }
 
+impl Promptset {
+    /// The five fields a [`vlm_describer::Describer`] takes, dropping the
+    /// three system-message prompts (used to push the active promptset onto
+    /// the live describer without a model reload; `_apply_prompt_fields` in
+    /// Python).
+    pub fn describer_prompts(&self) -> vlm_describer::Prompts {
+        vlm_describer::Prompts {
+            system_prompt: self.system_prompt.clone(),
+            prompt: self.prompt.clone(),
+            first_prompt: self.first_prompt.clone(),
+            history_prompt: self.history_prompt.clone(),
+            compact_prompt: self.compact_prompt.clone(),
+        }
+    }
+}
+
 /// Named promptsets stored as `*.yaml` files under `dir`.
 pub struct Promptsets {
     dir: PathBuf,
@@ -230,8 +246,7 @@ mod tests {
     fn save_then_load_round_trips_and_refuses_default() {
         let dir = temp_dir("save");
         let sets = Promptsets::new(dir.clone()).unwrap();
-        let mut fields = Promptset::default();
-        fields.system_prompt = "a custom set".to_string();
+        let fields = Promptset { system_prompt: "a custom set".to_string(), ..Promptset::default() };
         sets.save("custom", &fields).unwrap();
         assert_eq!(sets.load("custom").unwrap(), fields);
         assert!(sets.save(DEFAULT_NAME, &fields).is_err());
@@ -254,10 +269,22 @@ mod tests {
 
     #[test]
     fn substitute_tags_dedupes_and_always_includes_neutral() {
-        let mut fields = Promptset::default();
-        fields.system_prompt = "chosen from: <|tags|>.".to_string();
+        let fields = Promptset { system_prompt: "chosen from: <|tags|>.".to_string(), ..Promptset::default() };
         let substituted = fields.substitute_tags(&["joy", "surprised", "joy"]);
         assert_eq!(substituted.system_prompt, "chosen from: {joy}, {surprised}, {neutral}.");
+    }
+
+    #[test]
+    fn describer_prompts_carries_the_five_describer_fields() {
+        let fields = Promptset {
+            system_prompt: "custom system".to_string(),
+            greeting_prompt: "custom greeting".to_string(),
+            ..Promptset::default()
+        };
+        let prompts = fields.describer_prompts();
+        assert_eq!(prompts.system_prompt, "custom system");
+        assert_eq!(prompts.prompt, Promptset::default().prompt);
+        // Greeting isn't a describer field; describer_prompts has no such slot.
     }
 
     #[test]

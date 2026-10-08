@@ -24,7 +24,13 @@ mod config;
 #[allow(dead_code)]
 mod difference;
 #[allow(dead_code)]
+mod events;
+#[allow(dead_code)]
+mod pipeline;
+#[allow(dead_code)]
 mod promptsets;
+#[allow(dead_code)]
+mod state;
 
 use backend::{BackendProcess, BackendState};
 use cuda::InstallState;

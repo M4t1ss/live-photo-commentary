@@ -204,8 +204,7 @@ mod tests {
 
     #[test]
     fn apply_null_clears_an_option_field() {
-        let mut base = Config::default();
-        base.gemini_api_key = Some("secret".to_string());
+        let base = Config { gemini_api_key: Some("secret".to_string()), ..Config::default() };
         let updates = serde_json::json!({ "gemini_api_key": null });
         let updated = base.apply(updates.as_object().unwrap()).unwrap();
         assert_eq!(updated.gemini_api_key, None);
@@ -213,8 +212,7 @@ mod tests {
 
     #[test]
     fn masked_only_replaces_set_api_keys() {
-        let mut c = Config::default();
-        c.gemini_api_key = Some("secret".to_string());
+        let c = Config { gemini_api_key: Some("secret".to_string()), ..Config::default() };
         let masked = c.masked();
         assert_eq!(masked.gemini_api_key, Some("***".to_string()));
         assert_eq!(masked.openai_api_key, None);
@@ -225,8 +223,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lpc-config-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
-        let mut c = Config::default();
-        c.tts_voice = "af_nicole".to_string();
+        let c = Config { tts_voice: "af_nicole".to_string(), ..Config::default() };
         c.save(&path).unwrap();
         let loaded = Config::load(&path).unwrap();
         assert_eq!(c, loaded);
