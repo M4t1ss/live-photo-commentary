@@ -3,11 +3,9 @@
 //! ad-hoc prompt overrides from the Settings "OK" button, and the
 //! pre-generation sequence counter.
 //!
-//! Cloud describer construction (`_make_describer`'s gemini/openai
-//! branches) is pure and fully ported here. The `local` branch needs the
-//! catalogue rework of phase 6 (GGUF/mmproj file names per entry) plus a
-//! download step, so it isn't wired up yet; `build_describer_backend`
-//! reports that clearly instead of guessing.
+//! Describer construction (`_make_describer`): the cloud providers are pure;
+//! `local` downloads the catalogue entry's GGUF files (reporting progress)
+//! and loads them with llama.cpp.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,7 +16,7 @@ use kokoro_timestamped::{KokoroSynthesizer, Voice, VoiceBlendPart};
 use tauri::Manager;
 
 use crate::avatar::AvatarModels;
-use crate::catalogue::Catalogue;
+use crate::catalogue::{Catalogue, CatalogueEntry};
 use crate::config::Config;
 use crate::events::{Event, ModelKind};
 use crate::pipeline::Pipeline;
@@ -81,8 +79,8 @@ pub async fn build_synthesizer(cfg: &Config) -> Result<kokoro_timestamped::Kokor
 }
 
 /// Builds the backend for a cloud VLM provider (`_make_describer` in
-/// Python). `local` isn't implemented yet — see the module doc.
-pub fn build_describer_backend(cfg: &Config) -> Result<vlm_describer::Backend, String> {
+/// Python).
+fn build_cloud_backend(cfg: &Config) -> Result<vlm_describer::Backend, String> {
     let model = cfg.vlm_model.clone().ok_or_else(|| "no VLM model configured".to_string())?;
     match cfg.vlm_provider.as_deref() {
         Some("gemini") => {
@@ -101,9 +99,61 @@ pub fn build_describer_backend(cfg: &Config) -> Result<vlm_describer::Backend, S
             }
             Ok(vlm_describer::Backend::OpenAi(openai))
         }
-        Some("local") => Err("the local VLM provider isn't wired up yet (phase 6)".to_string()),
         Some(other) => Err(format!("unknown VLM provider {other:?}")),
         None => Err("no VLM provider configured".to_string()),
+    }
+}
+
+/// Downloads (if needed) and loads a local model. Downloading is async;
+/// loading takes seconds of CPU and disk, so it runs on a blocking thread.
+/// `gpu_layers` is how many layers go to the GPU.
+async fn build_local_backend(
+    entry: &CatalogueEntry,
+    progress: vlm_describer::DownloadProgress,
+    gpu_layers: u32,
+) -> Result<vlm_describer::Backend, String> {
+    let files = entry.gguf.as_ref().ok_or_else(|| {
+        format!(
+            "'{}' is not in the catalogue; add gguf_repo, model_file and mmproj_file to the model overrides",
+            entry.name
+        )
+    })?;
+    let (model, mmproj) = vlm_describer::download_model(&files.repo, &files.model_file, &files.mmproj_file, Some(progress))
+        .await
+        .map_err(|e| e.to_string())?;
+    let sampling = entry.sampling();
+    let loaded = tokio::task::spawn_blocking(move || {
+        vlm_describer::LlamaCpp::new(&model, &mmproj, gpu_layers).map(|llama| llama.with_sampling(sampling))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    Ok(vlm_describer::Backend::LlamaCpp(loaded))
+}
+
+/// Builds the describer for `cfg`: the backend for its provider, with the
+/// catalogue entry's `response_re` (and the "Model overrides" setting merged
+/// over the entry). An old local model must be dropped before this is
+/// called, because llama.cpp's backend is global.
+pub async fn build_describer(
+    cfg: &Config,
+    catalogue: &Catalogue,
+    progress: vlm_describer::DownloadProgress,
+    gpu_layers: u32,
+) -> Result<vlm_describer::Describer, String> {
+    let model = cfg.vlm_model.clone().ok_or_else(|| "no VLM model configured".to_string())?;
+    let mut entry = catalogue.entry_for_model(&model);
+    if let Some(overrides) = &cfg.vlm_model_overrides {
+        entry = entry.with_overrides(overrides);
+    }
+    let backend = match cfg.vlm_provider.as_deref() {
+        Some("local") => build_local_backend(&entry, progress, gpu_layers).await?,
+        _ => build_cloud_backend(cfg)?,
+    };
+    let describer = vlm_describer::Describer::new(backend);
+    match &entry.response_re {
+        Some(pattern) => describer.with_response_re(pattern).map_err(|e| format!("invalid response_re: {e}")),
+        None => Ok(describer),
     }
 }
 
@@ -228,10 +278,10 @@ impl PregenSequencer {
 /// `pipeline.rs`'s own tests drive it with).
 pub type AppPipeline = Pipeline<vlm_describer::Describer, KokoroSynthesizer>;
 
-/// Where bundled avatar models (and, in debug builds, the catalogue YAML)
-/// live: the repo's own folders in debug, the bundled resources in release
-/// (`tauri.bundle.conf.json`'s `resources` list; mirrors `locate_screenshot_exe`
-/// in `screenshot.rs` and `get_backend_dir` in `backend.rs`).
+/// Where bundled avatar models live: the repo's own folder in debug, the
+/// bundled resources in release (`tauri.bundle.conf.json`'s `resources` list;
+/// mirrors `locate_screenshot_exe` in `screenshot.rs` and `get_backend_dir`
+/// in `backend.rs`).
 fn bundled_models_dir(app: &tauri::AppHandle) -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("has a parent").join("models")
@@ -248,20 +298,6 @@ fn animations_dir(app: &tauri::AppHandle) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("has a parent").join("animations")
     } else {
         app.path().resource_dir().expect("resource dir unavailable").join("resources").join("models").join("animations")
-    }
-}
-
-fn vlm_catalogue_path(app: &tauri::AppHandle) -> PathBuf {
-    if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("has a parent")
-            .join("backend/live_photo_commentary/vlm_models.yaml")
-    } else {
-        app.path()
-            .resource_dir()
-            .expect("resource dir unavailable")
-            .join("resources/backend/live_photo_commentary/vlm_models.yaml")
     }
 }
 
@@ -310,7 +346,7 @@ impl AppState {
         let model_dir = bundled_models_dir(app);
         let avatar_models = AvatarModels::new(model_dir.clone(), user_models_dir)?;
 
-        let catalogue = Catalogue::load(&vlm_catalogue_path(app))?;
+        let catalogue = Catalogue::parse(include_str!("../vlm_models.yaml"))?;
 
         let channel: Arc<Mutex<Option<tauri::ipc::Channel<serde_json::Value>>>> = Arc::new(Mutex::new(None));
         let sink: crate::events::EventSink = {
@@ -548,9 +584,15 @@ impl AppState {
             self.send(Event::LoadProgress { message: "Releasing previous model…".to_string() });
         }
 
-        match build_describer_backend(&cfg) {
-            Ok(backend) => {
-                self.set_describer_blocking(Some(vlm_describer::Describer::new(backend))).await;
+        let progress: vlm_describer::DownloadProgress = {
+            let this = Arc::clone(self);
+            Arc::new(move |file, downloaded, total| {
+                this.send(Event::DownloadProgress { file: file.to_string(), downloaded, total });
+            })
+        };
+        match build_describer(&cfg, &self.catalogue, progress, crate::gpu::gpu_layers()).await {
+            Ok(describer) => {
+                self.set_describer_blocking(Some(describer)).await;
                 self.apply_active_promptset_to_describer();
                 self.vlm_ready.store(true, Ordering::SeqCst);
                 self.send(Event::ModelReady { model: ModelKind::Vlm });
@@ -677,33 +719,103 @@ mod tests {
     }
 
     #[test]
-    fn build_describer_backend_for_gemini_and_openai() {
+    fn build_cloud_backend_for_gemini_and_openai() {
         let cfg = Config {
             vlm_provider: Some("gemini".to_string()),
             vlm_model: Some("gemini-3.5-flash".to_string()),
             gemini_api_key: Some("secret".to_string()),
             ..Config::default()
         };
-        assert!(matches!(build_describer_backend(&cfg), Ok(vlm_describer::Backend::Gemini(_))));
+        assert!(matches!(build_cloud_backend(&cfg), Ok(vlm_describer::Backend::Gemini(_))));
 
         let cfg = Config {
             vlm_provider: Some("openai".to_string()),
             vlm_model: Some("gpt-4o".to_string()),
             ..Config::default()
         };
-        assert!(matches!(build_describer_backend(&cfg), Ok(vlm_describer::Backend::OpenAi(_))));
+        assert!(matches!(build_cloud_backend(&cfg), Ok(vlm_describer::Backend::OpenAi(_))));
     }
 
     #[test]
-    fn build_describer_backend_reports_local_and_missing_config_clearly() {
+    fn build_cloud_backend_reports_missing_config_clearly() {
+        assert!(build_cloud_backend(&Config::default()).is_err());
+        let cfg = Config { vlm_provider: Some("nope".to_string()), vlm_model: Some("m".to_string()), ..Config::default() };
+        assert!(build_cloud_backend(&cfg).err().unwrap().contains("nope"));
+    }
+
+    fn no_progress() -> vlm_describer::DownloadProgress {
+        Arc::new(|_, _, _| {})
+    }
+
+    #[tokio::test]
+    async fn build_describer_applies_the_entrys_response_re() {
+        let catalogue = Catalogue::parse("gemini:\n  - gemini-a\n").unwrap();
         let cfg = Config {
-            vlm_provider: Some("local".to_string()),
-            vlm_model: Some("org/model".to_string()),
+            vlm_provider: Some("gemini".to_string()),
+            vlm_model: Some("gemini-a".to_string()),
+            vlm_model_overrides: Some(r#"{"response_re": "(unclosed"}"#.to_string()),
             ..Config::default()
         };
-        assert!(build_describer_backend(&cfg).is_err());
+        let error = build_describer(&cfg, &catalogue, no_progress(), 0).await.err().expect("bad regex");
+        assert!(error.contains("response_re"), "{error}");
 
-        assert!(build_describer_backend(&Config::default()).is_err());
+        let cfg = Config { vlm_model_overrides: Some(r#"{"response_re": "(.*)"}"#.to_string()), ..cfg };
+        assert!(build_describer(&cfg, &catalogue, no_progress(), 0).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_local_model_outside_the_catalogue_needs_files_in_the_overrides() {
+        let catalogue = Catalogue::parse("gemini:\n  - gemini-a\n").unwrap();
+        let cfg = Config {
+            vlm_provider: Some("local".to_string()),
+            vlm_model: Some("my/model".to_string()),
+            ..Config::default()
+        };
+        let error = build_describer(&cfg, &catalogue, no_progress(), 0).await.err().expect("no files");
+        assert!(error.contains("my/model") && error.contains("gguf_repo"), "{error}");
+    }
+
+    /// Loads the local catalogue entry named by `LOCAL_MODEL` (default
+    /// `google/gemma-4-E2B-it`) through `build_describer`, as the app does,
+    /// and describes the two sample frames, printing the times. Downloads the
+    /// model on first use. `GPU_LAYERS` (default: `gpu_layers()`) picks CPU or
+    /// GPU. Run on request, in release mode for CPU timings:
+    /// `LOCAL_MODEL=Qwen/Qwen3-VL-2B-Instruct cargo test -p app --lib --features vulkan -- --ignored --nocapture real_local_model`
+    #[tokio::test]
+    #[ignore]
+    async fn real_local_model_describes_the_sample_frames() {
+        let frames_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+        let model = std::env::var("LOCAL_MODEL").unwrap_or_else(|_| "google/gemma-4-E2B-it".to_string());
+        // `CUDA_BACKEND_DIR`: a folder with the CUDA backend, as unpacked by the
+        // app, to run on instead of the installer's Vulkan.
+        if let Some(dir) = std::env::var_os("CUDA_BACKEND_DIR") {
+            crate::cuda_backend::load(std::path::Path::new(&dir));
+        }
+        vlm_describer::load_backends(None);
+        let devices = vlm_describer::backend_devices();
+        println!("devices: {devices:?}
+model runs on: {:?}", vlm_describer::preferred_gpu(&devices));
+        let gpu_layers = std::env::var("GPU_LAYERS").map_or_else(|_| crate::gpu::gpu_layers(), |v| v.parse().expect("GPU_LAYERS"));
+        let catalogue = Catalogue::parse(include_str!("../vlm_models.yaml")).unwrap();
+        let cfg = Config { vlm_provider: Some("local".to_string()), vlm_model: Some(model.clone()), ..Config::default() };
+        let progress: vlm_describer::DownloadProgress =
+            Arc::new(|file, done, total| eprintln!("downloading {file}: {done}/{total}"));
+
+        let start = std::time::Instant::now();
+        let mut describer = build_describer(&cfg, &catalogue, progress, gpu_layers).await.expect("load the model");
+        println!("{model}: loaded in {:.1}s with {gpu_layers} GPU layers", start.elapsed().as_secs_f64());
+        describer.prompts = describer.prompts.with_tags(&["joy", "surprised", "sad"]);
+        describer.max_history_size = 3;
+
+        let mut previous = None;
+        for name in ["frame_0.png", "frame_1.png", "frame_0.png", "frame_1.png"] {
+            let image = image::open(frames_dir.join(name)).expect("decode frame");
+            let start = std::time::Instant::now();
+            let comment = describer.describe(&image, previous.as_ref()).await.expect("describe");
+            println!("{name} ({:.1}s): {comment}
+", start.elapsed().as_secs_f64());
+            previous = Some(image);
+        }
     }
 
     #[test]

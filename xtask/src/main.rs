@@ -6,6 +6,15 @@
 //! `espeak-ng-data` folder, into `OUT_DIR`. With `--tauri`, the helper is
 //! named `kokoro-espeak-<target triple>`, as Tauri sidecars require.
 //!
+//! `cargo xtask package-cuda-backend OUT_DIR [--release]`
+//!
+//! Builds the app with `dynamic-backends,cuda` and zips the CUDA backend
+//! library with NVIDIA's cuBLAS libraries (from `CUDA_PATH`) into
+//! `OUT_DIR/cuda-backend-<os>-x64.zip`, plus a `.sha256` file with the
+//! checksum the app is built with (`CUDA_BACKEND_SHA256`). The app downloads
+//! this archive from Settings. Set `CMAKE_CUDA_ARCHITECTURES` to build for
+//! fewer GPU generations than the default (all), e.g. `86`.
+//!
 //! `espeak-ng-data` is created inside espeak-rs-sys's build directory, whose
 //! name has a hash in it. Cargo reports that directory in its JSON messages
 //! (`build-script-executed`), so it's taken from there.
@@ -17,13 +26,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
-const USAGE: &str = "usage: cargo xtask package-helper OUT_DIR [--target TRIPLE] [--tauri]";
+const USAGE: &str = "usage: cargo xtask package-helper OUT_DIR [--target TRIPLE] [--tauri]
+       cargo xtask package-cuda-backend OUT_DIR [--release]";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("package-helper") => package_helper(&args[1..]),
+        Some("package-cuda-backend") => package_cuda_backend(&args[1..]),
         _ => Err(USAGE.into()),
     }
 }
@@ -142,4 +154,98 @@ fn copy_dir(source: &Path, destination: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn package_cuda_backend(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let mut out_dir = None;
+    let mut release = false;
+    for arg in args {
+        match arg.as_str() {
+            "--release" => release = true,
+            _ if out_dir.is_none() => out_dir = Some(PathBuf::from(arg)),
+            _ => return Err(format!("unexpected argument {arg:?}
+{USAGE}").into()),
+        }
+    }
+    let out_dir = std::path::absolute(out_dir.ok_or(USAGE)?)?;
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask is in the workspace");
+
+    // The app's build script copies the backend library to `llama-cuda/backends`.
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut build = Command::new(cargo);
+    build.current_dir(workspace).args(["build", "-p", "app", "--features", "dynamic-backends,cuda"]);
+    if release {
+        build.arg("--release");
+    }
+    if !build.status()?.success() {
+        return Err("building the app with CUDA failed".into());
+    }
+    let (os, backend_name) = if cfg!(windows) {
+        ("windows", "ggml-cuda.dll")
+    } else {
+        ("linux", "libggml-cuda.so")
+    };
+    let backend = workspace.join("src-tauri/resources/llama-cuda/backends").join(backend_name);
+    if !backend.is_file() {
+        return Err(format!("{} was not built", backend.display()).into());
+    }
+
+    let mut files = vec![backend];
+    files.extend(cublas_libraries()?);
+
+    fs::create_dir_all(&out_dir)?;
+    let archive = out_dir.join(format!("cuda-backend-{os}-x64.zip"));
+    let mut zip = zip::ZipWriter::new(fs::File::create(&archive)?);
+    for file in &files {
+        let name = file.file_name().ok_or("file without a name")?.to_string_lossy().into_owned();
+        zip.start_file(name, zip::write::SimpleFileOptions::default().large_file(true))?;
+        std::io::copy(&mut fs::File::open(file)?, &mut zip)?;
+    }
+    zip.finish()?;
+
+    let digest = Sha256::digest(fs::read(&archive)?);
+    let checksum: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    fs::write(archive.with_extension("zip.sha256"), format!("{checksum}
+"))?;
+    println!("{} ({} files)
+sha256 {checksum}", archive.display(), files.len());
+    Ok(())
+}
+
+/// cuBLAS and cuBLASLt from the CUDA Toolkit, which the backend needs at run
+/// time and which NVIDIA lets applications redistribute.
+fn cublas_libraries() -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let cuda = std::env::var_os("CUDA_PATH")
+        .map(PathBuf::from)
+        .or_else(|| cfg!(unix).then(|| PathBuf::from("/usr/local/cuda")))
+        .ok_or("CUDA_PATH is not set")?;
+    let folders = if cfg!(windows) {
+        vec![cuda.join("bin").join("x64"), cuda.join("bin")]
+    } else {
+        vec![cuda.join("lib64"), cuda.join("targets/x86_64-linux/lib")]
+    };
+    // `cublas64_13.dll`; `libcublas.so.13` (not the `.so` link or `.so.13.1.2`).
+    let is_wanted = |name: &str| {
+        let name = name.to_ascii_lowercase();
+        if cfg!(windows) {
+            (name.starts_with("cublas64_") || name.starts_with("cublaslt64_")) && name.ends_with(".dll")
+        } else {
+            ["libcublas.so.", "libcublaslt.so."]
+                .iter()
+                .any(|prefix| name.strip_prefix(prefix).is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit())))
+        }
+    };
+    for folder in folders {
+        let found: Vec<PathBuf> = fs::read_dir(&folder)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| is_wanted(&entry.file_name().to_string_lossy()))
+            .map(|entry| entry.path())
+            .collect();
+        if found.len() == 2 {
+            return Ok(found);
+        }
+    }
+    Err(format!("cuBLAS and cuBLASLt not found under {}", cuda.display()).into())
 }

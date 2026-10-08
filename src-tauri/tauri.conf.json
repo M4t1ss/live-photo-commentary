@@ -38,7 +38,9 @@
     "android": {
       "debugApplicationIdSuffix": ".debug"
     },
-    "resources": [],
+    "resources": {
+      "resources/llama/**/*": "./"
+    },
     "windows": {
       "nsis": {
         "installerHooks": "nsis/hooks.nsi"

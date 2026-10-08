@@ -215,3 +215,39 @@ pub fn upload_model(request: tauri::ipc::Request<'_>, state: State<'_, Arc<AppSt
     let names = state.avatar_models().list_names();
     Ok(UploadPayload { name, names })
 }
+
+/// Which GPU backend local models run on, and the state of the optional CUDA
+/// backend, for the Settings "GPU acceleration" section.
+#[tauri::command]
+pub fn gpu_status(app: tauri::AppHandle) -> Result<crate::gpu::GpuStatus, String> {
+    crate::gpu::status(&app)
+}
+
+/// Downloads and installs the CUDA backend (progress as `download_progress`
+/// events), then reloads a local model so it runs on it.
+#[tauri::command]
+pub async fn download_cuda_backend(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::gpu::GpuStatus, String> {
+    let (Some(url), Some(sha256)) = (crate::cuda_backend::download_url(), crate::cuda_backend::SHA256) else {
+        return Err("this build of the app cannot download the CUDA backend".to_string());
+    };
+    let root = crate::gpu::cuda_root(&app)?;
+    let reporter = Arc::clone(state.inner());
+    crate::cuda_backend::install(&root, &url, sha256, move |downloaded, total| {
+        reporter.send(Event::DownloadProgress { file: "CUDA backend".to_string(), downloaded, total });
+    })
+    .await?;
+    if state.config().vlm_provider.as_deref() == Some("local") {
+        state.inner().reinit_describer().await;
+    }
+    crate::gpu::status(&app)
+}
+
+/// Deletes the downloaded CUDA backend; if it is in use, at the next start.
+#[tauri::command]
+pub fn remove_cuda_backend(app: tauri::AppHandle) -> Result<crate::gpu::GpuStatus, String> {
+    crate::cuda_backend::remove(&crate::gpu::cuda_root(&app)?)?;
+    crate::gpu::status(&app)
+}

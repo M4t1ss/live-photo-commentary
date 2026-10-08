@@ -28,6 +28,10 @@ wiremock = "0.6.5"
 [features]
 # Local models with llama.cpp (GGUF models), and downloading them.
 llama-cpp = ["dep:llama-cpp-2", "dep:minijinja", "dep:minijinja-contrib", "dep:hf-hub"]
+# Build llama.cpp's backends (CPU variants, GPU backends) as separate libraries
+# that `load_backends` loads at run time, so one program can pick what the
+# machine has. Needs `llama-cpp`.
+dynamic-backends = ["llama-cpp-2?/dynamic-backends"]
 # GPU support for llama.cpp, one per platform:
 # NVIDIA GPUs (Windows, Linux). Needs the CUDA Toolkit.
 cuda = ["llama-cpp-2?/cuda"]

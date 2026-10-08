@@ -20,6 +20,8 @@
 //! ```
 
 mod backend;
+#[cfg(feature = "llama-cpp")]
+mod backends;
 mod describer;
 #[cfg(feature = "llama-cpp")]
 mod download;
@@ -31,6 +33,8 @@ mod openai;
 mod prompts;
 
 pub use backend::Backend;
+#[cfg(feature = "llama-cpp")]
+pub use backends::{BackendDevice, backend_devices, load_backends, preferred_gpu};
 pub use describer::Describer;
 pub use error::{Error, Result};
 pub use gemini::Gemini;

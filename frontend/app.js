@@ -393,6 +393,12 @@ function handleMessage(data) {
       break;
 
     case "download_progress": {
+      if (data.file === "CUDA backend") {
+        // Started from Settings, which shows its own progress.
+        const pct = data.total ? Math.round(data.downloaded / data.total * 100) : 0;
+        cudaHint.textContent = `Downloading the CUDA backend… ${pct}% (${(data.downloaded / 1e6).toFixed(0)} MB)`;
+        break;
+      }
       // Stop the countup timer so it doesn't overwrite these values.
       clearInterval(timerInterval);
       timerInterval = null;
@@ -700,6 +706,10 @@ function populateModal() {
   invoke("avatar_models")
     .then(names => { avatarModelNames = _toModelCandidates(names); })
     .catch(() => {});
+  invoke("gpu_status").then(showGpuStatus).catch(() => {
+    document.getElementById("gpu-status").textContent = "";
+    cudaRow.classList.add("hidden");
+  });
   cfgBgColor.value = bgColor;
   cfgBgPreview.style.background = bgColor;
   cfgFgColor.value = fgColor;
@@ -735,6 +745,48 @@ function populateModal() {
     cfgClipX.value = cfgClipY.value = cfgClipW.value = cfgClipH.value = "";
   }
 }
+
+// The "GPU acceleration" section of the LLM tab. CUDA is offered only with an
+// NVIDIA card and a build that can download it; users who don't want it are
+// never asked.
+const cudaRow  = document.getElementById("cuda-row");
+const cudaHint = document.getElementById("cuda-hint");
+const cudaBtn  = document.getElementById("cuda-btn");
+let cudaAction = null;
+
+function showGpuStatus(status) {
+  document.getElementById("gpu-status").textContent = status.gpu
+    ? `Local models run on the GPU: ${status.gpu} (${status.backend}).`
+    : "Local models run on the CPU, which is slow (tens of seconds per screenshot). No usable GPU was found.";
+  const offered = status.nvidia_gpu && (status.cuda_downloadable || status.cuda_installed);
+  cudaRow.classList.toggle("hidden", !offered);
+  cudaBtn.disabled = false;
+  if (status.cuda_removal_pending) {
+    cudaHint.textContent = "CUDA will be removed when the app restarts.";
+    cudaBtn.classList.add("hidden");
+  } else if (status.cuda_installed) {
+    cudaHint.textContent = status.backend === "CUDA"
+      ? "CUDA is installed and in use."
+      : "CUDA is installed, but it could not be loaded (is the NVIDIA driver recent enough?).";
+    cudaBtn.textContent = "Remove CUDA";
+    cudaBtn.classList.remove("hidden");
+    cudaAction = "remove_cuda_backend";
+  } else {
+    cudaHint.textContent = `CUDA can make local models somewhat faster on your NVIDIA card (about 1.3× in our tests; Vulkan already gets most of the way). Download: about ${status.cuda_size_mb} MB.`;
+    cudaBtn.textContent = "Install CUDA";
+    cudaBtn.classList.remove("hidden");
+    cudaAction = "download_cuda_backend";
+  }
+}
+
+cudaBtn.addEventListener("click", () => {
+  cudaBtn.disabled = true;
+  if (cudaAction === "download_cuda_backend") cudaHint.textContent = "Downloading the CUDA backend…";
+  invoke(cudaAction).then(showGpuStatus).catch(error => {
+    reportError(error);
+    invoke("gpu_status").then(showGpuStatus).catch(() => {});
+  });
+});
 
 vlmProviderSelect.addEventListener("change", () => {
   vlmModelInput.value              = (vlmCatalogue[vlmProviderSelect.value] ?? [])[0]?.name ?? "";

@@ -1,0 +1,124 @@
+# VLM model catalogue, embedded in the app (src-tauri/src/catalogue.rs).
+#
+# Each provider section lists available models. Entries can be a plain string
+# (model name/ID) or an object:
+#
+#   - name: org/model-id                  # what the "Model" setting stores
+#     display_name: Human-readable label  # optional, defaults to name
+#     generation_kwargs:                  # optional: max_new_tokens, temperature, top_p, top_k
+#       max_new_tokens: 150
+#     response_re: '...'                  # optional, picks 'text' group or 1st group from response
+#
+# Local entries run on llama.cpp and also need the GGUF files on Hugging Face:
+#
+#     gguf_repo: owner/repo               # the repository with the files below
+#     model_file: model-Q4_K_M.gguf
+#     mmproj_file: mmproj-model.gguf      # the vision projector
+#
+# `name` stays the original model's Hugging Face ID, so settings saved by the
+# Python version keep working. Quantisation: Q8_0 for models whose file stays
+# under about 4.5 GB, a 4-bit one (Q4_K_M, or Q4_0 where that is all there is)
+# above that.
+#
+# The "Model overrides (JSON)" setting can change generation_kwargs and
+# response_re, and gguf_repo, model_file and mmproj_file (which is how to use a
+# model that is not listed here).
+#
+# Cloud
+gemini:
+  - gemini-3.6-flash
+  - gemini-3.5-flash
+  - gemini-3.5-flash-lite
+  - gemini-3.1-flash-lite
+openai:
+  - gpt-4o
+  - gpt-4o-mini
+
+# Local
+local:
+  - name: google/gemma-3-4b-it
+    gguf_repo: ggml-org/gemma-3-4b-it-GGUF
+    model_file: gemma-3-4b-it-Q8_0.gguf
+    mmproj_file: mmproj-model-f16.gguf
+  - name: google/gemma-3-12b-it
+    gguf_repo: ggml-org/gemma-3-12b-it-GGUF
+    model_file: gemma-3-12b-it-Q4_K_M.gguf
+    mmproj_file: mmproj-model-f16.gguf
+  - name: google/gemma-4-E2B-it
+    gguf_repo: ggml-org/gemma-4-E2B-it-GGUF
+    model_file: gemma-4-E2B-it-Q4_0.gguf
+    mmproj_file: mmproj-gemma-4-E2B-it-Q8_0.gguf
+  - name: google/gemma-4-E4B-it
+    gguf_repo: ggml-org/gemma-4-E4B-it-GGUF
+    model_file: gemma-4-E4B-it-Q4_0.gguf
+    mmproj_file: mmproj-gemma-4-E4B-it-Q8_0.gguf
+  - name: google/gemma-4-12B-it
+    gguf_repo: ggml-org/gemma-4-12B-it-GGUF
+    model_file: gemma-4-12B-it-Q4_0.gguf
+    mmproj_file: mmproj-gemma-4-12B-it-Q8_0.gguf
+  - name: google/gemma-4-31B-it
+    gguf_repo: ggml-org/gemma-4-31B-it-GGUF
+    model_file: gemma-4-31B-it-Q4_0.gguf
+    mmproj_file: mmproj-gemma-4-31B-it-Q8_0.gguf
+  - name: Qwen/Qwen2.5-VL-3B-Instruct
+    gguf_repo: ggml-org/Qwen2.5-VL-3B-Instruct-GGUF
+    model_file: Qwen2.5-VL-3B-Instruct-Q8_0.gguf
+    mmproj_file: mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf
+  - name: Qwen/Qwen2.5-VL-7B-Instruct
+    gguf_repo: ggml-org/Qwen2.5-VL-7B-Instruct-GGUF
+    model_file: Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf
+    mmproj_file: mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf
+  - name: Qwen/Qwen3-VL-2B-Instruct
+    gguf_repo: ggml-org/Qwen3-VL-2B-Instruct-GGUF
+    model_file: Qwen3-VL-2B-Instruct-Q8_0.gguf
+    mmproj_file: mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf
+  - name: Qwen/Qwen3-VL-4B-Instruct
+    gguf_repo: Qwen/Qwen3-VL-4B-Instruct-GGUF
+    model_file: Qwen3VL-4B-Instruct-Q8_0.gguf
+    mmproj_file: mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf
+  - name: Qwen/Qwen3-VL-8B-Instruct
+    gguf_repo: Qwen/Qwen3-VL-8B-Instruct-GGUF
+    model_file: Qwen3VL-8B-Instruct-Q4_K_M.gguf
+    mmproj_file: mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf
+  - name: Qwen/Qwen3-VL-32B-Instruct
+    gguf_repo: Qwen/Qwen3-VL-32B-Instruct-GGUF
+    model_file: Qwen3VL-32B-Instruct-Q4_K_M.gguf
+    mmproj_file: mmproj-Qwen3VL-32B-Instruct-Q8_0.gguf
+  - name: Qwen/Qwen3.8-27B
+    gguf_repo: ggml-org/Qwen3.8-27B-GGUF
+    model_file: Qwen3.8-27B-Q4_K_M.gguf
+    mmproj_file: mmproj-Qwen3.8-27B-Q8_0.gguf
+  - name: OpenGVLab/InternVL3_5-1B-Instruct
+    gguf_repo: bartowski/OpenGVLab_InternVL3_5-1B-GGUF
+    model_file: OpenGVLab_InternVL3_5-1B-Q8_0.gguf
+    mmproj_file: mmproj-OpenGVLab_InternVL3_5-1B-f16.gguf
+  - name: OpenGVLab/InternVL3_5-2B-Instruct
+    gguf_repo: bartowski/OpenGVLab_InternVL3_5-2B-GGUF
+    model_file: OpenGVLab_InternVL3_5-2B-Q8_0.gguf
+    mmproj_file: mmproj-OpenGVLab_InternVL3_5-2B-f16.gguf
+  - name: OpenGVLab/InternVL3_5-4B-Instruct
+    gguf_repo: bartowski/OpenGVLab_InternVL3_5-4B-GGUF
+    model_file: OpenGVLab_InternVL3_5-4B-Q4_K_M.gguf
+    mmproj_file: mmproj-OpenGVLab_InternVL3_5-4B-f16.gguf
+  - name: OpenGVLab/InternVL3_5-8B-Instruct
+    gguf_repo: bartowski/OpenGVLab_InternVL3_5-8B-GGUF
+    model_file: OpenGVLab_InternVL3_5-8B-Q4_K_M.gguf
+    mmproj_file: mmproj-OpenGVLab_InternVL3_5-8B-f16.gguf
+  - name: OpenGVLab/InternVL3_5-14B-Instruct
+    gguf_repo: bartowski/OpenGVLab_InternVL3_5-14B-GGUF
+    model_file: OpenGVLab_InternVL3_5-14B-Q4_K_M.gguf
+    mmproj_file: mmproj-OpenGVLab_InternVL3_5-14B-f16.gguf
+  - name: OpenGVLab/InternVL3_5-38B-Instruct
+    gguf_repo: bartowski/OpenGVLab_InternVL3_5-38B-GGUF
+    model_file: OpenGVLab_InternVL3_5-38B-Q4_K_M.gguf
+    mmproj_file: mmproj-OpenGVLab_InternVL3_5-38B-f16.gguf
+  - name: meta-models/Muse-Glimmer-30B
+    gguf_repo: meta-models/Muse-Glimmer-30B-GGUF
+    model_file: Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf
+    mmproj_file: mmproj-Muse-Glimmer-30B-Q4_K_M.gguf
+    generation_kwargs:
+        temperature: 1.0
+        top_p: 0.95
+        top_k: 64
+        max_new_tokens: 10000
+    response_re: '<\|start\|>assistant to=user<\|message\|>(.*?)$'

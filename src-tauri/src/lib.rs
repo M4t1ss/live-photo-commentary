@@ -22,8 +22,10 @@ mod avatar;
 mod catalogue;
 mod commands;
 mod config;
+mod cuda_backend;
 mod difference;
 mod events;
+mod gpu;
 mod pipeline;
 mod promptsets;
 mod screensaver;
@@ -83,6 +85,7 @@ pub fn run() {
             });
             app.manage(screensaver::ScreensaverState::default());
 
+            gpu::init(app.handle());
             let app_state = Arc::new(state::AppState::new(app.handle())?);
             let scope = app.asset_protocol_scope();
             let _ = scope.allow_directory(app_state.model_dir(), true);
@@ -117,6 +120,9 @@ pub fn run() {
             commands::avatar_models,
             commands::open_model_dir,
             commands::upload_model,
+            commands::gpu_status,
+            commands::download_cuda_backend,
+            commands::remove_cuda_backend,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
