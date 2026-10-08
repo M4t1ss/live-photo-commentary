@@ -306,22 +306,4 @@ mod tests {
         std::fs::remove_dir_all(&old_dir).ok();
         std::fs::remove_dir_all(&new_dir).ok();
     }
-
-    #[test]
-    fn migrates_the_real_backend_prompts_dir_if_present() {
-        let real_dir =
-            Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("backend/prompts");
-        if !real_dir.exists() {
-            eprintln!("skipping: {} not present on this machine", real_dir.display());
-            return;
-        }
-        for entry in std::fs::read_dir(&real_dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
-                let text = std::fs::read_to_string(&path).unwrap();
-                let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).unwrap();
-                Promptset::from_yaml_with_defaults(&raw);
-            }
-        }
-    }
 }

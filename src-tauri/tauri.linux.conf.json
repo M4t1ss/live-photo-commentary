@@ -1,7 +1,7 @@
 {
   "bundle": {
-    "resources": [
-      "resources/screenshot*.exe"
-    ]
+    "resources": {
+      "resources/screenshot*.exe": "resources/"
+    }
   }
 }

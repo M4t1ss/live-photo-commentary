@@ -17,6 +17,11 @@
   </script>
 </head>
 <body>
+  <div id="old-python-banner" class="hidden">
+    <span id="old-python-text"></span>
+    <button type="button" class="small-btn" id="old-python-delete">Delete</button>
+    <button type="button" class="small-btn" id="old-python-keep">Keep</button>
+  </div>
   <div id="main">
     <div id="left-panel">
       <div id="avatar-area">
@@ -247,6 +252,14 @@
             <input type="text" id="cfg-hl-color" class="mono" maxlength="7" placeholder="#4a9eff" spellcheck="false" />
           </div>
         </label>
+      </section>
+
+      <section>
+        <h3>About</h3>
+        <div class="hint-row">
+          <p class="hint" id="about-text"></p>
+          <button type="button" class="small-btn" id="licenses-btn">Licences</button>
+        </div>
       </section>
 
       </div><!-- #tab-ui -->

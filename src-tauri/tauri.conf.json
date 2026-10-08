@@ -1,10 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Interactive Live Commentary Assistant",
-  "version": "0.1.17",
+  "version": "0.2.0",
   "identifier": "io.github.m4t1ss.live-photo-commentary",
   "build": {
-    "frontendDist": "../frontend"
+    "frontendDist": "../frontend",
+    "beforeDevCommand": "cargo build -p kokoro-espeak"
   },
   "app": {
     "withGlobalTauri": true,
@@ -39,7 +40,21 @@
       "debugApplicationIdSuffix": ".debug"
     },
     "resources": {
-      "resources/llama/**/*": "./"
+      "resources/llama/*": "./",
+      "resources/llama/backends": "backends",
+      "../LICENSE": "licenses/LICENSE",
+      "../NOTICE.md": "licenses/NOTICE.md",
+      "NOTICE.md": "licenses/app/NOTICE.md",
+      "LICENSES": "licenses/app/LICENSES",
+      "../crates/kokoro-timestamped/LICENSE-MIT": "licenses/kokoro-timestamped/LICENSE-MIT",
+      "../crates/kokoro-timestamped/LICENSE-APACHE": "licenses/kokoro-timestamped/LICENSE-APACHE",
+      "../crates/kokoro-timestamped/NOTICE.md": "licenses/kokoro-timestamped/NOTICE.md",
+      "../crates/kokoro-timestamped/LICENSES": "licenses/kokoro-timestamped/LICENSES",
+      "../crates/vlm-describer/LICENSE-MIT": "licenses/vlm-describer/LICENSE-MIT",
+      "../crates/vlm-describer/LICENSE-APACHE": "licenses/vlm-describer/LICENSE-APACHE",
+      "../crates/kokoro-espeak/LICENSE": "licenses/kokoro-espeak/LICENSE",
+      "../crates/kokoro-espeak/NOTICE.md": "licenses/kokoro-espeak/NOTICE.md",
+      "../crates/kokoro-espeak/LICENSES": "licenses/kokoro-espeak/LICENSES"
     },
     "windows": {
       "nsis": {

@@ -1,46 +1,147 @@
 name: Build
 
+# Not yet run on GitHub: written on Windows, where only the Windows legs of
+# this could be tried by hand (see RUSTIFICATION.md, phase 7). Expect to fix
+# things here on the first runs.
+
 on:
   push:
-    branches: [tauri, main]
+    branches: [rustification, main]
+    tags: ["v*"]
   pull_request:
-    branches: [tauri, main]
+    branches: [rustification, main]
 
 jobs:
-  build:
+  # The CUDA backend is a separate download (Settings > GPU acceleration), so
+  # it is built apart from the installers: only the library, not the app. The
+  # installers are built with its checksum, and the archive goes to the release
+  # the app downloads it from.
+  cuda-backend:
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: windows-latest
-            uv-asset: uv-x86_64-pc-windows-msvc.zip
-            uv-resource: uv-x86_64-pc-windows-msvc.exe
+            os: windows
           - platform: ubuntu-22.04
-            uv-asset: uv-x86_64-unknown-linux-gnu.tar.gz
-            uv-resource: uv-x86_64-unknown-linux-gnu
-          - platform: macos-latest
-            uv-asset: uv-aarch64-apple-darwin.tar.gz
-            uv-resource: uv-aarch64-apple-darwin
-          # - platform: macos-13
-          #   uv-asset: uv-x86_64-apple-darwin.tar.gz
-          #   uv-resource: uv-x86_64-apple-darwin
-
+            os: linux
     runs-on: ${{ matrix.platform }}
-
     steps:
-      # UPGRADED: v4 -> v5 removes Node 20 dependency
       - uses: actions/checkout@v7
+
+      # llama.cpp's Vulkan build has a file whose path exceeds MSVC's 260
+      # characters when Cargo's intermediate files are in the checkout (see
+      # RUSTIFICATION.md, "Windows path length"). Cargo 1.91+ puts them in a
+      # short folder instead.
+      - name: Use a short build directory (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"CARGO_BUILD_BUILD_DIR=C:\b" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV'
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            build-essential cmake clang libclang-dev patchelf \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libdbus-1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-directories: ${{ runner.os == 'Windows' && 'C:\b' || '' }}
+          key: cuda
+
+      # The toolkit has to be 13.x: the archive ships cublas64_13 / libcublas.so.13.
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.24
+        with:
+          cuda: "13.0.0"
+          method: network
+          sub-packages: ${{ runner.os == 'Windows' && '["nvcc","cudart","cublas","cublas_dev","visual_studio_integration"]' || '["nvcc","cudart","cublas","cublas-dev"]' }}
+
+      - name: Build and package the CUDA backend
+        shell: bash
+        run: cargo xtask package-cuda-backend dist --release
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cuda-backend-${{ matrix.os }}
+          path: |
+            dist/cuda-backend-${{ matrix.os }}-x64.zip
+            dist/cuda-backend-${{ matrix.os }}-x64.zip.sha256
+          if-no-files-found: error
+
+  build:
+    needs: cuda-backend
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            cuda-os: windows
+            features: dynamic-backends,vulkan
+            gpu-backend: vulkan
+          - platform: ubuntu-22.04
+            cuda-os: linux
+            features: dynamic-backends,vulkan
+            gpu-backend: vulkan
+          - platform: macos-latest
+            cuda-os: ""
+            features: dynamic-backends,metal
+            gpu-backend: metal
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Use a short build directory (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"CARGO_BUILD_BUILD_DIR=C:\b" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV'
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake clang libclang-dev \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
+            libdbus-1-dev \
             patchelf \
             gcc-mingw-w64-x86-64
+
+      # llama.cpp's Vulkan backend needs the Vulkan headers, the loader and the
+      # shader compiler (glslc). These steps are the ones llama.cpp's own CI uses.
+      - name: Install Vulkan SDK (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VULKAN_VERSION: 1.4.309.0
+        run: |
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_VERSION/windows/VulkanSDK-$env:VULKAN_VERSION-Installer.exe" -OutFile "$env:TEMP\vulkan.exe"
+          Start-Process "$env:TEMP\vulkan.exe" -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait
+          "VULKAN_SDK=C:\VulkanSDK\$env:VULKAN_VERSION" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "C:\VulkanSDK\$env:VULKAN_VERSION\Bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      # The runner image has LLVM; bindgen needs to be told where.
+      - name: Point bindgen at libclang (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV'
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -51,68 +152,33 @@ jobs:
           workspaces: |
             . -> target
             src-screenshot -> target
+          cache-directories: ${{ runner.os == 'Windows' && 'C:\b' || '' }}
 
-      # Download the uv binary for this platform and place it in
-      # src-tauri/resources/ so it can be bundled via --config below.
-      - name: Download uv binary (Linux / macOS)
-        if: runner.os != 'Windows'
-        run: |
-          mkdir -p src-tauri/resources
-          curl -fsSL \
-            "https://github.com/astral-sh/uv/releases/latest/download/${{ matrix.uv-asset }}" \
-            | tar xz --strip-components=1 -C /tmp
-          mv /tmp/uv "src-tauri/resources/${{ matrix.uv-resource }}"
-          chmod +x "src-tauri/resources/${{ matrix.uv-resource }}"
+      # The app downloads this on request, from a release asset of this
+      # version; the installer is built with the archive's checksum so that it
+      # knows what to accept (no checksum, no CUDA offer: macOS has none).
+      - name: Get the CUDA backend checksum
+        if: matrix.cuda-os != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: cuda-backend-${{ matrix.cuda-os }}
+          path: cuda-backend
 
-      - name: Download uv binary (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force src-tauri/resources
-          $url = "https://github.com/astral-sh/uv/releases/latest/download/${{ matrix.uv-asset }}"
-          Invoke-WebRequest $url -OutFile "$env:TEMP\uv.zip"
-          Expand-Archive "$env:TEMP\uv.zip" -DestinationPath "$env:TEMP\uv-dist"
-          Copy-Item "$env:TEMP\uv-dist\uv.exe" "src-tauri/resources/${{ matrix.uv-resource }}"
-
-      # Copy Python source into resources/ so the bundler can include it.
-      # shell: bash works on all three platforms in GitHub Actions.
-      - name: Copy backend source into resources
+      - name: Pass the CUDA backend checksum to the build
+        if: matrix.cuda-os != ''
         shell: bash
-        run: |
-          mkdir -p src-tauri/resources/backend
-          cp -r backend/live_photo_commentary src-tauri/resources/backend/
-          cp backend/pyproject.toml backend/uv.lock src-tauri/resources/backend/
+        run: echo "CUDA_BACKEND_SHA256=$(tr -d '[:space:]' < cuda-backend/cuda-backend-${{ matrix.cuda-os }}-x64.zip.sha256)" >> "$GITHUB_ENV"
 
-      # pyopenjtalk has no PyPI wheels on any platform. Build a platform-native
-      # wheel here and wire it into the bundled pyproject.toml as a local
-      # [tool.uv.sources] path, then regenerate the lock file so uv sync on
-      # the end-user's machine resolves it from vendor/ instead of PyPI.
-      # (uv sync ignores --find-links for packages already pinned in the lock.)
-      - name: Build pyopenjtalk wheel and wire into bundled pyproject.toml
-        shell: bash
-        run: |
-          pip install uv
-          PYOJTALK_VER=$(python3 -c "import re,sys; m=re.search(r'name = \"pyopenjtalk\"\nversion = \"([^\"]+)\"', open('backend/uv.lock').read()); print(m.group(1) if m else sys.exit(1))")
-          echo "Building pyopenjtalk==$PYOJTALK_VER"
-          mkdir -p src-tauri/resources/backend/vendor
-          uv venv --python 3.12 --seed /tmp/lpc-build-venv
-          BUILD_PYTHON=/tmp/lpc-build-venv/bin/python
-          [ -f /tmp/lpc-build-venv/Scripts/python.exe ] && BUILD_PYTHON=/tmp/lpc-build-venv/Scripts/python.exe
-          "$BUILD_PYTHON" -m pip wheel \
-            "pyopenjtalk==$PYOJTALK_VER" \
-            --no-deps --no-cache-dir --wheel-dir src-tauri/resources/backend/vendor/
-          python3 tools/patch_pyopenjtalk.py src-tauri/resources/backend
-          cd src-tauri/resources/backend && uv lock --python 3.12
-          echo "vendor:" && ls vendor/
-
+      # The WSL screenshot helper, a separate Windows program that the Linux
+      # build bundles (tauri.linux.conf.json).
       - name: Build screenshot.exe (Linux cross-compile)
         if: runner.os == 'Linux'
         run: |
           rustup target add x86_64-pc-windows-gnu
           cargo build --release --target x86_64-pc-windows-gnu --manifest-path src-screenshot/Cargo.toml
+          mkdir -p src-tauri/resources
           cp src-screenshot/target/x86_64-pc-windows-gnu/release/screenshot.exe src-tauri/resources/screenshot.exe
 
-      # UPGRADED: v4 -> v5 removes Node 20 dependency
       - name: Upload screenshot.exe artifact
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
@@ -145,7 +211,6 @@ jobs:
           fi
 
       # Cache the cargo-tauri binary so it is only compiled on first run.
-      # UPGRADED: v4 -> v5 removes Node 20 dependency
       - name: Cache Tauri CLI
         id: cache-tauri-cli
         uses: actions/cache@v6
@@ -157,37 +222,68 @@ jobs:
         if: steps.cache-tauri-cli.outputs.cache-hit != 'true'
         run: cargo install tauri-cli --version "^2" --locked
 
-      # Build the Tauri app.
-      # --config injects the resources array only for production builds;
-      # the base tauri.conf.json has an empty resources list so dev builds
-      # don't require the binary to be present. Linux gets its own overlay
-      # since screenshot.exe (WSL screenshot fallback) is only built there.
-      - name: Select bundle config
-        id: bundle-config
+      # tauri.bundle.conf.json adds what only installers need: the models, the
+      # kokoro-espeak sidecar (its beforeBuildCommand builds it, with
+      # espeak-ng-data) and the licences. The first Vulkan build of llama.cpp
+      # on Windows often fails on a race in its shader generator
+      # (vulkan-shaders-gen); a rerun gets further, so try up to three times.
+      - name: Build the installer
         shell: bash
         run: |
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            echo "path=src-tauri/tauri.bundle.linux.conf.json" >> "$GITHUB_OUTPUT"
-          else
-            echo "path=src-tauri/tauri.bundle.conf.json" >> "$GITHUB_OUTPUT"
+          for attempt in 1 2 3; do
+            if cargo tauri build --features "${{ matrix.features }}" --config src-tauri/tauri.bundle.conf.json; then
+              exit 0
+            fi
+            echo "Build attempt $attempt failed"
+          done
+          exit 1
+
+      # Only the GPU backend of the platform may be in the installer: Vulkan on
+      # Windows and Linux, Metal on macOS, never CUDA (that is the separate
+      # download). build.rs stages the libraries that the installer bundles here.
+      # Metal has no cargo feature of its own that does anything: llama.cpp builds
+      # it by default on Apple targets, so check that it is there.
+      - name: Check the GPU backend in the installer's libraries
+        shell: bash
+        run: |
+          ls -l src-tauri/resources/llama/backends
+          if ! ls src-tauri/resources/llama/backends | grep -qi "ggml-${{ matrix.gpu-backend }}"; then
+            echo "::error::no ${{ matrix.gpu-backend }} backend library was built"
+            exit 1
+          fi
+          if ls src-tauri/resources/llama | grep -qi cuda || ls src-tauri/resources/llama/backends | grep -qi cuda; then
+            echo "::error::a CUDA library ended up in the installer"
+            exit 1
           fi
 
-      # UPGRADED: @v0 pinned to latest release to leverage Node 24 support
-      - name: Build Tauri application
-        uses: tauri-apps/tauri-action@v1
-        with:
-          tauriScript: cargo tauri
-          args: --config ${{ steps.bundle-config.outputs.path }}
-
-      # UPGRADED: v4 -> v5 removes Node 20 dependency
       - name: Upload installer artifact
         uses: actions/upload-artifact@v7
         with:
           name: installer-${{ matrix.platform }}
           path: |
-            target/release/bundle/msi/*.msi
             target/release/bundle/nsis/*.exe
             target/release/bundle/deb/*.deb
             target/release/bundle/appimage/*.AppImage
             target/release/bundle/dmg/*.dmg
           if-no-files-found: warn
+
+  # A draft release with the CUDA archives, for the app to download from:
+  # https://github.com/<repository>/releases/download/<tag>/cuda-backend-<os>-x64.zip
+  # Publish the draft once the installers have been tried.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [cuda-backend, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cuda-backend-*
+          path: cuda-backend
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: cuda-backend/*

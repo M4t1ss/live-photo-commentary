@@ -1,10 +1,13 @@
 {
+  "build": {
+    "beforeBuildCommand": "cargo xtask package-helper src-tauri/binaries --tauri"
+  },
   "bundle": {
-    "resources": [
-      "resources/uv-*",
-      "resources/backend/**/*",
-      "resources/models/model.*",
-      "resources/models/animations/*"
-    ]
+    "externalBin": ["binaries/kokoro-espeak"],
+    "resources": {
+      "binaries/espeak-ng-data": "espeak-ng-data",
+      "resources/models/model.*": "resources/models/",
+      "resources/models/animations/*": "resources/models/animations/"
+    }
   }
 }

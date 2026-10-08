@@ -277,16 +277,4 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
-
-    #[test]
-    fn migrates_the_real_backend_env_file_if_present() {
-        let real_env = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("backend/.env");
-        if !real_env.exists() {
-            eprintln!("skipping: {} not present on this machine", real_env.display());
-            return;
-        }
-        // Must not panic; values aren't asserted since the file holds real,
-        // possibly secret, settings.
-        Config::from_env_file(&real_env).unwrap();
-    }
 }

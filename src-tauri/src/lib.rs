@@ -2,22 +2,6 @@ use std::sync::Arc;
 use tauri::Manager;
 use tauri_plugin_window_state::WindowExt;
 
-// The Python backend's supervision code. Nothing starts it any more (phase 5);
-// `AppState::new` still uses `backend::get_backend_dir` to find the old data
-// folders to migrate. All removed in phase 7.
-#[allow(dead_code)]
-mod antivirus;
-#[allow(dead_code)]
-mod backend;
-#[allow(dead_code)]
-mod cuda;
-#[allow(dead_code)]
-mod flash_attn;
-#[allow(dead_code)]
-mod util;
-#[allow(dead_code)]
-mod uv;
-
 mod avatar;
 mod catalogue;
 mod commands;
@@ -26,6 +10,7 @@ mod cuda_backend;
 mod difference;
 mod events;
 mod gpu;
+mod old_python;
 mod pipeline;
 mod promptsets;
 mod screensaver;
@@ -69,6 +54,22 @@ fn restore_window(app: &tauri::App) {
     }
 }
 
+/// The `kokoro-espeak` helper (a sidecar, next to the executable) looks for
+/// eSpeak's `espeak-ng-data` folder next to itself. That is where Tauri puts
+/// the bundled resources on Windows, but not on macOS (`Contents/Resources`)
+/// or in Linux packages (`/usr/lib/<product>`), so tell it where they are. The
+/// helper inherits the variable. Must run before the synthesizer is created.
+fn point_helper_at_espeak_data(app: &tauri::App) {
+    if cfg!(windows) {
+        return;
+    }
+    if let Ok(resources) = app.path().resource_dir() {
+        if resources.join("espeak-ng-data").is_dir() {
+            std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", resources);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -76,6 +77,7 @@ pub fn run() {
         .setup(|app| {
             init_logging(app)?;
             restore_window(app);
+            point_helper_at_espeak_data(app);
 
             let frames_dir = app.path().app_data_dir()?.join("frames");
             let _ = std::fs::create_dir_all(&frames_dir);
@@ -123,6 +125,9 @@ pub fn run() {
             commands::gpu_status,
             commands::download_cuda_backend,
             commands::remove_cuda_backend,
+            commands::old_python_env,
+            commands::answer_old_python_env,
+            commands::open_licenses,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

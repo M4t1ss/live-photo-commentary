@@ -855,3 +855,20 @@ body {
   font-size: 18px;
 }
 #drop-icon { font-size: 48px; margin-bottom: 12px; }
+
+/* One-time offer to delete the Python environment of versions before 0.2.0 */
+#old-python-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--modal-bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+#old-python-banner span { flex: 1; }

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.17"
+version = "0.2.0"
 description = "Interactive Live Commentary Assistant desktop app"
 authors = ["Goran Topic", "Matiss Rikters"]
 license = "MIT"
@@ -37,7 +37,6 @@ tauri = { version = "2.11.2", features = ["devtools", "protocol-asset"] }
 tauri-plugin-log = "2"
 tauri-plugin-window-state = "2"
 reqwest = { version = "0.12", features = ["json"] }
-regex = "1"
 xcap = "0.9"
 image = "0.25"
 base64 = "0.22"
@@ -53,9 +52,6 @@ hound = "3.5"
 tauri-plugin-opener = "2"
 sha2 = "0.10"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Power", "Win32_System_LibraryLoader"] }

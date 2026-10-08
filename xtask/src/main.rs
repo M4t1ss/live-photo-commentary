@@ -9,7 +9,8 @@
 //! `cargo xtask package-cuda-backend OUT_DIR [--release]`
 //!
 //! Builds the app with `dynamic-backends,cuda` and zips the CUDA backend
-//! library with NVIDIA's cuBLAS libraries (from `CUDA_PATH`) into
+//! library with NVIDIA's cuBLAS libraries and the CUDA Toolkit's `EULA.txt`
+//! (which allows redistributing them; from `CUDA_PATH`) into
 //! `OUT_DIR/cuda-backend-<os>-x64.zip`, plus a `.sha256` file with the
 //! checksum the app is built with (`CUDA_BACKEND_SHA256`). The app downloads
 //! this archive from Settings. Set `CMAKE_CUDA_ARCHITECTURES` to build for
@@ -190,18 +191,31 @@ fn package_cuda_backend(args: &[String]) -> Result<(), Box<dyn Error>> {
         return Err(format!("{} was not built", backend.display()).into());
     }
 
+    fs::create_dir_all(&out_dir)?;
+    // Linux: the library finds cuBLAS next to itself only with an `$ORIGIN`
+    // runpath, which llama.cpp's build doesn't set. Patch a copy.
+    let stage = out_dir.join("stage");
+    let backend = if cfg!(windows) { backend } else { with_origin_runpath(&backend, &stage)? };
     let mut files = vec![backend];
     files.extend(cublas_libraries()?);
+    // The licence under which NVIDIA lets us redistribute cuBLAS; it travels
+    // with the libraries (and reproduces the notices of code inside cuBLAS).
+    let eula = cuda_toolkit()?.join("EULA.txt");
+    if !eula.is_file() {
+        return Err(format!("{} not found; NVIDIA's licence must ship with cuBLAS", eula.display()).into());
+    }
+    files.push(eula);
 
-    fs::create_dir_all(&out_dir)?;
     let archive = out_dir.join(format!("cuda-backend-{os}-x64.zip"));
     let mut zip = zip::ZipWriter::new(fs::File::create(&archive)?);
     for file in &files {
         let name = file.file_name().ok_or("file without a name")?.to_string_lossy().into_owned();
+        let name = if name == "EULA.txt" { "NVIDIA-CUDA-EULA.txt".to_string() } else { name };
         zip.start_file(name, zip::write::SimpleFileOptions::default().large_file(true))?;
         std::io::copy(&mut fs::File::open(file)?, &mut zip)?;
     }
     zip.finish()?;
+    let _ = fs::remove_dir_all(&stage);
 
     let digest = Sha256::digest(fs::read(&archive)?);
     let checksum: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -212,13 +226,18 @@ sha256 {checksum}", archive.display(), files.len());
     Ok(())
 }
 
+/// The CUDA Toolkit's folder.
+fn cuda_toolkit() -> Result<PathBuf, Box<dyn Error>> {
+    std::env::var_os("CUDA_PATH")
+        .map(PathBuf::from)
+        .or_else(|| cfg!(unix).then(|| PathBuf::from("/usr/local/cuda")))
+        .ok_or_else(|| "CUDA_PATH is not set".into())
+}
+
 /// cuBLAS and cuBLASLt from the CUDA Toolkit, which the backend needs at run
 /// time and which NVIDIA lets applications redistribute.
 fn cublas_libraries() -> Result<Vec<PathBuf>, Box<dyn Error>> {
-    let cuda = std::env::var_os("CUDA_PATH")
-        .map(PathBuf::from)
-        .or_else(|| cfg!(unix).then(|| PathBuf::from("/usr/local/cuda")))
-        .ok_or("CUDA_PATH is not set")?;
+    let cuda = cuda_toolkit()?;
     let folders = if cfg!(windows) {
         vec![cuda.join("bin").join("x64"), cuda.join("bin")]
     } else {
@@ -248,4 +267,19 @@ fn cublas_libraries() -> Result<Vec<PathBuf>, Box<dyn Error>> {
         }
     }
     Err(format!("cuBLAS and cuBLASLt not found under {}", cuda.display()).into())
+}
+
+/// Copies `library` to `stage` and sets its runpath to `$ORIGIN`, so that the
+/// dynamic loader looks for the libraries it needs in its own folder. Needs
+/// `patchelf`.
+#[cfg_attr(windows, allow(dead_code))]
+fn with_origin_runpath(library: &Path, stage: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    fs::create_dir_all(stage)?;
+    let copy = stage.join(library.file_name().ok_or("library without a name")?);
+    fs::copy(library, &copy)?;
+    let status = Command::new("patchelf").arg("--set-rpath").arg("$ORIGIN").arg(&copy).status()?;
+    if !status.success() {
+        return Err("patchelf failed".into());
+    }
+    Ok(copy)
 }

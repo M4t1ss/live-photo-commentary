@@ -278,10 +278,14 @@ impl PregenSequencer {
 /// `pipeline.rs`'s own tests drive it with).
 pub type AppPipeline = Pipeline<vlm_describer::Describer, KokoroSynthesizer>;
 
+/// The folder the Python backend of versions before 0.2.0 was installed in.
+pub fn old_python_backend_dir(app_data_dir: &std::path::Path) -> PathBuf {
+    app_data_dir.join("backend")
+}
+
 /// Where bundled avatar models live: the repo's own folder in debug, the
 /// bundled resources in release (`tauri.bundle.conf.json`'s `resources` list;
-/// mirrors `locate_screenshot_exe` in `screenshot.rs` and `get_backend_dir`
-/// in `backend.rs`).
+/// mirrors `locate_screenshot_exe` in `screenshot.rs`).
 fn bundled_models_dir(app: &tauri::AppHandle) -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("has a parent").join("models")
@@ -333,10 +337,12 @@ impl AppState {
     /// loaded yet. Pure local filesystem work — no network, nothing async.
     pub fn new(app: &tauri::AppHandle) -> Result<AppState, String> {
         let settings_path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("settings.json");
-        let old_backend_dir = crate::backend::get_backend_dir(app);
+        let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        // The Python-era install kept its settings, promptsets and uploaded
+        // avatar models in `<app data>/backend`.
+        let old_backend_dir = old_python_backend_dir(&app_data_dir);
         let config = Config::load_or_migrate(&settings_path, &old_backend_dir.join(".env"))?;
 
-        let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let prompts_dir = app_data_dir.join("prompts");
         crate::promptsets::migrate(&old_backend_dir.join("prompts"), &prompts_dir)?;
         let promptsets = Promptsets::new(prompts_dir)?;

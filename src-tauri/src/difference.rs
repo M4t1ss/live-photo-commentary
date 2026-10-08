@@ -599,8 +599,8 @@ mod tests {
 
     #[test]
     fn mse_matches_python_exactly() {
-        // Generated with `uv run python gen_difference_reference.py` (backend/),
-        // which calls the real `screenshot.difference`.
+        // Reference values from the Python backend's `screenshot.difference`
+        // (removed in 0.2.0; it lives on in the `tauri` branch).
         let (a, b) = synth_images();
         let got = difference(&a, &b, "mse").unwrap();
         assert!((got - 0.0025272369384765625).abs() < 1e-9, "got {got}");

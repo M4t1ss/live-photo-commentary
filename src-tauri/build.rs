@@ -11,6 +11,19 @@ fn main() {
     println!("cargo:rustc-link-arg=delayimp.lib");
   }
   stage_llama_libraries();
+  // With `dynamic-backends`, libllama and libggml are shared libraries that the
+  // bundle puts in Tauri's resource folder, `/usr/lib/<product name>` in Linux
+  // packages and AppImages, next to `/usr/bin/<executable>`. Without an rpath
+  // the loader doesn't look there. (Untested: written without a Linux machine.)
+  let dynamic_backends = std::env::var_os("CARGO_FEATURE_DYNAMIC_BACKENDS").is_some();
+  if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") && dynamic_backends {
+    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../lib/Interactive Live Commentary Assistant");
+  }
+  // macOS: the same libraries are in `Contents/Resources`, next to `Contents/MacOS`
+  // where the executable is; their install names are `@rpath/...`. (Untested too.)
+  if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") && dynamic_backends {
+    println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Resources");
+  }
   tauri_build::build()
 }
 

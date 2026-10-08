@@ -251,3 +251,50 @@ pub fn remove_cuda_backend(app: tauri::AppHandle) -> Result<crate::gpu::GpuStatu
     crate::cuda_backend::remove(&crate::gpu::cuda_root(&app)?)?;
     crate::gpu::status(&app)
 }
+
+/// The size in bytes of the Python environment of versions before 0.2.0, if
+/// it is still there and the user has not said to keep it: the frontend then
+/// offers to delete it.
+#[tauri::command]
+pub async fn old_python_env(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<Option<u64>, String> {
+    use tauri::Manager;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let settings_path = state.settings_path().clone();
+    // Adding up thousands of files takes a moment; not on the async runtime.
+    tauri::async_runtime::spawn_blocking(move || crate::old_python::found(&app_data_dir, &settings_path))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Deletes the old Python environment (`keep` is `false`), or records that the
+/// user wants to keep it and must not be asked again (`keep` is `true`).
+#[tauri::command]
+pub async fn answer_old_python_env(app: tauri::AppHandle, keep: bool) -> Result<(), String> {
+    use tauri::Manager;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if keep { crate::old_python::keep(&app_data_dir) } else { crate::old_python::remove(&app_data_dir) }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Opens the folder with the licences and notices that ship with the app
+/// (`NOTICE.md`, the GPL text and source offer for `kokoro-espeak`, and the
+/// licences of the Rust dependencies).
+#[tauri::command]
+pub fn open_licenses(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    use tauri_plugin_opener::OpenerExt;
+    // `tauri dev` doesn't copy the resources next to the executable; the same
+    // files are in the repository.
+    let dir = if cfg!(debug_assertions) {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+    } else {
+        app.path().resource_dir().map_err(|e| e.to_string())?.join("licenses")
+    };
+    if !dir.is_dir() {
+        return Err(format!("{} not found", dir.display()));
+    }
+    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+}

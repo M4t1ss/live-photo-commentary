@@ -281,7 +281,49 @@ async function connectBackend() {
   } catch (e) {
     reportError(e);
   }
+  offerOldPythonRemoval();
 }
+
+// Versions before 0.2.0 ran a Python backend with its own multi-GB environment.
+// Offered once; "Keep" is remembered by the backend and ends the offer.
+const oldPythonBanner = document.getElementById("old-python-banner");
+const oldPythonText   = document.getElementById("old-python-text");
+let oldPythonOffered  = false;
+
+async function offerOldPythonRemoval() {
+  if (oldPythonOffered) return;
+  oldPythonOffered = true;
+  let bytes = null;
+  try {
+    bytes = await invoke("old_python_env");
+  } catch (e) {
+    console.warn("old_python_env failed", e);
+  }
+  if (bytes == null) return;
+  const size = bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
+  oldPythonText.textContent = `The Python environment of the previous version is still on disk (${size}). It is no longer used. Delete it?`;
+  oldPythonBanner.classList.remove("hidden");
+}
+
+for (const [id, keep] of [["old-python-delete", false], ["old-python-keep", true]]) {
+  document.getElementById(id).addEventListener("click", async () => {
+    try {
+      await invoke("answer_old_python_env", { keep });
+      oldPythonBanner.classList.add("hidden");
+    } catch (e) {
+      reportError(e);
+    }
+  });
+}
+
+// About section of Settings
+const aboutText = document.getElementById("about-text");
+window.__TAURI__.app.getVersion()
+  .then(v => { aboutText.textContent = `Interactive Live Commentary Assistant ${v}`; })
+  .catch(() => {});
+document.getElementById("licenses-btn").addEventListener("click", () => {
+  invoke("open_licenses").catch(reportError);
+});
 
 // Shows a failed command the way an `error` event from the backend is shown.
 function reportError(e) {
@@ -772,7 +814,7 @@ function showGpuStatus(status) {
     cudaBtn.classList.remove("hidden");
     cudaAction = "remove_cuda_backend";
   } else {
-    cudaHint.textContent = `CUDA can make local models somewhat faster on your NVIDIA card (about 1.3× in our tests; Vulkan already gets most of the way). Download: about ${status.cuda_size_mb} MB.`;
+    cudaHint.textContent = `CUDA can make local models somewhat faster on your NVIDIA card (about 1.3× in our tests; Vulkan already gets most of the way). Download: about ${status.cuda_size_mb} MB, including NVIDIA's cuBLAS libraries, which come with NVIDIA's licence.`;
     cudaBtn.textContent = "Install CUDA";
     cudaBtn.classList.remove("hidden");
     cudaAction = "download_cuda_backend";
