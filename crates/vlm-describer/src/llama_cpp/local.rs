@@ -25,8 +25,6 @@ const BATCH_SIZE: u32 = 2048;
 /// Video memory kept free beside the model and its context, for the image
 /// encoder's working memory (on top of the `mmproj` file's own size).
 const IMAGE_ENCODER_RESERVE: usize = 1 << 30;
-/// ggml's `GGML_LOG_LEVEL_WARN`, for the fitting output.
-const FIT_LOG_LEVEL: i32 = 3;
 
 /// How replies are generated. The defaults are the Python backend's
 /// (`default_generation_args` in `local_describer.py`).
@@ -235,7 +233,11 @@ fn fit_to_memory(params: Pin<&mut LlamaModelParams>, model_path: &Path, mmproj_p
     };
     let mmproj_size = std::fs::metadata(mmproj_path).map_or(0, |m| m.len() as usize);
     let mut margins = vec![mmproj_size + IMAGE_ENCODER_RESERVE; llama_cpp_2::max_devices()];
-    match params.fit_params(&path, &mut context_params(), &mut margins, CONTEXT_SIZE, FIT_LOG_LEVEL) {
+    // ggml's `GGML_LOG_LEVEL_WARN`, for the fitting output. The type of ggml's
+    // log levels (a C enum) is `i32` on Windows but `u32` elsewhere, and this
+    // crate can't name it, so leave the literal to be inferred.
+    let log_level = 3;
+    match params.fit_params(&path, &mut context_params(), &mut margins, CONTEXT_SIZE, log_level) {
         Ok(_) => true,
         Err(e) => {
             log::warn!("model does not fit the GPU ({e}); using the CPU");

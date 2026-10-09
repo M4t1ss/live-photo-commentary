@@ -140,6 +140,7 @@ jobs:
             librsvg2-dev \
             libdbus-1-dev \
             libpipewire-0.3-dev libgbm-dev libdrm-dev libegl-dev libwayland-dev libxcb1-dev libxrandr-dev \
+            spirv-headers \
             patchelf \
             gcc-mingw-w64-x86-64
 
@@ -157,9 +158,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          VULKAN_VERSION: 1.4.309.0
+          # Not older than 1.4.363.0: llama.cpp's Vulkan backend needs the SDK's
+          # SPIRV-Headers CMake package, which 1.4.309.0 lacks (1.4.363.0 is also
+          # what the installer was developed and tested with).
+          VULKAN_VERSION: 1.4.363.0
         run: |
-          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_VERSION/windows/VulkanSDK-$env:VULKAN_VERSION-Installer.exe" -OutFile "$env:TEMP\vulkan.exe"
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_VERSION.exe" -OutFile "$env:TEMP\vulkan.exe"
           Start-Process "$env:TEMP\vulkan.exe" -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait
           "VULKAN_SDK=C:\VulkanSDK\$env:VULKAN_VERSION" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "C:\VulkanSDK\$env:VULKAN_VERSION\Bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
@@ -180,6 +184,10 @@ jobs:
             . -> target
             src-screenshot -> target
           cache-directories: ${{ runner.os == 'Windows' && 'C:\b' || '' }}
+          # The Windows cache saved by the first run holds a half-configured llama.cpp
+          # (that run's failed configure); a new key leaves it behind. Bump it again
+          # if a cache is ever saved in a bad state.
+          key: ${{ runner.os == 'Windows' && 'windows-2' || '' }}
           # llama.cpp is slow to build, and failed runs are likely for a while.
           cache-on-failure: true
 
@@ -267,11 +275,17 @@ jobs:
           if [ "$RUNNER_OS" = "Linux" ]; then
             configs+=(--config src-tauri/tauri.bundle.linux.conf.json)
           fi
+          build_dir="${CARGO_BUILD_BUILD_DIR:-target}"
+          build_dir="${build_dir//\\//}"
           for attempt in 1 2 3; do
             if cargo tauri build --features "${{ matrix.features }}" "${configs[@]}"; then
               exit 0
             fi
             echo "Build attempt $attempt failed"
+            # The cmake crate skips configuring when CMakeCache.txt exists, so after
+            # a failed configure every retry would fail with "install.vcxproj does
+            # not exist". Reconfiguring is cheap; compiled objects are kept.
+            rm -f "$build_dir"/release/build/llama-cpp-sys-2-*/out/build/CMakeCache.txt
           done
           exit 1
 
