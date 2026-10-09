@@ -23,7 +23,7 @@ jobs:
         include:
           - platform: windows-latest
             os: windows
-          - platform: ubuntu-22.04
+          - platform: ubuntu-24.04
             os: linux
     runs-on: ${{ matrix.platform }}
     steps:
@@ -44,7 +44,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake clang libclang-dev patchelf \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libdbus-1-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev \
             libpipewire-0.3-dev libgbm-dev libdrm-dev libegl-dev libwayland-dev libxcb1-dev libxrandr-dev
 
       - uses: dtolnay/rust-toolchain@stable
@@ -71,12 +71,11 @@ jobs:
       # Linux: the same release as Windows, from NVIDIA's own repository as in their
       # install instructions. (The action's partial installs only work with its
       # `cuda-` package names, which cuBLAS doesn't have.) `cuda-toolkit-13-2` is
-      # the toolkit without the driver. Ubuntu 22.04 stays the runner: its older
-      # glibc keeps the .deb and AppImage usable on more distributions.
+      # the toolkit without the driver.
       - name: Install CUDA Toolkit (Linux)
         if: runner.os == 'Linux'
         run: |
-          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
           sudo apt-get update
           sudo apt-get install -y cuda-toolkit-13-2
@@ -105,7 +104,7 @@ jobs:
             cuda-os: windows
             features: dynamic-backends,vulkan
             gpu-backend: vulkan
-          - platform: ubuntu-22.04
+          - platform: ubuntu-24.04
             cuda-os: linux
             features: dynamic-backends,vulkan
             gpu-backend: vulkan
@@ -131,7 +130,7 @@ jobs:
           sudo apt-get install -y \
             build-essential cmake clang libclang-dev \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libayatana-appindicator3-dev \
             librsvg2-dev \
             libdbus-1-dev \
             libpipewire-0.3-dev libgbm-dev libdrm-dev libegl-dev libwayland-dev libxcb1-dev libxrandr-dev \
@@ -143,8 +142,8 @@ jobs:
       - name: Install Vulkan SDK (Linux)
         if: runner.os == 'Linux'
         run: |
-          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
           sudo apt-get update
           sudo apt-get install -y vulkan-sdk
 
@@ -295,7 +294,7 @@ jobs:
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [cuda-backend, build]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
