@@ -62,8 +62,18 @@ pub fn backend_devices() -> Vec<BackendDevice> {
 
 /// The GPU to run a model on, among `devices`. The same card can show up once
 /// per backend (CUDA and Vulkan, say), and llama.cpp would spread a model over
-/// all of them, so the model is pinned to one. CUDA is preferred, then the
-/// discrete GPU with the most memory, then an integrated one.
+/// all of them, so the model is pinned to one.
+///
+/// Devices are compared by these rules in turn, each one only deciding
+/// between devices that the earlier ones leave tied:
+///
+/// 1. A CUDA device beats any other backend. It is the same card as its Vulkan
+///    twin, only faster, and CUDA is only loaded if the user installed it. This
+///    is also why a small CUDA card wins over a larger card on another backend.
+/// 2. A discrete GPU beats an integrated one.
+/// 3. The device with the most memory.
+///
+/// (If two devices tie on all three, the later one in `devices` is chosen.)
 pub fn preferred_gpu(devices: &[BackendDevice]) -> Option<&BackendDevice> {
     devices
         .iter()
@@ -105,6 +115,18 @@ mod tests {
         ];
         assert_eq!(preferred_gpu(&devices).unwrap().index, 2);
         assert_eq!(preferred_gpu(&devices[..1]).unwrap().index, 0);
+    }
+
+    #[test]
+    fn cuda_wins_before_discreteness_and_memory_are_compared() {
+        let devices = [
+            device(0, "Vulkan", true, false, 24),
+            device(1, "CUDA", true, false, 8),
+        ];
+        assert_eq!(preferred_gpu(&devices).unwrap().index, 1);
+        // The rules apply in order: an integrated CUDA device beats a discrete Vulkan one.
+        let devices = [device(0, "Vulkan", true, false, 24), device(1, "CUDA", true, true, 8)];
+        assert_eq!(preferred_gpu(&devices).unwrap().index, 1);
     }
 
     #[test]
