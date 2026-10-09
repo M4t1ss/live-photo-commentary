@@ -13,6 +13,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Cursor};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -23,7 +24,7 @@ use vibrato::{Dictionary, Tokenizer};
 use crate::embedded::decompress_xz;
 use crate::error::{Error, Result};
 use crate::num2kana;
-use crate::text_segmentation::{Word, chunk_japanese};
+use crate::text_segmentation::Word;
 
 /// Any error while getting the dictionary; they come from many libraries.
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -378,6 +379,73 @@ async fn load_tokenizer() -> Result<Tokenizer, BoxError> {
         Ok(Tokenizer::new(dictionary).ignore_space(true)?.max_grouping_len(24))
     })
     .await?
+}
+
+/// Groups Japanese morphemes, given as (byte range, UniDic part of speech),
+/// into word-like chunks: merges noun compounds, pulls trailing particles /
+/// auxiliaries / suffixes onto the previous chunk, attaches a leading prefix
+/// to the following chunk, and glues trailing punctuation onto the word
+/// before it. Leading/standalone punctuation stays on its own.
+///
+/// The Python version uses Sudachi's long units; UniDic's parts of speech
+/// have the same names, but its units are shorter, so more merging happens here.
+fn chunk_japanese(morphemes: &[(Range<usize>, &str)]) -> Vec<Range<usize>> {
+    const LEFT_ATTACH: [&str; 3] = ["助詞", "助動詞", "接尾辞"];
+    const NOUN: &str = "名詞";
+    const PREFIX: &str = "接頭辞";
+    const PUNCT: &str = "補助記号";
+    const SPACE: &str = "空白";
+
+    let mut chunks = Vec::new();
+    let mut cur: Option<Range<usize>> = None; // the chunk being built
+    let mut held_prefix: Option<Range<usize>> = None; // a prefix waiting for the next chunk
+
+    for (i, (range, pos)) in morphemes.iter().enumerate() {
+        let pos = *pos;
+        if pos == SPACE {
+            continue;
+        }
+
+        if pos == PREFIX {
+            match &mut held_prefix {
+                None => held_prefix = Some(range.clone()),
+                Some(held) => held.end = range.end,
+            }
+            continue;
+        }
+
+        match &mut cur {
+            None => {
+                let start = held_prefix.take().map_or(range.start, |held| held.start);
+                cur = Some(start..range.end);
+            }
+            Some(c) => c.end = range.end,
+        }
+
+        let next_pos = morphemes[i + 1..]
+            .iter()
+            .map(|(_, p)| *p)
+            .find(|p| *p != SPACE);
+
+        if pos == NOUN && next_pos == Some(NOUN) {
+            continue;
+        }
+        if pos != PUNCT && next_pos.is_some_and(|n| LEFT_ATTACH.contains(&n)) {
+            continue;
+        }
+        if pos != PUNCT && next_pos == Some(PUNCT) {
+            continue;
+        }
+
+        chunks.extend(cur.take());
+    }
+
+    if let Some(c) = cur {
+        chunks.push(c);
+    } else if let Some(held) = held_prefix {
+        chunks.push(held);
+    }
+    chunks
 }
 
 fn dictionary_path() -> Result<PathBuf, BoxError> {
