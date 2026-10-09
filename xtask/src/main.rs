@@ -8,13 +8,14 @@
 //!
 //! `cargo xtask package-cuda-backend OUT_DIR [--release]`
 //!
-//! Builds the app with `dynamic-backends,cuda` and zips the CUDA backend
+//! Builds llama.cpp (through vlm-describer, not the app) with CUDA and zips the CUDA backend
 //! library with NVIDIA's cuBLAS libraries and the CUDA Toolkit's `EULA.txt`
 //! (which allows redistributing them; from `CUDA_PATH`) into
 //! `OUT_DIR/cuda-backend-<os>-x64.zip`, plus a `.sha256` file with the
 //! checksum the app is built with (`CUDA_BACKEND_SHA256`). The app downloads
 //! this archive from Settings. Set `CMAKE_CUDA_ARCHITECTURES` to build for
-//! fewer GPU generations than the default (all), e.g. `86`.
+//! fewer GPU generations than ggml's default list (for CUDA 13: 75 and 80 and 90
+//! as PTX, 86, 89, 120a and 121a as machine code), e.g. `86`.
 //!
 //! `espeak-ng-data` is created inside espeak-rs-sys's build directory, whose
 //! name has a hash in it. Cargo reports that directory in its JSON messages
@@ -171,22 +172,39 @@ fn package_cuda_backend(args: &[String]) -> Result<(), Box<dyn Error>> {
     let out_dir = std::path::absolute(out_dir.ok_or(USAGE)?)?;
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask should be in the workspace");
 
-    // The app's build script copies the backend library to `llama-cuda/backends`.
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let mut build = Command::new(cargo);
-    build.current_dir(workspace).args(["build", "-p", "app", "--features", "dynamic-backends,cuda"]);
-    if release {
-        build.arg("--release");
-    }
-    if !build.status()?.success() {
-        return Err("building the app with CUDA failed".into());
-    }
     let (os, backend_name) = if cfg!(windows) {
         ("windows", "ggml-cuda.dll")
     } else {
         ("linux", "libggml-cuda.so")
     };
-    let backend = workspace.join("src-tauri/resources/llama-cuda/backends").join(backend_name);
+    // Only llama.cpp is built, not the app (which would need everything the app
+    // needs, Tauri's resources and system libraries included): the backend
+    // library is in `backends/` of the output of llama-cpp-sys-2's build script,
+    // and Cargo reports that directory in its JSON messages.
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut build = Command::new(cargo);
+    build
+        .current_dir(workspace)
+        .args(["build", "-p", "vlm-describer", "--features", "llama-cpp,dynamic-backends,cuda"])
+        .arg("--message-format=json-render-diagnostics");
+    if release {
+        build.arg("--release");
+    }
+    let output = build.stderr(Stdio::inherit()).output()?;
+    if !output.status.success() {
+        return Err("building llama.cpp with CUDA failed".into());
+    }
+    let mut llama_out_dir = None;
+    for line in output.stdout.lines() {
+        let message: Value = serde_json::from_str(&line?)?;
+        if message["reason"] == "build-script-executed"
+            && message["package_id"].as_str().is_some_and(|id| id.contains("llama-cpp-sys-2"))
+        {
+            llama_out_dir = message["out_dir"].as_str().map(PathBuf::from);
+        }
+    }
+    let llama_out_dir = llama_out_dir.ok_or("Cargo didn't report llama-cpp-sys-2's build directory")?;
+    let backend = llama_out_dir.join("backends").join(backend_name);
     if !backend.is_file() {
         return Err(format!("{} was not built", backend.display()).into());
     }

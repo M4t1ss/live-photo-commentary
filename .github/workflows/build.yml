@@ -38,14 +38,13 @@ jobs:
         shell: pwsh
         run: '"CARGO_BUILD_BUILD_DIR=C:\b" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV'
 
+      # Only llama.cpp is built here, not the app, so none of the app's GUI and
+      # screen-capture libraries are needed.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential cmake clang libclang-dev patchelf \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev \
-            libpipewire-0.3-dev libgbm-dev libdrm-dev libegl-dev libwayland-dev libxcb1-dev libxrandr-dev
+          sudo apt-get install -y build-essential cmake clang libclang-dev patchelf
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -54,6 +53,9 @@ jobs:
           workspaces: ". -> target"
           cache-directories: ${{ runner.os == 'Windows' && 'C:\b' || '' }}
           key: cuda
+          # The CUDA build takes over an hour: keep what was compiled when a later
+          # step fails, so that the next run starts from there.
+          cache-on-failure: true
 
       # The toolkit has to be 13.x: the archive ships cublas64_13 / libcublas.so.13.
       # Windows: the runner's Visual Studio is 2026 (version 18), which CUDA
@@ -96,6 +98,10 @@ jobs:
 
   build:
     needs: cuda-backend
+    # Installers are built even if the (very long) CUDA job failed, so that one
+    # failure doesn't hide the results of the other jobs; they just can't offer
+    # the CUDA download then. The release job still needs everything to succeed.
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
@@ -174,24 +180,27 @@ jobs:
             . -> target
             src-screenshot -> target
           cache-directories: ${{ runner.os == 'Windows' && 'C:\b' || '' }}
+          # llama.cpp is slow to build, and failed runs are likely for a while.
+          cache-on-failure: true
 
       # The app downloads this on request, from a release asset of this
       # version; the installer is built with the archive's checksum so that it
-      # knows what to accept (no checksum, no CUDA offer: macOS has none).
+      # knows what to accept (no checksum, no CUDA offer: macOS has none, and
+      # neither has a build whose CUDA job failed).
       - name: Get the CUDA backend checksum
-        if: matrix.cuda-os != ''
+        if: matrix.cuda-os != '' && needs.cuda-backend.result == 'success'
         uses: actions/download-artifact@v8
         with:
           name: cuda-backend-${{ matrix.cuda-os }}
           path: cuda-backend
 
       - name: Pass the CUDA backend checksum to the build
-        if: matrix.cuda-os != ''
+        if: matrix.cuda-os != '' && needs.cuda-backend.result == 'success'
         shell: bash
         run: echo "CUDA_BACKEND_SHA256=$(tr -d '[:space:]' < cuda-backend/cuda-backend-${{ matrix.cuda-os }}-x64.zip.sha256)" >> "$GITHUB_ENV"
 
       # The WSL screenshot helper, a separate Windows program that the Linux
-      # build bundles (tauri.linux.conf.json).
+      # installer bundles (tauri.bundle.linux.conf.json).
       - name: Build screenshot.exe (Linux cross-compile)
         if: runner.os == 'Linux'
         run: |
@@ -245,14 +254,21 @@ jobs:
 
       # tauri.bundle.conf.json adds what only installers need: the models, the
       # kokoro-espeak sidecar (its beforeBuildCommand builds it, with
-      # espeak-ng-data) and the licences. The first Vulkan build of llama.cpp
-      # on Windows often fails on a race in its shader generator
-      # (vulkan-shaders-gen); a rerun gets further, so try up to three times.
+      # espeak-ng-data) and the licences. On Linux, tauri.bundle.linux.conf.json
+      # adds the WSL screenshot helper built above; only installers bundle it, so
+      # other Linux builds (the CUDA backend job, `cargo test`) don't need it.
+      # The first Vulkan build of llama.cpp on Windows often fails on a race in
+      # its shader generator (vulkan-shaders-gen); a rerun gets further, so try
+      # up to three times.
       - name: Build the installer
         shell: bash
         run: |
+          configs=(--config src-tauri/tauri.bundle.conf.json)
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            configs+=(--config src-tauri/tauri.bundle.linux.conf.json)
+          fi
           for attempt in 1 2 3; do
-            if cargo tauri build --features "${{ matrix.features }}" --config src-tauri/tauri.bundle.conf.json; then
+            if cargo tauri build --features "${{ matrix.features }}" "${configs[@]}"; then
               exit 0
             fi
             echo "Build attempt $attempt failed"

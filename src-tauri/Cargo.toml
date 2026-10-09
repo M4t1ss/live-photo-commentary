@@ -22,7 +22,6 @@ devtools = ["tauri/devtools"]
 # time (what the installer does); without it they are built in.
 dynamic-backends = ["vlm-describer/dynamic-backends"]
 vulkan = ["vlm-describer/vulkan"]
-cuda = ["vlm-describer/cuda"]
 metal = ["vlm-describer/metal"]
 
 [build-dependencies]

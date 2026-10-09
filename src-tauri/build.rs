@@ -33,16 +33,11 @@ fn main() {
 /// there). Only with the `dynamic-backends` feature; otherwise llama.cpp is
 /// linked in and the folder holds just a placeholder, because Tauri insists
 /// that the resource pattern matches something.
-///
-/// A build with the `cuda` feature is the one that makes the downloadable CUDA
-/// backend (`cargo xtask package-cuda-backend`), not the app: it stages into
-/// `resources/llama-cuda/` instead, which isn't bundled.
 fn stage_llama_libraries() {
   // Files are only written when they differ: `tauri dev` watches this folder
   // and rebuilds whenever it changes, so rewriting it on every build would
   // make it rebuild forever.
-  let folder = if std::env::var_os("CARGO_FEATURE_CUDA").is_some() { "resources/llama-cuda" } else { "resources/llama" };
-  let staging = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(folder);
+  let staging = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("resources/llama");
   std::fs::create_dir_all(staging.join("backends")).unwrap();
   write_if_different(&staging.join("README.txt"), b"llama.cpp libraries, filled in by build.rs\n");
   if std::env::var_os("CARGO_FEATURE_DYNAMIC_BACKENDS").is_none() {
