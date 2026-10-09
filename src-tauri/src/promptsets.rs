@@ -184,7 +184,7 @@ pub fn migrate(old_dir: &Path, new_dir: &Path) -> Result<(), String> {
     for entry in std::fs::read_dir(old_dir).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
         if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
-            let dest = new_dir.join(path.file_name().expect("yaml path has a file name"));
+            let dest = new_dir.join(path.file_name().expect("yaml path should have a file name"));
             std::fs::rename(&path, &dest).map_err(|e| e.to_string())?;
         }
     }

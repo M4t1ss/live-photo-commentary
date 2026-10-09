@@ -51,7 +51,7 @@ fn stage_llama_libraries() {
 
   // `lib/cmake` (or `lib64/cmake`) inside the CMake install of llama.cpp.
   let cmake_dir = PathBuf::from(std::env::var("DEP_LLAMA_GGML_CMAKE_DIR").expect("llama-cpp-sys-2 did not say where ggml was installed"));
-  let install = cmake_dir.parent().and_then(Path::parent).expect("ggml cmake dir is nested");
+  let install = cmake_dir.parent().and_then(Path::parent).expect("ggml cmake dir should be nested");
   // Windows puts DLLs in `bin`, the others in `lib`/`lib64`.
   for dir in ["bin", "lib", "lib64"] {
     copy_shared_libraries(&install.join(dir), &staging);

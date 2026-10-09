@@ -44,12 +44,12 @@ fn locate_screenshot_exe(app: &tauri::AppHandle) -> std::path::PathBuf {
     if cfg!(debug_assertions) {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .expect("CARGO_MANIFEST_DIR has no parent")
+            .expect("CARGO_MANIFEST_DIR should have a parent")
             .join("screenshot.exe")
     } else {
         app.path()
             .resource_dir()
-            .expect("resource dir unavailable")
+            .expect("resource dir should be available")
             .join("resources")
             .join("screenshot.exe")
     }

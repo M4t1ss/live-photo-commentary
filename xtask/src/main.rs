@@ -94,7 +94,7 @@ fn build_helper(target: Option<&str>) -> Result<(PathBuf, PathBuf), Box<dyn Erro
     // Run in this workspace even when called from another project, so that
     // `-p` finds the helper and Cargo reads this workspace's
     // `.cargo/config.toml` (which sets `/utf-8` for eSpeak NG).
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask is in the workspace");
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask should be in the workspace");
     command.current_dir(workspace);
     command.args(["build", "--release", "-p", "kokoro-espeak"]);
     // Compiler messages still go to stderr; stdout gets Cargo's JSON.
@@ -169,7 +169,7 @@ fn package_cuda_backend(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
     }
     let out_dir = std::path::absolute(out_dir.ok_or(USAGE)?)?;
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask is in the workspace");
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask should be in the workspace");
 
     // The app's build script copies the backend library to `llama-cuda/backends`.
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());

@@ -41,8 +41,8 @@ impl Espeak {
             command.creation_flags(CREATE_NO_WINDOW);
         }
         let mut child = command.spawn().map_err(Error::EspeakHelper)?;
-        let stdin = child.stdin.take().expect("stdin is piped");
-        let stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
+        let stdin = child.stdin.take().expect("stdin should be piped");
+        let stdout = BufReader::new(child.stdout.take().expect("stdout should be piped"));
         Ok(Self { helper: Mutex::new(Helper { child, stdin, stdout }) })
     }
 

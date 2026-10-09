@@ -119,7 +119,7 @@ fn encode_wav(samples: &[f32]) -> Vec<u8> {
     };
     let mut cursor = std::io::Cursor::new(Vec::new());
     {
-        let mut writer = hound::WavWriter::new(&mut cursor, spec).expect("valid WAV spec");
+        let mut writer = hound::WavWriter::new(&mut cursor, spec).expect("WAV spec should be valid");
         for &sample in samples {
             let scaled = (sample as f64 * 32767.0).clamp(-32768.0, 32767.0) as i16;
             writer.write_sample(scaled).expect("write WAV sample");
@@ -157,7 +157,7 @@ fn run_vlm_worker<D, S>(
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("current-thread tokio runtime");
+        .expect("current-thread tokio runtime should build");
     let mut describer: Option<D> = None;
 
     while let Ok(job) = rx.recv() {
@@ -412,7 +412,7 @@ where
     /// (`Pipeline.trigger` in Python).
     pub fn trigger(&self, cfg: &Config, image: DynamicImage) {
         let image = Arc::new(image);
-        let mut state = self.frame_state.lock().expect("frame state mutex");
+        let mut state = self.frame_state.lock().expect("frame state mutex should not be poisoned");
         let previous = state.prev_image.clone();
 
         let mut diff = None;
@@ -444,7 +444,7 @@ where
         });
 
         if !accepted {
-            (self.sink)(Event::Skipped { diff: diff.expect("a rejected frame always has a diff") });
+            (self.sink)(Event::Skipped { diff: diff.expect("a rejected frame should have a diff") });
             (self.sink)(Event::TakeScreenshot);
             return;
         }
@@ -466,7 +466,7 @@ where
     /// frames now arrive directly through `trigger`).
     pub fn start_cycle(&self) {
         self.running.store(true, Ordering::SeqCst);
-        let mut state = self.frame_state.lock().expect("frame state mutex");
+        let mut state = self.frame_state.lock().expect("frame state mutex should not be poisoned");
         state.prev_image = None;
         state.last_rejected = false;
         drop(state);
@@ -489,7 +489,7 @@ where
     /// Replays previously pre-generated chunks for `name`, always ending
     /// with `system_tts_done` (`play_system_message` in Python).
     pub fn play_system_message(&self, name: &str) {
-        let chunks = self.pregen_messages.lock().expect("pregen mutex").get(name).cloned();
+        let chunks = self.pregen_messages.lock().expect("pregen mutex should not be poisoned").get(name).cloned();
         for chunk in chunks.into_iter().flatten() {
             (self.sink)(Event::Chunk(chunk));
         }
@@ -510,7 +510,7 @@ where
     ) {
         std::thread::spawn(move || {
             // Reset so stale clips don't survive if one generation fails mid-way.
-            self.pregen_messages.lock().expect("pregen mutex").clear();
+            self.pregen_messages.lock().expect("pregen mutex should not be poisoned").clear();
             for (name, prompt) in prompts {
                 if prompt.trim().is_empty() {
                     continue;
@@ -535,7 +535,7 @@ where
                 }
                 match rx.recv() {
                     Ok(Ok(chunks)) => {
-                        self.pregen_messages.lock().expect("pregen mutex").insert(name, chunks);
+                        self.pregen_messages.lock().expect("pregen mutex should not be poisoned").insert(name, chunks);
                     }
                     Ok(Err(message)) => log::warn!("System message synthesis for {name:?} failed: {message}"),
                     Err(_) => {}

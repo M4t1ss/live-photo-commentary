@@ -14,9 +14,9 @@ static TAGGER: LazyLock<PerceptronTagger> = LazyLock::new(|| {
     // 1 MB instead of 5.7 MB; decompressing takes under 0.1 s in release builds.
     let weights = decompress_xz(include_bytes!("../../data/tagger/weights.json.xz"));
     PerceptronTagger {
-        weights: serde_json::from_slice(&weights).expect("tagger weights are valid JSON"),
+        weights: serde_json::from_slice(&weights).expect("tagger weights should be valid JSON"),
         tagdict: serde_json::from_str(include_str!("../../data/tagger/tags.json"))
-            .expect("tagger tag dictionary is valid JSON"),
+            .expect("tagger tag dictionary should be valid JSON"),
         classes: include_str!("../../data/tagger/classes.txt")
             .lines()
             .map(|line| line.trim().to_string())
@@ -72,7 +72,7 @@ impl PerceptronTagger {
         self.classes
             .iter()
             .max_by(|a, b| score(a).total_cmp(&score(b)).then_with(|| a.cmp(b)))
-            .expect("tagger has classes")
+            .expect("tagger should have classes")
             .clone()
     }
 }

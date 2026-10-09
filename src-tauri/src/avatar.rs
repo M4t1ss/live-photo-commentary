@@ -95,7 +95,7 @@ pub fn migrate_user_models(old_dir: &Path, new_dir: &Path) -> Result<(), String>
     for entry in std::fs::read_dir(old_dir).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
         if path.is_file() {
-            let dest = new_dir.join(path.file_name().expect("file has a name"));
+            let dest = new_dir.join(path.file_name().expect("file should have a name"));
             std::fs::rename(&path, &dest).map_err(|e| e.to_string())?;
         }
     }

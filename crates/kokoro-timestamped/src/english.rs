@@ -25,12 +25,12 @@ type HeteronymTable = HashMap<String, HashMap<String, String>>;
 
 static US_HETERONYMS: LazyLock<HeteronymTable> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../data/us_heteronyms.json"))
-        .expect("heteronym table is valid JSON")
+        .expect("American heteronym table should be valid JSON")
 });
 
 static GB_HETERONYMS: LazyLock<HeteronymTable> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../data/gb_heteronyms.json"))
-        .expect("heteronym table is valid JSON")
+        .expect("British heteronym table should be valid JSON")
 });
 
 #[derive(Clone, Copy)]

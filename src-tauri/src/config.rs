@@ -86,7 +86,7 @@ impl Config {
     /// Python).
     pub fn apply(&self, updates: &serde_json::Map<String, serde_json::Value>) -> Result<Config, String> {
         let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
-        let obj = value.as_object_mut().expect("Config serializes to a JSON object");
+        let obj = value.as_object_mut().expect("Config should serialize to a JSON object");
         for (key, update) in updates {
             if obj.contains_key(key) {
                 obj.insert(key.clone(), update.clone());

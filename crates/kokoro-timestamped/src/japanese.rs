@@ -49,7 +49,7 @@ const ODORI: &str = "〃々ゝゞヽ";
 static JA_WORDS: LazyLock<HashSet<String>> = LazyLock::new(|| {
     // 330 KB instead of 1.9 MB.
     let words = decompress_xz(include_bytes!("../data/ja_words.txt.xz"));
-    let words = String::from_utf8(words).expect("Japanese word list is UTF-8");
+    let words = String::from_utf8(words).expect("Japanese word list should be UTF-8");
     words.lines().map(|word| word.trim().to_string()).collect()
 });
 

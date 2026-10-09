@@ -136,7 +136,7 @@ impl KokoroSynthesizer {
 
         let frames = data.len() / 256;
         Ok(Array3::from_shape_vec((frames, 1, 256), data)
-            .expect("the length is a multiple of 256"))
+            .expect("the length should be a multiple of 256"))
     }
 
     async fn load_blend(repo: &ModelRepo, parts: Vec<VoiceBlendPart>) -> Result<VoiceTensor> {

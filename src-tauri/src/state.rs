@@ -288,9 +288,9 @@ pub fn old_python_backend_dir(app_data_dir: &std::path::Path) -> PathBuf {
 /// mirrors `locate_screenshot_exe` in `screenshot.rs`).
 fn bundled_models_dir(app: &tauri::AppHandle) -> PathBuf {
     if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("has a parent").join("models")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("CARGO_MANIFEST_DIR should have a parent").join("models")
     } else {
-        app.path().resource_dir().expect("resource dir unavailable").join("resources").join("models")
+        app.path().resource_dir().expect("resource dir should be available").join("resources").join("models")
     }
 }
 
@@ -299,9 +299,9 @@ fn bundled_models_dir(app: &tauri::AppHandle) -> PathBuf {
 /// per `tauri.bundle.conf.json`'s `resources/models/animations/*`).
 fn animations_dir(app: &tauri::AppHandle) -> PathBuf {
     if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("has a parent").join("animations")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("CARGO_MANIFEST_DIR should have a parent").join("animations")
     } else {
-        app.path().resource_dir().expect("resource dir unavailable").join("resources").join("models").join("animations")
+        app.path().resource_dir().expect("resource dir should be available").join("resources").join("models").join("animations")
     }
 }
 
@@ -358,7 +358,7 @@ impl AppState {
         let sink: crate::events::EventSink = {
             let channel = Arc::clone(&channel);
             Arc::new(move |event: Event| {
-                if let Some(channel) = channel.lock().expect("channel mutex").as_ref() {
+                if let Some(channel) = channel.lock().expect("channel mutex should not be poisoned").as_ref() {
                     let _ = channel.send(event.to_json());
                 }
             })
@@ -405,7 +405,7 @@ impl AppState {
     }
 
     pub fn config(&self) -> Config {
-        self.config.lock().expect("config mutex").clone()
+        self.config.lock().expect("config mutex should not be poisoned").clone()
     }
 
     pub fn settings_path(&self) -> &PathBuf {
@@ -416,7 +416,7 @@ impl AppState {
     /// `(old, new)`. Doesn't persist or reload anything — the caller (the
     /// `set_config` command) decides that.
     pub fn apply_config(&self, updates: &serde_json::Map<String, serde_json::Value>) -> Result<(Config, Config), String> {
-        let mut guard = self.config.lock().expect("config mutex");
+        let mut guard = self.config.lock().expect("config mutex should not be poisoned");
         let old = guard.clone();
         let new = old.apply(updates)?;
         *guard = new.clone();
@@ -424,11 +424,11 @@ impl AppState {
     }
 
     pub fn set_channel(&self, channel: tauri::ipc::Channel<serde_json::Value>) {
-        *self.channel.lock().expect("channel mutex") = Some(channel);
+        *self.channel.lock().expect("channel mutex should not be poisoned") = Some(channel);
     }
 
     pub fn send(&self, event: Event) {
-        if let Some(channel) = self.channel.lock().expect("channel mutex").as_ref() {
+        if let Some(channel) = self.channel.lock().expect("channel mutex should not be poisoned").as_ref() {
             let _ = channel.send(event.to_json());
         }
     }
@@ -447,7 +447,7 @@ impl AppState {
     }
 
     pub fn model_errors(&self) -> Vec<String> {
-        self.model_errors.lock().expect("model_errors mutex").values().cloned().collect()
+        self.model_errors.lock().expect("model_errors mutex should not be poisoned").values().cloned().collect()
     }
 
     /// Lists Kokoro's voices and sends `models` (`_send_models` in Python).
@@ -480,14 +480,14 @@ impl AppState {
         let base = self.active_promptset();
         let tag_names = self.active_tag_names();
         let tag_refs: Vec<&str> = tag_names.iter().map(String::as_str).collect();
-        self.session.lock().expect("session mutex").describer_fields(&base, &tag_refs)
+        self.session.lock().expect("session mutex should not be poisoned").describer_fields(&base, &tag_refs)
     }
 
     fn pregen_fields(&self) -> Promptset {
         let base = self.active_promptset();
         let tag_names = self.active_tag_names();
         let tag_refs: Vec<&str> = tag_names.iter().map(String::as_str).collect();
-        self.session.lock().expect("session mutex").pregen_fields(&base, &tag_refs)
+        self.session.lock().expect("session mutex should not be poisoned").pregen_fields(&base, &tag_refs)
     }
 
     /// Pushes the active promptset (plus any session override) onto the
@@ -500,7 +500,7 @@ impl AppState {
     /// to the live describer, and re-triggers pre-generation
     /// (`apply_prompts` in Python's websocket handler).
     pub fn apply_prompt_override(self: &Arc<Self>, given: &HashMap<String, String>) {
-        self.session.lock().expect("session mutex").set_override(given);
+        self.session.lock().expect("session mutex should not be poisoned").set_override(given);
         self.apply_active_promptset_to_describer();
         self.trigger_pregen();
     }
@@ -511,9 +511,9 @@ impl AppState {
     /// handler). Returns the loaded fields for the `promptset_loaded` event.
     pub fn load_promptset(self: &Arc<Self>, name: &str) -> Result<Promptset, String> {
         let fields = self.promptsets.load(name)?;
-        self.session.lock().expect("session mutex").clear();
+        self.session.lock().expect("session mutex should not be poisoned").clear();
         {
-            let mut cfg = self.config.lock().expect("config mutex");
+            let mut cfg = self.config.lock().expect("config mutex should not be poisoned");
             *cfg = cfg.apply(&serde_json::Map::from_iter([("active_promptset".to_string(), serde_json::json!(name))]))?;
         }
         self.config().save(&self.settings_path)?;
@@ -572,7 +572,7 @@ impl AppState {
     /// A no-op (besides a `ready_state`) when no provider or model is
     /// configured yet.
     pub async fn reinit_describer(self: &Arc<Self>) {
-        self.model_errors.lock().expect("model_errors mutex").remove("vlm");
+        self.model_errors.lock().expect("model_errors mutex should not be poisoned").remove("vlm");
         let had_describer = self.vlm_ready.swap(false, Ordering::SeqCst);
         let cfg = self.config();
         if cfg.vlm_provider.is_none() || cfg.vlm_model.is_none() {
@@ -609,7 +609,7 @@ impl AppState {
             }
             Err(message) => {
                 let message = format!("VLM init failed: {message}");
-                self.model_errors.lock().expect("model_errors mutex").insert("vlm".to_string(), message.clone());
+                self.model_errors.lock().expect("model_errors mutex should not be poisoned").insert("vlm".to_string(), message.clone());
                 self.send(Event::Error { message });
                 self.send_ready_state();
             }
@@ -620,7 +620,7 @@ impl AppState {
     /// (`_reinit_synthesizer` in Python).
     pub async fn reinit_synthesizer(self: &Arc<Self>) {
         self.set_synthesizer_blocking(None).await;
-        self.model_errors.lock().expect("model_errors mutex").remove("tts");
+        self.model_errors.lock().expect("model_errors mutex should not be poisoned").remove("tts");
         self.tts_ready.store(false, Ordering::SeqCst);
         self.send(Event::ModelLoading { model: ModelKind::Tts });
         self.send_ready_state();
@@ -638,7 +638,7 @@ impl AppState {
             }
             Err(message) => {
                 let message = format!("TTS init failed: {message}");
-                self.model_errors.lock().expect("model_errors mutex").insert("tts".to_string(), message.clone());
+                self.model_errors.lock().expect("model_errors mutex should not be poisoned").insert("tts".to_string(), message.clone());
                 self.send(Event::Error { message });
                 self.send_ready_state();
             }
@@ -762,7 +762,7 @@ mod tests {
             vlm_model_overrides: Some(r#"{"response_re": "(unclosed"}"#.to_string()),
             ..Config::default()
         };
-        let error = build_describer(&cfg, &catalogue, no_progress(), 0).await.err().expect("bad regex");
+        let error = build_describer(&cfg, &catalogue, no_progress(), 0).await.err().expect("a bad response_re should fail the build");
         assert!(error.contains("response_re"), "{error}");
 
         let cfg = Config { vlm_model_overrides: Some(r#"{"response_re": "(.*)"}"#.to_string()), ..cfg };
@@ -777,7 +777,7 @@ mod tests {
             vlm_model: Some("my/model".to_string()),
             ..Config::default()
         };
-        let error = build_describer(&cfg, &catalogue, no_progress(), 0).await.err().expect("no files");
+        let error = build_describer(&cfg, &catalogue, no_progress(), 0).await.err().expect("a model without files should fail the build");
         assert!(error.contains("my/model") && error.contains("gguf_repo"), "{error}");
     }
 
