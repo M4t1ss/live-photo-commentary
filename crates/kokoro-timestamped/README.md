@@ -1,7 +1,9 @@
 # kokoro-timestamped
 
-Text-to-speech with [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) in
-Rust, with timings. Besides audio, synthesis returns when each phoneme, each
+Text-to-speech with
+[Kokoro-82M-v1.0-ONNX-timestamped](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX-timestamped),
+an ONNX export of [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) that
+also outputs phoneme durations, in Rust, with timings. Besides audio, synthesis returns when each phoneme, each
 word and each `{tag}` in the text is spoken, for lip-sync, subtitles and
 things like avatar emotions.
 

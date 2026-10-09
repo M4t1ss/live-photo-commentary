@@ -1,5 +1,6 @@
-//! Text-to-speech with [Kokoro-82M], ported from the Python backend of
-//! live-photo-commentary.
+//! Text-to-speech with [Kokoro-82M-v1.0-ONNX-timestamped], an ONNX export of
+//! [Kokoro-82M] that also outputs how long each phoneme lasts, ported from the
+//! Python backend of live-photo-commentary.
 //!
 //! Besides audio, synthesis returns timings for each phoneme (for lip-sync),
 //! each word (for subtitles), and each `{tag}` in the text (for things like
@@ -30,6 +31,7 @@
 //! # }
 //! ```
 //!
+//! [Kokoro-82M-v1.0-ONNX-timestamped]: https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX-timestamped
 //! [Kokoro-82M]: https://huggingface.co/hexgrad/Kokoro-82M
 
 mod embedded;
