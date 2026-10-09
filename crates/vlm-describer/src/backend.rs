@@ -6,7 +6,7 @@ use image::DynamicImage;
 use crate::error::{Error, Result};
 use crate::gemini::Gemini;
 #[cfg(feature = "llama-cpp")]
-use crate::local_llamacpp::LlamaCpp;
+use crate::llama_cpp::LlamaCpp;
 use crate::openai::OpenAi;
 
 /// Where prompts are sent.

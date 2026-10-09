@@ -78,8 +78,8 @@ impl LlamaCpp {
         let mut params = LlamaModelParams::default();
         let mut use_gpu = gpu_layers > 0;
         if use_gpu {
-            let devices = crate::backend_devices();
-            match crate::preferred_gpu(&devices) {
+            let devices = super::backend_devices();
+            match super::preferred_gpu(&devices) {
                 Some(gpu) => {
                     log::info!("using {} {}", gpu.backend, gpu.description);
                     params = params.with_devices(&[gpu.index]).map_err(local_error)?;

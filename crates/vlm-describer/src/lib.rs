@@ -20,28 +20,23 @@
 //! ```
 
 mod backend;
-#[cfg(feature = "llama-cpp")]
-mod backends;
 mod describer;
-#[cfg(feature = "llama-cpp")]
-mod download;
 mod error;
 mod gemini;
 #[cfg(feature = "llama-cpp")]
-mod local_llamacpp;
+mod llama_cpp;
 mod openai;
 mod prompts;
 
 pub use backend::Backend;
-#[cfg(feature = "llama-cpp")]
-pub use backends::{BackendDevice, backend_devices, load_backends, preferred_gpu};
 pub use describer::Describer;
 pub use error::{Error, Result};
 pub use gemini::Gemini;
 #[cfg(feature = "llama-cpp")]
-pub use download::{DownloadProgress, download_model};
-#[cfg(feature = "llama-cpp")]
-pub use local_llamacpp::{LlamaCpp, Sampling};
+pub use llama_cpp::{
+    BackendDevice, DownloadProgress, LlamaCpp, Sampling, backend_devices, download_model, load_backends,
+    preferred_gpu,
+};
 pub use openai::OpenAi;
 pub use prompts::{
     DEFAULT_COMPACT_PROMPT, DEFAULT_FIRST_PROMPT, DEFAULT_HISTORY_PROMPT, DEFAULT_PROMPT,
