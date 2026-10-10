@@ -1,6 +1,5 @@
-//! Tauri commands: one for each action the frontend can take. Replies
-//! that were separate WebSocket messages in the Python backend are return
-//! values here; only `connect`'s initial burst and the pipeline's own events
+//! Tauri commands: one for each action the frontend can take. Replies are
+//! return values; only `connect`'s initial burst and the pipeline's own events
 //! go over the channel.
 
 use std::collections::HashMap;
@@ -32,10 +31,10 @@ pub struct UploadPayload {
 }
 
 /// Stores the event channel, replacing any previous one (a page reload),
-/// and sends the initial burst Python sends on WS connect: `config`,
-/// `ready_state`, one `error` per stored model error, `models` (once voice
-/// listing finishes) and `promptset_loaded`. Reconnecting also stops the
-/// cycle, standing in for the WS disconnect Python reacts to.
+/// and sends the initial burst: `config`, `ready_state`, one `error` per
+/// stored model error, `models` (once voice listing finishes) and
+/// `promptset_loaded`. Reconnecting also stops the cycle (a page reload ends
+/// the session).
 #[tauri::command]
 pub fn connect(state: State<'_, Arc<AppState>>, events: Channel<serde_json::Value>) -> Result<(), String> {
     state.pipeline().stop_cycle();
@@ -63,8 +62,7 @@ pub fn get_config(state: State<'_, Arc<AppState>>) -> Config {
     state.config().masked()
 }
 
-/// Reloads the VLM and/or TTS exactly when Python's websocket handler does
-/// (`state::reload_triggers`).
+/// Reloads the VLM and/or TTS exactly when `state::reload_triggers` says to.
 #[tauri::command]
 pub fn set_config(
     state: State<'_, Arc<AppState>>,

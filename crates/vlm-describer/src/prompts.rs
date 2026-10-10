@@ -93,7 +93,7 @@ impl Default for Prompts {
 
 impl Prompts {
     /// Replaces [`TAGS_PLACEHOLDER`] with the available emotion tags, written
-    /// as `{tag}`. `neutral` is always included (`substitute_tags` in Python).
+    /// as `{tag}`. `neutral` is always included.
     pub fn with_tags(&self, tags: &[&str]) -> Self {
         let mut names: Vec<&str> = Vec::new();
         for &name in tags.iter().chain(&["neutral"]) {
@@ -120,8 +120,8 @@ pub(crate) enum Segment<'a> {
     Image(usize),
 }
 
-/// Splits a prompt on [`IMAGE_PLACEHOLDER`]s (`split_prompt_images` in
-/// Python). The first placeholder is image 0, the second image 1, and so on.
+/// Splits a prompt on [`IMAGE_PLACEHOLDER`]s. The first placeholder is image
+/// 0, the second image 1, and so on.
 pub(crate) fn segments(prompt: &str) -> Vec<Segment<'_>> {
     let parts: Vec<&str> = prompt.split(IMAGE_PLACEHOLDER).collect();
     let mut result = Vec::new();

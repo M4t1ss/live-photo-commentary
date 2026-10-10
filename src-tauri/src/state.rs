@@ -1,6 +1,5 @@
-//! Session state and model lifecycle (`main.py`'s module-level globals and
-//! websocket handler): which reload a `set_config` call should trigger, the
-//! ad-hoc prompt overrides from the Settings "OK" button, and the
+//! Session state and model lifecycle: which reload a `set_config` call should
+//! trigger, the ad-hoc prompt overrides from the Settings "OK" button, and the
 //! pre-generation sequence counter.
 //!
 //! Describer construction (`_make_describer`): the cloud providers are pure;
@@ -22,14 +21,12 @@ use crate::events::{Event, ModelKind};
 use crate::pipeline::Pipeline;
 use crate::promptsets::{Promptset, Promptsets};
 
-/// The five fields pushed onto the live describer (`prompts.FIELDS` in
-/// Python).
+/// The five fields pushed onto the live describer.
 const DESCRIBER_FIELDS: [&str; 5] = ["system_prompt", "prompt", "first_prompt", "history_prompt", "compact_prompt"];
-/// The three system-message prompts (`prompts.SYSTEM_MESSAGE_FIELDS`).
+/// The three system-message prompts.
 const SYSTEM_MESSAGE_FIELDS: [&str; 3] = ["greeting_prompt", "farewell_prompt", "lonely_prompt"];
 
-/// Which models a `set_config` call should reload (the websocket handler's
-/// `set_config` case in Python).
+/// Which models a `set_config` call should reload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ReloadTriggers {
     pub vlm: bool,
@@ -58,7 +55,7 @@ pub fn reload_triggers(old: &Config, new: &Config) -> ReloadTriggers {
 }
 
 /// Parses `tts_voice` as a plain voice name, or as a JSON object of
-/// `{voice: weight}` for a blend (`_make_synthesizer` in Python).
+/// `{voice: weight}` for a blend.
 pub fn parse_voice(raw: &str) -> Voice {
     if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(raw) {
         let parts = map
@@ -70,16 +67,15 @@ pub fn parse_voice(raw: &str) -> Voice {
     Voice::Name(raw.to_string())
 }
 
-/// Loads the Kokoro synthesizer for `cfg.tts_voice` (`_make_synthesizer` in
-/// Python; always model `"model"`, speed 1.0, language from the voice name).
+/// Loads the Kokoro synthesizer for `cfg.tts_voice` (always model `"model"`,
+/// speed 1.0, language from the voice name).
 pub async fn build_synthesizer(cfg: &Config) -> Result<kokoro_timestamped::KokoroSynthesizer, String> {
     kokoro_timestamped::KokoroSynthesizer::new(parse_voice(&cfg.tts_voice), "model", None, 1.0)
         .await
         .map_err(|e| e.to_string())
 }
 
-/// Builds the backend for a cloud VLM provider (`_make_describer` in
-/// Python).
+/// Builds the backend for a cloud VLM provider.
 fn build_cloud_backend(cfg: &Config) -> Result<vlm_describer::Backend, String> {
     let model = cfg.vlm_model.clone().ok_or_else(|| "no VLM model configured".to_string())?;
     match cfg.vlm_provider.as_deref() {
@@ -157,8 +153,7 @@ pub async fn build_describer(
     }
 }
 
-/// Ad-hoc prompt overrides from the Settings "OK" button
-/// (`_prompt_override`/`_sys_msg_override` in Python): applied to the live
+/// Ad-hoc prompt overrides from the Settings "OK" button: applied to the live
 /// describer and to pre-generation for this session only, cleared by an
 /// explicit promptset load or delete.
 #[derive(Default)]
@@ -169,8 +164,7 @@ pub struct SessionState {
 
 impl SessionState {
     /// Splits `given` into the describer-field override and the
-    /// system-message-field override, dropping anything else
-    /// (`apply_prompts` in Python's websocket handler).
+    /// system-message-field override, dropping anything else.
     pub fn set_override(&mut self, given: &HashMap<String, String>) {
         let describer_fields: HashMap<String, String> = given
             .iter()
@@ -192,8 +186,7 @@ impl SessionState {
     }
 
     /// The five describer fields: `base` (the active promptset) with the
-    /// ad-hoc override layered on top, tag-substituted (`_apply_promptset`
-    /// in Python).
+    /// ad-hoc override layered on top, tag-substituted.
     pub fn describer_fields(&self, base: &Promptset, tag_names: &[&str]) -> Promptset {
         let mut fields = base.clone();
         if let Some(over) = &self.prompt_override {
@@ -202,14 +195,11 @@ impl SessionState {
         fields.substitute_tags(tag_names)
     }
 
-    /// All eight fields, merged for pre-generation (`_trigger_pregen`'s
-    /// `all_fields` in Python, then tag-substituted). Python substitutes
-    /// tags on `all_fields` too but builds the three message prompts from
-    /// the *unsubstituted* fields, substituting only `system_prompt`
-    /// afterwards; here every field is substituted uniformly before either
-    /// is read, which only differs from Python if a custom greeting,
-    /// farewell or lonely prompt itself contains the tag placeholder (the
-    /// defaults never do).
+    /// All eight fields, merged for pre-generation and tag-substituted. Every
+    /// field is substituted before the describer fields and the three message
+    /// prompts are read from the result, so a custom greeting, farewell or
+    /// lonely prompt that itself contains the tag placeholder gets it
+    /// substituted too (the defaults never contain it).
     pub fn pregen_fields(&self, base: &Promptset, tag_names: &[&str]) -> Promptset {
         let mut fields = base.clone();
         if let Some(over) = &self.prompt_override {
@@ -237,7 +227,7 @@ fn apply_fields(target: &mut Promptset, values: &HashMap<String, String>) {
 }
 
 /// The three system-message prompts, keyed by name without the `_prompt`
-/// suffix (`sys_msg_prompts` in Python's `_trigger_pregen`), for
+/// suffix, for
 /// [`crate::pipeline::Pipeline::pregen_system_messages`].
 pub fn system_message_prompts(fields: &Promptset) -> HashMap<String, String> {
     HashMap::from([
@@ -248,14 +238,12 @@ pub fn system_message_prompts(fields: &Promptset) -> HashMap<String, String> {
 }
 
 /// True when none of the three system-message prompts has any text: pregen
-/// should be skipped entirely and `system_messages` marked ready right away
-/// (`_trigger_pregen`'s guard in Python).
+/// should be skipped entirely and `system_messages` marked ready right away.
 pub fn system_messages_are_empty(fields: &Promptset) -> bool {
     [&fields.greeting_prompt, &fields.farewell_prompt, &fields.lonely_prompt].iter().all(|p| p.trim().is_empty())
 }
 
-/// Ignores a stale pre-generation completion racing a newer run
-/// (`_pregen_seq` in Python's `_trigger_pregen`/`_on_done`).
+/// Ignores a stale pre-generation completion racing a newer run.
 #[derive(Default)]
 pub struct PregenSequencer {
     seq: AtomicU64,
@@ -307,8 +295,8 @@ fn animations_dir(app: &tauri::AppHandle) -> PathBuf {
 
 /// Everything the Tauri commands (`commands.rs`) need: settings, promptsets,
 /// avatar models, the VLM catalogue, the pipeline, the event channel, and
-/// the model-lifecycle/session state that used to be `main.py`'s module
-/// globals. Managed as `Arc<AppState>` so background work (model loads,
+/// the model-lifecycle/session state. Managed as `Arc<AppState>` so
+/// background work (model loads,
 /// pre-generation) can hold its own reference.
 pub struct AppState {
     config: Mutex<Config>,
@@ -450,7 +438,7 @@ impl AppState {
         self.model_errors.lock().expect("model_errors mutex should not be poisoned").values().cloned().collect()
     }
 
-    /// Lists Kokoro's voices and sends `models` (`_send_models` in Python).
+    /// Lists Kokoro's voices and sends `models`.
     pub async fn send_models(&self) {
         let voices = match KokoroSynthesizer::list_voices().await {
             Ok(voices) => voices,
@@ -474,8 +462,7 @@ impl AppState {
     }
 
     /// The five describer fields for the active promptset, with the
-    /// session's ad-hoc override layered on top (`_apply_promptset` in
-    /// Python).
+    /// session's ad-hoc override layered on top.
     pub fn describer_fields(&self) -> Promptset {
         let base = self.active_promptset();
         let tag_names = self.active_tag_names();
@@ -497,8 +484,7 @@ impl AppState {
     }
 
     /// Sets the session's ad-hoc prompt override (Settings "OK"), applies it
-    /// to the live describer, and re-triggers pre-generation
-    /// (`apply_prompts` in Python's websocket handler).
+    /// to the live describer, and re-triggers pre-generation.
     pub fn apply_prompt_override(self: &Arc<Self>, given: &HashMap<String, String>) {
         self.session.lock().expect("session mutex should not be poisoned").set_override(given);
         self.apply_active_promptset_to_describer();
@@ -507,8 +493,8 @@ impl AppState {
 
     /// Clears the session override, persists `name` as the active promptset,
     /// pushes it onto the describer, resets the describer's history, and
-    /// re-triggers pre-generation (`load_promptset` in Python's websocket
-    /// handler). Returns the loaded fields for the `promptset_loaded` event.
+    /// re-triggers pre-generation. Returns the loaded fields for the
+    /// `promptset_loaded` event.
     pub fn load_promptset(self: &Arc<Self>, name: &str) -> Result<Promptset, String> {
         let fields = self.promptsets.load(name)?;
         self.session.lock().expect("session mutex should not be poisoned").clear();
@@ -524,8 +510,7 @@ impl AppState {
     }
 
     /// Deletes `name`; if it was active, falls back to `default` the same
-    /// way `load_promptset` does (`delete_promptset` in Python's websocket
-    /// handler). Returns the now-active name and its fields.
+    /// way `load_promptset` does. Returns the now-active name and its fields.
     pub fn delete_promptset(self: &Arc<Self>, name: &str) -> Result<(String, Promptset), String> {
         let was_active = self.config().active_promptset == name;
         self.promptsets.delete(name)?;
@@ -538,8 +523,7 @@ impl AppState {
     }
 
     /// Generates and synthesizes the greeting/farewell/lonely messages if
-    /// both models are ready and at least one of them has text
-    /// (`_trigger_pregen` in Python).
+    /// both models are ready and at least one of them has text.
     pub fn trigger_pregen(self: &Arc<Self>) {
         if !(self.vlm_ready.load(Ordering::SeqCst) && self.tts_ready.load(Ordering::SeqCst)) {
             return;
@@ -568,7 +552,7 @@ impl AppState {
     }
 
     /// (Re)loads the VLM describer for the current config, reporting
-    /// progress and errors on the channel (`_reinit_describer` in Python).
+    /// progress and errors on the channel.
     /// A no-op (besides a `ready_state`) when no provider or model is
     /// configured yet.
     pub async fn reinit_describer(self: &Arc<Self>) {
@@ -616,8 +600,7 @@ impl AppState {
         }
     }
 
-    /// (Re)loads the Kokoro synthesizer for the current config
-    /// (`_reinit_synthesizer` in Python).
+    /// (Re)loads the Kokoro synthesizer for the current config.
     pub async fn reinit_synthesizer(self: &Arc<Self>) {
         self.set_synthesizer_blocking(None).await;
         self.model_errors.lock().expect("model_errors mutex should not be poisoned").remove("tts");
@@ -645,15 +628,14 @@ impl AppState {
         }
     }
 
-    /// Loads both models in parallel at startup (`_init_models` in Python).
+    /// Loads both models in parallel at startup.
     pub async fn init_models(self: &Arc<Self>) {
         tokio::join!(self.reinit_describer(), self.reinit_synthesizer());
     }
 
     /// `set_describer`/`set_synthesizer` block the calling thread until the
     /// VLM/TTS worker acknowledges, so run them on a blocking thread when
-    /// called from async code (mirrors Python's `asyncio.to_thread` around
-    /// `take_describer_for_reinit`).
+    /// called from async code.
     async fn set_describer_blocking(&self, describer: Option<vlm_describer::Describer>) {
         let pipeline = Arc::clone(&self.pipeline);
         let _ = tokio::task::spawn_blocking(move || pipeline.set_describer(describer)).await;

@@ -1,6 +1,6 @@
-//! Avatar models (`models.py`) and the camelCase `/model-config` mapping
-//! (`main.py`): bundled and user-uploaded GLB files, each optionally paired
-//! with a YAML configuration file (bones, visemes, emotion tags, animations).
+//! Avatar models and the camelCase configuration the frontend reads: bundled
+//! and user-uploaded GLB files, each optionally paired with a YAML
+//! configuration file (bones, visemes, emotion tags, animations).
 
 use std::path::{Path, PathBuf};
 
@@ -72,8 +72,8 @@ impl AvatarModels {
             .unwrap_or_default())
     }
 
-    /// The camelCase mapping the frontend consumes (`/model-config` in
-    /// Python); `{}` if `name` has no YAML file.
+    /// The camelCase mapping the frontend consumes; `{}` if `name` has no
+    /// YAML file.
     pub fn model_config(&self, name: &str) -> Result<serde_json::Value, String> {
         let (_, yaml_path) = self.resolve(name);
         if !yaml_path.exists() {
@@ -121,8 +121,7 @@ fn glb_stems(dir: &Path) -> Vec<String> {
     stems
 }
 
-/// Replaces every character outside `[A-Za-z0-9_-]` with `_`
-/// (`re.sub(r"[^\w\-]", "_", stem, flags=re.ASCII)` in Python).
+/// Replaces every character outside `[A-Za-z0-9_-]` with `_`.
 fn sanitize_stem(stem: &str) -> String {
     stem.chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })

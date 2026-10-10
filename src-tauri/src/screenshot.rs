@@ -129,9 +129,7 @@ pub async fn capture_monitor_preview(
 }
 
 /// Captures a frame and hands it straight to the pipeline
-/// (`Pipeline::trigger`); the frontend no longer sends `frame_ready` over a
-/// WebSocket. Ignored while the cycle isn't running, like Python's frame
-/// queue.
+/// (`Pipeline::trigger`). Ignored while the cycle isn't running.
 ///
 /// Natively the frame stays in memory from capture to the channel. Only the
 /// WSL helper, `screenshot.exe`, can't return an image, so it writes a file

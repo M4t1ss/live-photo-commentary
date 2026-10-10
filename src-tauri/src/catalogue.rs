@@ -90,7 +90,7 @@ impl CatalogueEntry {
     /// `generation_kwargs` key by key, `response_re` and the three GGUF
     /// fields (`gguf_repo`, `model_file`, `mmproj_file`) as given. The
     /// PyTorch-era `processor_kwargs` and `model_kwargs` are ignored with a
-    /// warning, and so is JSON that doesn't parse (as in Python).
+    /// warning, and so is JSON that doesn't parse.
     pub fn with_overrides(mut self, raw: &str) -> CatalogueEntry {
         let overrides = match serde_json::from_str::<serde_json::Value>(raw) {
             Ok(serde_json::Value::Object(map)) => map,

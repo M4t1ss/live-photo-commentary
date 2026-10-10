@@ -1,15 +1,15 @@
-//! The VLM/TTS pipeline (`pipeline.py`): frame differencing, and the two
+//! The VLM/TTS pipeline: frame differencing, and the two
 //! dedicated worker threads that own the describer and synthesizer. Jobs reach
 //! a worker over an `mpsc` channel, and neither worker runs on Tauri's async
 //! runtime or the UI thread, because llama.cpp and Kokoro block; each has its
 //! own single-threaded Tokio runtime for the async APIs.
 //!
-//! Unlike Python, there's no frame queue or auto-loop task here: Tauri
-//! commands capture a screenshot and hand it straight to
-//! [`Pipeline::trigger`], so `start_cycle`/`stop_cycle` only need to reset
-//! state, not manage an async consumer task. There's no on-disk audio store
-//! either (`_tmp_dir`, `chunk_path`): a WAV-encoded chunk's bytes travel in
-//! its [`ChunkEvent`] and reach the frontend as a data URL.
+//! There's no frame queue or auto-loop task: Tauri commands capture a
+//! screenshot and hand it straight to [`Pipeline::trigger`], so
+//! `start_cycle`/`stop_cycle` only need to reset state, not manage an async
+//! consumer task. There's no on-disk audio store either: a WAV-encoded
+//! chunk's bytes travel in its [`ChunkEvent`] and reach the frontend as a data
+//! URL.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -109,9 +109,8 @@ enum TtsJob<S> {
 
 // ── WAV encoding ────────────────────────────────────────────────────────────
 
-/// 16-bit PCM mono WAV at `KokoroSynthesizer::SAMPLE_RATE`, matching
-/// Python's `to_wav_bytes`
-/// (`np.clip(audio * 32767, -32768, 32767).astype(int16)`).
+/// 16-bit PCM mono WAV at `KokoroSynthesizer::SAMPLE_RATE`: each sample is
+/// scaled by 32767 and clipped to the 16-bit range.
 fn encode_wav(samples: &[f32]) -> Vec<u8> {
     let spec = hound::WavSpec {
         channels: 1,
@@ -165,9 +164,8 @@ fn run_vlm_worker<D, S>(
     while let Ok(job) = rx.recv() {
         match job {
             VlmJob::Frame { gen, current, previous, max_history_size } => {
-                // Dequeuing frees the "queue of one" slot immediately, as
-                // Python's bounded queue does when the worker calls get(),
-                // even though describing is still ahead of us.
+                // Dequeuing frees the "queue of one" slot immediately, even
+                // though describing is still ahead of us.
                 pending_frame.store(false, Ordering::SeqCst);
                 if gen != generation.load(Ordering::SeqCst) {
                     continue;
@@ -378,9 +376,9 @@ where
 
     /// Replaces the live describer. The VLM worker only picks this job up
     /// once it's done with whatever it was processing, so this blocks until
-    /// any in-flight generation has actually finished — same effect as
-    /// Python's `take_describer_for_reinit`, without needing a lock, since
-    /// the worker thread already serializes every describer access.
+    /// any in-flight generation has actually finished, without needing a
+    /// lock, since the worker thread already serializes every describer
+    /// access.
     pub fn set_describer(&self, describer: Option<D>) {
         let (ack, rx) = mpsc::channel();
         if self.vlm_tx.send(VlmJob::SetDescriber(describer, ack)).is_ok() {
@@ -396,22 +394,20 @@ where
         }
     }
 
-    /// Pushes new prompts onto the live describer without a model reload
-    /// (`_apply_prompt_fields` in Python); a no-op if there's no describer.
+    /// Pushes new prompts onto the live describer without a model reload; a
+    /// no-op if there's no describer.
     pub fn set_prompts(&self, prompts: vlm_describer::Prompts) {
         let _ = self.vlm_tx.send(VlmJob::SetPrompts(prompts));
     }
 
     /// Forgets the describer's comment history without touching anything
-    /// else (`pipeline.describer.reset()` in Python's `load_promptset`
-    /// websocket case).
+    /// else.
     pub fn reset_describer_history(&self) {
         let _ = self.vlm_tx.send(VlmJob::Reset);
     }
 
     /// Diffs `image` against the previous frame, decides whether to push it
-    /// to the VLM, and sends the `frame`/`skipped`/`busy` events
-    /// (`Pipeline.trigger` in Python).
+    /// to the VLM, and sends the `frame`/`skipped`/`busy` events.
     pub fn trigger(&self, cfg: &Config, image: DynamicImage) {
         let image = Arc::new(image);
         let mut state = self.frame_state.lock().expect("frame state mutex should not be poisoned");
@@ -464,8 +460,7 @@ where
     }
 
     /// Resets the frame-diffing state and the describer's history for a
-    /// fresh cycle (`start_loop` in Python, minus the frame queue/task:
-    /// frames now arrive directly through `trigger`).
+    /// fresh cycle; frames arrive directly through `trigger`.
     pub fn start_cycle(&self) {
         self.running.store(true, Ordering::SeqCst);
         let mut state = self.frame_state.lock().expect("frame state mutex should not be poisoned");
@@ -476,20 +471,20 @@ where
     }
 
     /// Stops the cycle and bumps the generation, so in-flight VLM/TTS work
-    /// is dropped once the workers reach it (`stop_loop` in Python).
+    /// is dropped once the workers reach it.
     pub fn stop_cycle(&self) {
         self.running.store(false, Ordering::SeqCst);
         self.generation.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Synthesizes arbitrary text and streams it as system chunks, always
-    /// ending with `system_tts_done` (`synthesize_system` in Python).
+    /// ending with `system_tts_done`.
     pub fn synthesize_system(&self, text: String) {
         let _ = self.tts_tx.send(TtsJob::System { text });
     }
 
     /// Replays previously pre-generated chunks for `name`, always ending
-    /// with `system_tts_done` (`play_system_message` in Python).
+    /// with `system_tts_done`.
     pub fn play_system_message(&self, name: &str) {
         let chunks = self.pregen_messages.lock().expect("pregen mutex should not be poisoned").get(name).cloned();
         for chunk in chunks.into_iter().flatten() {
@@ -501,9 +496,8 @@ where
     /// Generates and synthesizes each non-empty prompt in `prompts` in turn
     /// (keys are message names, e.g. `"greeting"`), storing the finished
     /// chunks for later replay by `play_system_message`, then calls
-    /// `on_done` (`pregen_system_messages`/`_pregen_thread` in Python). Runs
-    /// on its own thread, driving the VLM/TTS workers through their job
-    /// queues like everything else.
+    /// `on_done`. Runs on its own thread, driving the VLM/TTS workers through
+    /// their job queues like everything else.
     pub fn pregen_system_messages(
         self: Arc<Self>,
         prompts: HashMap<String, String>,
@@ -782,8 +776,7 @@ mod tests {
         let calls = Arc::clone(&describer.calls);
         pipeline.set_describer(Some(describer));
 
-        // Simulate a frame already queued but not yet dequeued by the
-        // worker (the race Python's bounded queue normally decides).
+        // Simulate a frame already queued but not yet dequeued by the worker.
         pipeline.pending_frame.store(true, Ordering::SeqCst);
         pipeline.trigger(&Config::default(), test_image());
         pipeline.flush_vlm();

@@ -1,5 +1,5 @@
-//! Application settings (`config.py`), persisted to `settings.json`, with a
-//! one-time migration from the old Python backend's `.env`.
+//! Application settings, persisted to `settings.json`, with a one-time
+//! migration from the old Python backend's `.env`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -82,8 +82,7 @@ impl Config {
     }
 
     /// Applies `updates` on top of `self`, keeping only fields `Config` has;
-    /// a JSON `null` sets an `Option` field back to `None` (`config.apply` in
-    /// Python).
+    /// a JSON `null` sets an `Option` field back to `None`.
     pub fn apply(&self, updates: &serde_json::Map<String, serde_json::Value>) -> Result<Config, String> {
         let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
         let obj = value.as_object_mut().expect("Config should serialize to a JSON object");

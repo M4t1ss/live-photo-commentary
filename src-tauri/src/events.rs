@@ -100,7 +100,7 @@ impl ModelKind {
     }
 }
 
-/// Rounds `value` to `decimals` decimal places (Python's `round(value, n)`).
+/// Rounds `value` to `decimals` decimal places.
 fn round(value: f64, decimals: i32) -> f64 {
     let factor = 10f64.powi(decimals);
     (value * factor).round() / factor

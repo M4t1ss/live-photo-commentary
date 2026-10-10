@@ -1,4 +1,4 @@
-//! Named promptsets (`prompts.py`): YAML files in a directory, each
+//! Named promptsets: YAML files in a directory, each
 //! overriding some of the describer's prompt fields plus three
 //! system-message prompts (greeting, farewell, lonely).
 
@@ -15,8 +15,7 @@ const DEFAULT_FAREWELL_PROMPT: &str =
 const DEFAULT_LONELY_PROMPT: &str =
     "Give a single short sentence expressing that you are bored waiting for the user.";
 
-/// All eight promptset fields. Field order matches `FIELDS + SYSTEM_MESSAGE_FIELDS`
-/// in Python, which is also the order `save` writes them in.
+/// All eight promptset fields, in the order `save` writes them in.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Promptset {
     pub system_prompt: String,
@@ -47,7 +46,7 @@ impl Default for Promptset {
 
 impl Promptset {
     /// Each field from `raw` (a YAML mapping), falling back to its default
-    /// when absent (`prompts.load` in Python).
+    /// when absent.
     fn from_yaml_with_defaults(raw: &serde_yaml_ng::Value) -> Promptset {
         let d = Promptset::default();
         let get = |key: &str, default: String| -> String {
@@ -66,8 +65,7 @@ impl Promptset {
     }
 
     /// Replaces [`TAGS_PLACEHOLDER`] in every field with the available
-    /// emotion tags, written as `{tag}` marks; `neutral` is always included
-    /// (`substitute_tags` in Python).
+    /// emotion tags, written as `{tag}` marks; `neutral` is always included.
     pub fn substitute_tags(&self, tag_names: &[&str]) -> Promptset {
         let mut names: Vec<&str> = Vec::new();
         for &name in tag_names.iter().chain(&["neutral"]) {
@@ -93,8 +91,7 @@ impl Promptset {
 impl Promptset {
     /// The five fields a [`vlm_describer::Describer`] takes, dropping the
     /// three system-message prompts (used to push the active promptset onto
-    /// the live describer without a model reload; `_apply_prompt_fields` in
-    /// Python).
+    /// the live describer without a model reload).
     pub fn describer_prompts(&self) -> vlm_describer::Prompts {
         vlm_describer::Prompts {
             system_prompt: self.system_prompt.clone(),

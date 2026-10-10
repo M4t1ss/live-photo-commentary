@@ -1,5 +1,5 @@
-//! Frame difference measures (`screenshot.py`'s `difference` dispatch and its
-//! nine measures), used by the pipeline to decide whether a new screenshot
+//! Frame difference measures (the nine measures and the dispatch by name),
+//! used by the pipeline to decide whether a new screenshot
 //! differs enough from the previous one to describe.
 //!
 //! `average_hash`, `phash`, `phash_simple`, `dhash`, `dhash_vertical`,
@@ -13,7 +13,8 @@
 
 use image::{DynamicImage, GenericImageView, GrayImage, Luma, imageops::FilterType};
 
-/// `difference(image1, image2, measure)` in Python.
+/// How different two images are under the measure with this name (0 for
+/// identical images).
 pub fn difference(a: &DynamicImage, b: &DynamicImage, measure: &str) -> Result<f64, String> {
     match measure {
         "mse" => Ok(mse(a, b)),
@@ -53,11 +54,11 @@ fn mse(a: &DynamicImage, b: &DynamicImage) -> f64 {
 // ── ssim ──────────────────────────────────────────────────────────────────
 
 /// `(1 - mean structural similarity) / 2`, averaged over the R, G, B
-/// channels, each treated as its own 2D image (`channel_axis=-1` in Python).
+/// channels, each treated as its own 2D image.
 ///
 /// Uses `win_size=7`, a uniform (box) filter, `K1=0.01`, `K2=0.03`,
-/// `use_sample_covariance=True`, `data_range=255`, matching
-/// `ssim_difference`'s defaults in `screenshot.py`.
+/// `use_sample_covariance=True`, `data_range=255` (scikit-image's defaults,
+/// with the data range given).
 ///
 /// `structural_similarity` filters with `scipy.ndimage.uniform_filter`'s
 /// default `mode='reflect'` boundary handling, then crops exactly
