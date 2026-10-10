@@ -1,4 +1,4 @@
-//! Tauri commands: the command-mapping table in RUSTIFICATION.md. Replies
+//! Tauri commands: one for each action the frontend can take. Replies
 //! that were separate WebSocket messages in the Python backend are return
 //! values here; only `connect`'s initial burst and the pipeline's own events
 //! go over the channel.
@@ -172,8 +172,7 @@ pub fn play_system_message(state: State<'_, Arc<AppState>>, name: String) -> Res
 }
 
 /// The active avatar model's camelCase configuration, plus the absolute
-/// `modelPath`/`animationsDir` the frontend will pass to `convertFileSrc`
-/// (phase 5).
+/// `modelPath`/`animationsDir` that the frontend passes to `convertFileSrc`.
 #[tauri::command]
 pub fn model_config(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     let active = state.config().active_model;

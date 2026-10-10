@@ -186,7 +186,10 @@ fn resolve_merge_keys(value: serde_yaml_ng::Value) -> serde_yaml_ng::Value {
 }
 
 /// Builds the camelCase JSON `model_config` sends to the frontend from a
-/// parsed, merge-key-resolved avatar YAML (Appendix B in RUSTIFICATION.md).
+/// parsed, merge-key-resolved avatar YAML. Each key keeps its meaning under its
+/// camelCase name (`jaw_bone` is `jawBone`, `animations.walk_in` is
+/// `walkInAnimation`); a key the YAML lacks is `null` unless it has a default
+/// below.
 fn build_model_config(raw: &serde_json::Value) -> serde_json::Value {
     let get = |key: &str| raw.get(key).cloned().unwrap_or(serde_json::Value::Null);
     let get_or = |key: &str, default: serde_json::Value| raw.get(key).cloned().unwrap_or(default);

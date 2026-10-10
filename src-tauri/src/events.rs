@@ -1,10 +1,9 @@
 //! The events the pipeline and model lifecycle report, on their way to the
-//! frontend (RUSTIFICATION.md's Appendix A).
-//!
-//! Phase 4 gives these the exact JSON shape, wires them into a Tauri
-//! `Channel`, and pins each variant's shape with a serialization test; for
-//! now this is a plain Rust enum, used by `pipeline.rs` and `state.rs` so
-//! they can be developed and unit-tested before anything is wired in.
+//! frontend. [`Event::to_json`] gives each variant the exact JSON shape that
+//! the frontend's message handler (`handleMessage` in `app.js`) reads, and a
+//! test pins every shape. The commands send them on a Tauri `Channel`;
+//! `pipeline.rs` and `state.rs` only know the [`EventSink`], so they can be
+//! unit-tested with the events captured in a `Vec`.
 
 use std::sync::Arc;
 
@@ -47,13 +46,13 @@ impl From<kokoro_timestamped::WordTiming> for WordTimingEvent {
     }
 }
 
-/// One synthesized chunk (`chunk` in Appendix A).
+/// One synthesized chunk (sent as the `chunk` event).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChunkEvent {
     pub origin: ChunkOrigin,
     pub index: usize,
     pub text: String,
-    /// 16-bit PCM mono WAV at `KokoroSynthesizer::SAMPLE_RATE`; phase 4
+    /// 16-bit PCM mono WAV at `KokoroSynthesizer::SAMPLE_RATE`; `to_json`
     /// base64-encodes this into the `audio_url` data URL.
     pub wav: Arc<[u8]>,
     pub phonemes: Vec<(char, f64)>,
@@ -61,8 +60,8 @@ pub struct ChunkEvent {
     pub tags: Vec<(String, f64)>,
 }
 
-/// Everything the pipeline or model lifecycle can report. Phase 4 maps each
-/// variant to the JSON shape in Appendix A.
+/// Everything the pipeline or model lifecycle can report; `to_json` maps each
+/// variant to the JSON shape the frontend reads.
 #[derive(Debug)]
 pub enum Event {
     Frame { image: Arc<DynamicImage>, push: bool, gen: u64, diff: Option<f64>, measure: Option<String> },
@@ -75,8 +74,7 @@ pub enum Event {
     SystemTtsDone,
     ModelLoading { model: ModelKind },
     LoadProgress { message: String },
-    /// Not sent yet: model downloads need phase 6's catalogue rework (local
-    /// VLM provider) or GPU backend section (CUDA download).
+    /// Sent while a local model's files or the CUDA backend download.
     #[allow(dead_code)]
     DownloadProgress { file: String, downloaded: u64, total: u64 },
     ModelReady { model: ModelKind },
@@ -88,8 +86,9 @@ pub enum Event {
     Config { data: Config },
 }
 
-/// Where the pipeline and model lifecycle send their events. A `Channel`
-/// wraps this in phase 4; tests capture events in a `Vec` behind a `Mutex`.
+/// Where the pipeline and model lifecycle send their events. The app's sink
+/// forwards them to the frontend's `Channel`; tests capture them in a `Vec`
+/// behind a `Mutex`.
 pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
 
 impl ModelKind {
@@ -118,7 +117,7 @@ fn wav_data_url(wav: &[u8]) -> String {
 }
 
 impl Event {
-    /// The exact JSON shape Appendix A documents, ready to send on a
+    /// The exact JSON shape the frontend reads, ready to send on a
     /// `Channel<serde_json::Value>`.
     pub fn to_json(&self) -> serde_json::Value {
         use serde_json::json;

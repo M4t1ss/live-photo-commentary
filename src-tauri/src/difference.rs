@@ -625,8 +625,8 @@ mod tests {
 
     /// Hash-based measures resize with `image`'s Lanczos3, not PIL's exact
     /// Lanczos, so a handful of bits can land on the other side of a
-    /// median/mean threshold. RUSTIFICATION.md accepts this ("thresholds
-    /// are coarse"); these tests check we're close, not exact.
+    /// median/mean threshold. The thresholds are coarse, so that is accepted;
+    /// these tests check we're close, not exact.
     fn assert_close_to_python(measure: &str, a: &DynamicImage, b: &DynamicImage, expected: f64, tolerance: f64) {
         let got = difference(a, b, measure).unwrap();
         assert!((got - expected).abs() < tolerance, "{measure}: got {got}, expected {expected} (+/- {tolerance})");

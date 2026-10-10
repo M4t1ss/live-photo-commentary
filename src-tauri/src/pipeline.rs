@@ -1,13 +1,15 @@
 //! The VLM/TTS pipeline (`pipeline.py`): frame differencing, and the two
-//! dedicated worker threads that own the describer and synthesizer (see
-//! RUSTIFICATION.md, "Concurrency").
+//! dedicated worker threads that own the describer and synthesizer. Jobs reach
+//! a worker over an `mpsc` channel, and neither worker runs on Tauri's async
+//! runtime or the UI thread, because llama.cpp and Kokoro block; each has its
+//! own single-threaded Tokio runtime for the async APIs.
 //!
 //! Unlike Python, there's no frame queue or auto-loop task here: Tauri
-//! commands (phase 4) capture a screenshot and hand it straight to
+//! commands capture a screenshot and hand it straight to
 //! [`Pipeline::trigger`], so `start_cycle`/`stop_cycle` only need to reset
 //! state, not manage an async consumer task. There's no on-disk audio store
 //! either (`_tmp_dir`, `chunk_path`): a WAV-encoded chunk's bytes travel in
-//! its [`ChunkEvent`] and reach the frontend as a data URL (phase 4).
+//! its [`ChunkEvent`] and reach the frontend as a data URL.
 
 use std::collections::HashMap;
 use std::future::Future;

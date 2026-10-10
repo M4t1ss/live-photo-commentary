@@ -1,8 +1,7 @@
 name: Build
 
-# Not yet run on GitHub: written on Windows, where only the Windows legs of
-# this could be tried by hand (see RUSTIFICATION.md, phase 7). Expect to fix
-# things here on the first runs.
+# Builds the installers for Windows, Linux and macOS, and the CUDA backend
+# archives that the app downloads. A draft release is made only for `v*` tags.
 
 on:
   push:
@@ -30,9 +29,9 @@ jobs:
       - uses: actions/checkout@v7
 
       # llama.cpp's Vulkan build has a file whose path exceeds MSVC's 260
-      # characters when Cargo's intermediate files are in the checkout (see
-      # RUSTIFICATION.md, "Windows path length"). Cargo 1.91+ puts them in a
-      # short folder instead.
+      # characters when Cargo's intermediate files are in the checkout (the
+      # `vulkan-shaders-gen` sub-build fails with C1083, whatever
+      # LongPathsEnabled says). Cargo 1.91+ puts them in a short folder instead.
       - name: Use a short build directory (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
