@@ -2,6 +2,10 @@
 # espeak-ng sources are UTF-8; MSVC otherwise reads them in the system code page (e.g. 932).
 CFLAGS_x86_64_pc_windows_msvc = "/utf-8"
 CXXFLAGS_x86_64_pc_windows_msvc = "/utf-8"
+# llama.cpp links OpenSSL (for downloading models over HTTPS) when CMake finds it,
+# which makes libllama-common need libssl/libcrypto DLLs that the installer doesn't
+# ship. We download models ourselves, so never look for it.
+CMAKE_DISABLE_FIND_PACKAGE_OpenSSL = "ON"
 
 [alias]
 # Development tasks; see xtask/src/main.rs.
