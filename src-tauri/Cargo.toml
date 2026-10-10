@@ -45,7 +45,9 @@ kokoro-timestamped = { path = "../crates/kokoro-timestamped" }
 vlm-describer = { path = "../crates/vlm-describer", features = ["llama-cpp"] }
 # Only for build.rs: as a direct dependent of this crate (its `links = "llama"`),
 # build.rs learns where llama.cpp's libraries were built. Keep the version
-# equal to the one vlm-describer's llama-cpp-2 uses (see vlm-describer's CLAUDE.md).
+# equal to the one vlm-describer's llama-cpp-2 uses: 0.1.158, because 0.1.159's
+# `eval_chunks` takes `&mut MtmdContext`, which `prompt_model`'s `&self` can't
+# provide.
 llama-cpp-sys-2 = "=0.1.158"
 serde_yaml_ng = "0.10"
 hound = "3.5"

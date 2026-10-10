@@ -15,7 +15,7 @@ Models can run in the cloud or locally:
 | `OpenAi` | OpenAI's API, or any OpenAI-compatible server (Ollama, LM Studio, llama.cpp's `llama-server`) | (always available) |
 | `LlamaCpp` | GGUF models locally, with [llama.cpp](https://github.com/ggml-org/llama.cpp) | `llama-cpp` |
 
-The local backend is experimental; see `CLAUDE.md` for measurements.
+The local backend is experimental; [measurements](#measurements-local-models) are below.
 
 ## Usage
 
@@ -95,6 +95,52 @@ to 2 min per screenshot, versus 1–3 s on a mid-range GPU.
 `cuda` and `vulkan` have been tested on Windows; `metal` is untested. On an
 RTX 3060 Ti, Vulkan was as fast as CUDA with Qwen3-VL-2B and took about 1.35×
 as long with Gemma 4 E2B.
+
+## Measurements (local models)
+
+All on an RTX 3060 Ti with 8 GB of video memory, describing screenshots of
+1423×799 pixels. Times vary with the length of the reply, so compare averages.
+
+| Model | Device | Per screenshot |
+|---|---|---|
+| Qwen3-VL-2B Q8_0 | GPU, CUDA | 2.1–3.7 s (average 2.75 s) |
+| Qwen3-VL-2B Q8_0 | GPU, Vulkan | 2.0–3.8 s (average 2.9 s) |
+| Gemma 4 E2B Q4_0 | GPU, CUDA | 0.9–2.1 s (average 1.3 s) |
+| Gemma 4 E2B Q4_0 | GPU, Vulkan | 1.1–2.5 s (average 1.7 s) |
+| Qwen3-VL-2B Q8_0 | CPU | 65–125 s (20–37 s at half the image size) |
+
+The app's model catalogue, with Vulkan, four descriptions each and history on.
+The first one or two descriptions after a new build are slower while the
+driver compiles the Vulkan shaders; it caches them.
+
+| Model | Per screenshot | Notes |
+|---|---|---|
+| Gemma 4 E2B | 1.4–2.3 s | writes `{tag}`s |
+| Gemma 4 E4B | 2.0–4.3 s | tags, sometimes misplaced |
+| Gemma 3 4B | 2.3–4.6 s | tags |
+| Qwen3-VL 2B | 3.7–5.6 s | no tags |
+| Qwen3-VL 4B | 2.5–4.6 s | no tags |
+| Qwen3-VL 8B | 4.9–8.1 s | no tags |
+| Qwen2.5-VL 3B | 4.6–7.7 s | no tags |
+| Qwen2.5-VL 7B | 3.4–6.6 s | no tags |
+| InternVL3.5 1B / 2B | 2.2–3.4 s / 1.7–3.8 s | no tags |
+| InternVL3.5 4B | 6.4–9 s | no tags |
+| InternVL3.5 8B | 4.9–11.5 s | no tags |
+| Gemma 3 12B | 15–29 s | partly on the CPU (does not fit in 8 GB) |
+| Gemma 4 12B | 12–32 s | partly on the CPU |
+| InternVL3.5 14B | 33–60 s | partly on the CPU |
+
+Models that don't write `{tag}`s ignore the prompt's instructions for emotion
+tags. Models above 14B (Gemma 4 31B, Qwen3-VL 32B and others) were not tried.
+
+**Video memory.** Gemma 3 4B with Q8_0 weights, an f16 vision projector and an
+8192-token context needs about 7 GB. Without care it overflowed the 8 GB card
+into system memory on Vulkan: 492 s to load, 114–339 s per screenshot, and it
+froze the whole PC. So `LlamaCpp::new`, with `gpu_layers` above 0, asks llama.cpp
+(`fit_params`) how many layers fit into the free video memory next to the
+context and the image encoder, and runs the rest on the CPU; that case takes
+2.3–4.6 s per screenshot. If fitting fails, the model runs on the CPU. The
+layers that don't fit are why the 12B and 14B models above are slow.
 
 ## Build prerequisites
 
