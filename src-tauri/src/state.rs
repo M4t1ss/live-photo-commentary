@@ -290,19 +290,19 @@ fn bundled_models_dir(app: &tauri::AppHandle) -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("CARGO_MANIFEST_DIR should have a parent").join("models")
     } else {
-        app.path().resource_dir().expect("resource dir should be available").join("resources").join("models")
+        // Tauri's resource folder starts with `\\?\` on Windows, which makes Windows
+        // read `/` literally, and the frontend joins file names to the folder with
+        // `/` (`animationsDir` in `avatar.js`): none of the animations would load.
+        let resources = app.path().resource_dir().expect("resource dir should be available");
+        dunce::simplified(&resources).join("resources").join("models")
     }
 }
 
-/// `.vrma` animation clips referenced by avatar YAML files (top-level
-/// `animations/` in the repo; bundled under the model resources in release,
-/// per `tauri.bundle.conf.json`'s `resources/models/animations/*`).
+/// `.vrma` animation clips referenced by avatar YAML files, in `animations/`
+/// under the models (bundled by `tauri.bundle.conf.json`'s
+/// `resources/models/animations/*`).
 fn animations_dir(app: &tauri::AppHandle) -> PathBuf {
-    if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("CARGO_MANIFEST_DIR should have a parent").join("animations")
-    } else {
-        app.path().resource_dir().expect("resource dir should be available").join("resources").join("models").join("animations")
-    }
+    bundled_models_dir(app).join("animations")
 }
 
 /// Everything the Tauri commands (`commands.rs`) need: settings, promptsets,

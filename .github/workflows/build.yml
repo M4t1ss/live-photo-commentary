@@ -274,8 +274,7 @@ jobs:
         run: |
           configs=(--config src-tauri/tauri.bundle.conf.json)
           if [ "$RUNNER_OS" = "Linux" ]; then
-            # --verbose shows linuxdeploy's own output, which tauri hides otherwise.
-            configs+=(--config src-tauri/tauri.bundle.linux.conf.json --verbose)
+            configs+=(--config src-tauri/tauri.bundle.linux.conf.json)
             # linuxdeploy (AppImage) looks for the libraries that the bundled ones
             # need with ldd, and llama.cpp's libraries have no rpath, so it can't
             # find libggml.so.0 next to libllama.so.0.4.1 ("Could not find
@@ -313,6 +312,31 @@ jobs:
             echo "::error::a CUDA library ended up in the installer"
             exit 1
           fi
+
+      # build.rs stages only each library's soname (libllama.so.0, libllama.0.dylib),
+      # so check that every llama.cpp library that the executable and the staged
+      # libraries ask for is among them.
+      - name: Check that the installer's libraries are all there
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          missing=0
+          cd src-tauri/resources/llama
+          for file in "$GITHUB_WORKSPACE/target/release/app" *.so* *.dylib; do
+            [ -f "$file" ] || continue
+            if [ "$RUNNER_OS" = "Linux" ]; then
+              needed=$(readelf -d "$file" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | grep -E '^lib(llama|ggml|mtmd)' || true)
+            else
+              needed=$(otool -L "$file" | sed -n 's/^[[:space:]]*@rpath\/\([^ ]*\) .*/\1/p')
+            fi
+            for dep in $needed; do
+              if [ ! -e "$dep" ]; then
+                echo "::error::$(basename "$file") needs $dep, which is not in the installer's libraries"
+                missing=1
+              fi
+            done
+          done
+          exit $missing
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v7

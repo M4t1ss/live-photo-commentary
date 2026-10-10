@@ -39,6 +39,7 @@ reqwest = { version = "0.12", features = ["json"] }
 xcap = "0.9"
 image = "0.25"
 base64 = "0.22"
+dunce = "1"
 tokio = { version = "1", features = ["time", "rt", "macros", "fs", "io-util"] }
 kokoro-timestamped = { path = "../crates/kokoro-timestamped" }
 vlm-describer = { path = "../crates/vlm-describer", features = ["llama-cpp"] }

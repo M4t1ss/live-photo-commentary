@@ -55,24 +55,60 @@ fn stage_llama_libraries() {
   copy_shared_libraries(&backends, &staging.join("backends"));
 }
 
+/// Splits a shared library's file name into its name and the number of version
+/// parts it carries: `libllama.so.0.4.1` and `libllama.0.4.1.dylib` are
+/// `("libllama", 3)`, `libllama.so.0` is `("libllama", 1)`, `libggml-vulkan.so`
+/// and `ggml.dll` have none. `None` if it isn't a shared library.
+fn split_library_name(name: &str) -> Option<(&str, usize)> {
+  let (stem, versions) = if let Some(base) = name.strip_suffix(".dylib") {
+    base.split_once('.').unwrap_or((base, ""))
+  } else if let Some((stem, rest)) = name.split_once(".so") {
+    (stem, rest.strip_prefix('.').unwrap_or(rest))
+  } else {
+    (name.strip_suffix(".dll")?, "")
+  };
+  Some((stem, if versions.is_empty() { 0 } else { versions.split('.').count() }))
+}
+
+/// Copies llama.cpp's libraries, once each. On Linux and macOS CMake installs a
+/// library under three names: the file (`libllama.so.0.4.1`), a link named after
+/// its soname (`libllama.so.0`), which is what the executable and the other
+/// libraries ask the loader for, and a link for the linker (`libllama.so`).
+/// Tauri bundles a link as a file of its own, so bundling all three would make
+/// the installer three times as big. Only the soname is needed: it is the name
+/// with the fewest version parts, apart from the bare one. Libraries that only
+/// have one name (`ggml.dll`, the backend modules) are copied as they are.
 fn copy_shared_libraries(from: &Path, to: &Path) {
   let Ok(entries) = std::fs::read_dir(from) else { return };
-  for entry in entries.flatten() {
-    let name = entry.file_name().to_string_lossy().into_owned();
-    let shared = name.ends_with(".dll") || name.contains(".so") || name.ends_with(".dylib");
-    if shared && entry.path().is_file() {
-      let target = to.join(&name);
-      let same = match (std::fs::metadata(entry.path()), std::fs::metadata(&target)) {
-        (Ok(a), Ok(b)) => a.len() == b.len() && a.modified().ok() == b.modified().ok(),
-        _ => false,
-      };
-      if !same {
-        // `copy` keeps the modification time on Windows but not everywhere;
-        // setting it explicitly makes the comparison above work on all.
-        std::fs::copy(entry.path(), &target).unwrap();
-        if let Ok(modified) = std::fs::metadata(entry.path()).and_then(|m| m.modified()) {
-          let _ = std::fs::File::options().write(true).open(&target).and_then(|f| f.set_modified(modified));
-        }
+  let files: Vec<_> = entries.flatten().filter(|e| e.path().is_file()).collect();
+  let names: Vec<String> = files.iter().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+  // The part count to keep for each library; no version parts sorts last.
+  let rank = |parts: usize| if parts == 0 { usize::MAX } else { parts };
+  let mut wanted = std::collections::HashMap::new();
+  for (stem, parts) in names.iter().filter_map(|name| split_library_name(name)) {
+    let best = wanted.entry(stem).or_insert(parts);
+    if rank(parts) < rank(*best) {
+      *best = parts;
+    }
+  }
+  for (entry, name) in files.iter().zip(&names) {
+    let Some((stem, parts)) = split_library_name(name) else { continue };
+    let target = to.join(name);
+    if parts != wanted[stem] {
+      // An earlier build staged this name too; the bundle shouldn't take it.
+      let _ = std::fs::remove_file(&target);
+      continue;
+    }
+    let same = match (std::fs::metadata(entry.path()), std::fs::metadata(&target)) {
+      (Ok(a), Ok(b)) => a.len() == b.len() && a.modified().ok() == b.modified().ok(),
+      _ => false,
+    };
+    if !same {
+      // `copy` keeps the modification time on Windows but not everywhere;
+      // setting it explicitly makes the comparison above work on all.
+      std::fs::copy(entry.path(), &target).unwrap();
+      if let Ok(modified) = std::fs::metadata(entry.path()).and_then(|m| m.modified()) {
+        let _ = std::fs::File::options().write(true).open(&target).and_then(|f| f.set_modified(modified));
       }
     }
   }
