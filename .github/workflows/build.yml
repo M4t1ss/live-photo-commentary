@@ -268,18 +268,18 @@ jobs:
       # The first Vulkan build of llama.cpp on Windows often fails on a race in
       # its shader generator (vulkan-shaders-gen); a rerun gets further, so try
       # up to three times.
-      # NO_STRIP: linuxdeploy (AppImage) bundles the system libraries, and its
-      # old `strip` can't read the .relr.dyn sections that Ubuntu 24.04's
-      # libraries have, which fails the AppImage with "failed to run linuxdeploy".
       - name: Build the installer
         shell: bash
-        env:
-          NO_STRIP: "true"
         run: |
           configs=(--config src-tauri/tauri.bundle.conf.json)
           if [ "$RUNNER_OS" = "Linux" ]; then
             # --verbose shows linuxdeploy's own output, which tauri hides otherwise.
             configs+=(--config src-tauri/tauri.bundle.linux.conf.json --verbose)
+            # linuxdeploy (AppImage) looks for the libraries that the bundled ones
+            # need with ldd, and llama.cpp's libraries have no rpath, so it can't
+            # find libggml.so.0 next to libllama.so.0.4.1 ("Could not find
+            # dependency"). The executable finds them through its own rpath.
+            export LD_LIBRARY_PATH="$PWD/src-tauri/resources/llama:$PWD/src-tauri/resources/llama/backends${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           fi
           build_dir="${CARGO_BUILD_BUILD_DIR:-target}"
           build_dir="${build_dir//\\//}"
