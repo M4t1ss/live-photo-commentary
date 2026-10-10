@@ -184,10 +184,11 @@ jobs:
             . -> target
             src-screenshot -> target
           cache-directories: ${{ runner.os == 'Windows' && 'C:\b' || '' }}
-          # The Windows cache saved by the first run holds a half-configured llama.cpp
-          # (that run's failed configure); a new key leaves it behind. Bump it again
-          # if a cache is ever saved in a bad state.
-          key: ${{ runner.os == 'Windows' && 'windows-2' || '' }}
+          # A new key leaves an old cache behind: bump it when a cache was saved in a
+          # bad state (the first Windows run's half-configured llama.cpp), or when
+          # llama.cpp's CMake options change by way of .cargo/config.toml, which
+          # llama-cpp-sys-2 doesn't notice (it only tracks GGML_* variables).
+          key: ${{ runner.os == 'Windows' && 'windows-3' || 'v3' }}
           # llama.cpp is slow to build, and failed runs are likely for a while.
           cache-on-failure: true
 
