@@ -39,6 +39,37 @@ Open Settings, choose a model provider and model (and enter an API key for a clo
 
 Settings are saved in the app's config folder (`settings.json`); promptsets are YAML files in its data folder.
 
+### Local models: finding GGUF files
+
+Local models run on llama.cpp, which needs two [GGUF](https://huggingface.co/docs/hub/gguf) files from the same Hugging Face repository: the **model** and its **vision projector** (`mmproj`). Without the projector a model can't look at images. The app downloads both on first use, into the Hugging Face cache.
+
+**Finding them**
+
+1. Open the original model's page on Hugging Face (for example `google/gemma-3-4b-it`); its model tree lists "Quantizations", which link to GGUF repositories. Or search for the model's name plus `GGUF`.
+2. The models in the catalogue come from three kinds of uploader. Try them in this order: [`ggml-org`](https://huggingface.co/ggml-org) (the llama.cpp project, which publishes the projector next to the model), the model's own authors (for example `Qwen/Qwen3-VL-4B-Instruct-GGUF`), and community converters such as `bartowski`.
+3. In the repository's "Files" tab, check for:
+   - a projector file, named `mmproj-….gguf` (for example `mmproj-model-f16.gguf`); a repository without one can't be used;
+   - a quantisation that fits your video memory: names like `Q8_0`, `Q4_K_M` or `Q4_0`. The catalogue uses Q8_0 when the file stays under about 4.5 GB and a 4-bit quantisation above that; smaller files use less memory at slightly lower quality.
+4. The model's architecture must be one that llama.cpp supports for images; its multimodal documentation lists them.
+
+**Using a model that isn't in the catalogue**
+
+The catalogue is `src-tauri/vlm_models.yaml`; it is compiled into the app. To try another model without rebuilding, choose the local provider, type the model's Hugging Face ID into the Model box (it takes any text), and put the three files in Settings, "Model overrides (JSON)":
+
+```json
+{
+  "gguf_repo": "ggml-org/gemma-3-4b-it-GGUF",
+  "model_file": "gemma-3-4b-it-Q8_0.gguf",
+  "mmproj_file": "mmproj-model-f16.gguf"
+}
+```
+
+All three are required. The same box takes `generation_kwargs` (`max_new_tokens`, `temperature`, `top_p`, `top_k`) and `response_re`, and for a model that is in the catalogue it overrides just the keys you give.
+
+To add a model for good, add an entry with `name`, `gguf_repo`, `model_file` and `mmproj_file` to `src-tauri/vlm_models.yaml` (the comment at the top of the file describes the fields) and rebuild.
+
+Larger models than your video memory run partly on the CPU and are much slower; the [measurements](crates/vlm-describer/README.md#measurements-local-models) show what to expect.
+
 ## Files and folders the app uses
 
 The Windows paths below were checked on an installed copy. The macOS and Linux paths follow Tauri's conventions and the code, but have not been checked on those systems yet.
