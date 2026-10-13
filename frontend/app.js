@@ -800,11 +800,14 @@ function showGpuStatus(status) {
   document.getElementById("gpu-status").textContent = status.gpu
     ? `Local models run on the GPU: ${status.gpu} (${status.backend}).`
     : "Local models run on the CPU, which is slow (tens of seconds per screenshot). No usable GPU was found.";
-  const offered = status.nvidia_gpu && (status.cuda_downloadable || status.cuda_installed);
+  const offered = status.nvidia_gpu
+    && (status.cuda_downloadable || status.cuda_installed || status.cuda_removal_pending);
   cudaRow.classList.toggle("hidden", !offered);
   cudaBtn.disabled = false;
   if (status.cuda_removal_pending) {
-    cudaHint.textContent = "CUDA will be removed when the app restarts.";
+    cudaHint.textContent = status.backend === "CUDA"
+      ? "CUDA will be removed the next time the app starts. Until then it is still loaded and in use, so restart the app to switch to another backend."
+      : "CUDA will be removed the next time the app starts.";
     cudaBtn.classList.add("hidden");
   } else if (status.cuda_installed) {
     cudaHint.textContent = status.backend === "CUDA"
