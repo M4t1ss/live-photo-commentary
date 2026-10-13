@@ -185,6 +185,17 @@ impl SessionState {
         self.sys_msg_override.clear();
     }
 
+    /// All eight fields as the Settings text boxes should show them: `base`
+    /// with both ad-hoc overrides layered on top, tags left as written.
+    pub fn displayed_fields(&self, base: &Promptset) -> Promptset {
+        let mut fields = base.clone();
+        if let Some(over) = &self.prompt_override {
+            apply_fields(&mut fields, over);
+        }
+        apply_fields(&mut fields, &self.sys_msg_override);
+        fields
+    }
+
     /// The five describer fields: `base` (the active promptset) with the
     /// ad-hoc override layered on top, tag-substituted.
     pub fn describer_fields(&self, base: &Promptset, tag_names: &[&str]) -> Promptset {
@@ -235,12 +246,6 @@ pub fn system_message_prompts(fields: &Promptset) -> HashMap<String, String> {
         ("farewell".to_string(), fields.farewell_prompt.clone()),
         ("lonely".to_string(), fields.lonely_prompt.clone()),
     ])
-}
-
-/// True when none of the three system-message prompts has any text: pregen
-/// should be skipped entirely and `system_messages` marked ready right away.
-pub fn system_messages_are_empty(fields: &Promptset) -> bool {
-    [&fields.greeting_prompt, &fields.farewell_prompt, &fields.lonely_prompt].iter().all(|p| p.trim().is_empty())
 }
 
 /// Ignores a stale pre-generation completion racing a newer run.
@@ -470,6 +475,13 @@ impl AppState {
         self.session.lock().expect("session mutex should not be poisoned").describer_fields(&base, &tag_refs)
     }
 
+    /// `base` (the active promptset) with the session's ad-hoc override on
+    /// top, as the Settings text boxes should show it: what `connect` sends
+    /// after a page reload, so the boxes match what is actually in use.
+    pub fn displayed_fields(&self, base: &Promptset) -> Promptset {
+        self.session.lock().expect("session mutex should not be poisoned").displayed_fields(base)
+    }
+
     fn pregen_fields(&self) -> Promptset {
         let base = self.active_promptset();
         let tag_names = self.active_tag_names();
@@ -529,9 +541,14 @@ impl AppState {
             return;
         }
         let fields = self.pregen_fields();
-        if system_messages_are_empty(&fields) {
-            self.system_messages_ready.store(true, Ordering::SeqCst);
-            self.send_ready_state();
+        let prompts = system_message_prompts(&fields);
+        let system_prompt = fields.system_prompt.clone();
+        // Nothing to generate (Settings "OK" with no edits, or only prompts
+        // blanked): no need to flip to "not ready" and announce generating.
+        if !self.pipeline.prune_pregen_messages(&prompts, &system_prompt) {
+            if !self.system_messages_ready.swap(true, Ordering::SeqCst) {
+                self.send_ready_state();
+            }
             return;
         }
         self.system_messages_ready.store(false, Ordering::SeqCst);
@@ -539,8 +556,6 @@ impl AppState {
         self.send(Event::LoadProgress { message: "Generating messages…".to_string() });
         self.send_ready_state();
 
-        let prompts = system_message_prompts(&fields);
-        let system_prompt = fields.system_prompt.clone();
         let this = Arc::clone(self);
         Arc::clone(&self.pipeline).pregen_system_messages(prompts, system_prompt, move || {
             if !this.pregen_sequencer.is_current(seq) {
@@ -800,8 +815,7 @@ model runs on: {:?}", vlm_describer::preferred_gpu(&devices));
             let image = image::open(frames_dir.join(name)).expect("decode frame");
             let start = std::time::Instant::now();
             let comment = describer.describe(&image, previous.as_ref()).await.expect("describe");
-            println!("{name} ({:.1}s): {comment}
-", start.elapsed().as_secs_f64());
+            println!("{name} ({:.1}s): {comment}", start.elapsed().as_secs_f64());
             previous = Some(image);
         }
     }
@@ -830,17 +844,31 @@ model runs on: {:?}", vlm_describer::preferred_gpu(&devices));
     }
 
     #[test]
-    fn system_message_prompts_and_emptiness_check() {
+    fn displayed_fields_show_the_override_with_tags_left_as_written() {
+        let mut session = SessionState::default();
+        let mut base = Promptset::default();
+        base.prompt = "base prompt".to_string();
+        session.set_override(&HashMap::from([
+            ("system_prompt".to_string(), "custom {tags}".to_string()),
+            ("lonely_prompt".to_string(), "custom lonely".to_string()),
+        ]));
+
+        let shown = session.displayed_fields(&base);
+        assert_eq!(shown.system_prompt, "custom {tags}");
+        assert_eq!(shown.lonely_prompt, "custom lonely");
+        assert_eq!(shown.prompt, "base prompt", "fields without an override come from the promptset");
+
+        session.clear();
+        assert_eq!(session.displayed_fields(&base), base);
+    }
+
+    #[test]
+    fn system_message_prompts_are_keyed_by_name() {
         let base = Promptset::default();
         let prompts = system_message_prompts(&base);
         assert_eq!(prompts.get("greeting"), Some(&base.greeting_prompt));
-        assert!(!system_messages_are_empty(&base));
-
-        let mut blank = base.clone();
-        blank.greeting_prompt = "  ".to_string();
-        blank.farewell_prompt = String::new();
-        blank.lonely_prompt = "\t".to_string();
-        assert!(system_messages_are_empty(&blank));
+        assert_eq!(prompts.get("farewell"), Some(&base.farewell_prompt));
+        assert_eq!(prompts.get("lonely"), Some(&base.lonely_prompt));
     }
 
     #[test]

@@ -51,7 +51,7 @@ pub fn connect(state: State<'_, Arc<AppState>>, events: Channel<serde_json::Valu
     tauri::async_runtime::spawn(async move { app_state.send_models().await });
 
     let name = cfg.active_promptset;
-    let fields = state.promptsets().load(&name)?;
+    let fields = state.displayed_fields(&state.promptsets().load(&name)?);
     let names = state.promptsets().list_names()?;
     state.send(Event::PromptsetLoaded { name, fields, names });
     Ok(())
@@ -82,6 +82,16 @@ pub fn set_config(
     }
     if triggers.tts {
         tauri::async_runtime::spawn(async move { app_state.reinit_synthesizer().await });
+    }
+    // A new avatar model means every pre-generated message is made again, and
+    // the prompts' `{tag}` placeholders change. A VLM/TTS reload re-applies the
+    // prompts and re-runs pre-generation itself.
+    if old.active_model != new.active_model {
+        state.pipeline().discard_pregen_messages();
+        if !triggers.vlm && !triggers.tts {
+            state.apply_active_promptset_to_describer();
+            Arc::clone(state.inner()).trigger_pregen();
+        }
     }
 
     state.send(Event::Config { data: new.masked() });

@@ -195,6 +195,10 @@ let _systemTagTimer = null;
 let _systemTtsCancelled = false;
 
 let _startCycleTimer = null;
+// True from Play until the backend has been told to start the cycle. The
+// backend reports `running: false` until then, which must not be taken for
+// a stop.
+let _cycleStartPending = false;
 
 let _subtitleTimer = null;
 
@@ -232,7 +236,27 @@ function dismissSplash() {
   splashEl.classList.add("splash-gone");
 }
 
+// The last status set by setPhase, and whether a backend progress message
+// (load_progress) has replaced it since, so it can be put back when the
+// backend is ready again.
+let lastPhase = null;
+let progressShown = false;
+
+function restorePhaseAfterProgress() {
+  if (!progressShown || !lastPhase) return;
+  const { label, mode, durationMs, at } = lastPhase;
+  if (mode === "down") {
+    const left = durationMs - (Date.now() - at);
+    setPhase(label, left > 0 ? "down" : "none", Math.max(left, 0));
+  } else {
+    setPhase(label, mode);
+    if (mode === "up") timerStart = at;
+  }
+}
+
 function setPhase(label, mode = "up", durationMs = 0) {
+  lastPhase = { label, mode, durationMs, at: Date.now() };
+  progressShown = false;
   statusPhaseEl.textContent = label;
   splashStatusEl.textContent = label;
   clearInterval(timerInterval);
@@ -375,7 +399,7 @@ function handleMessage(data) {
         break;
       }
       systemTtsAllReceived = true;
-      if (!systemPlaying) {
+      if (!systemPlaying && systemAudioQueue.length === 0) {
         systemTtsAllReceived = false;
         window.systemAudioEnded?.();
       }
@@ -416,10 +440,11 @@ function handleMessage(data) {
     case "ready_state":
       backendReady = data.ready;
       _modelsReady = (data.vlm ?? true) && (data.tts ?? true);
-      if (typeof data.running === "boolean" && data.running !== running) {
+      if (typeof data.running === "boolean" && data.running !== running && !_cycleStartPending) {
         setRunning(data.running);
       }
       checkReady();
+      if (data.ready) restorePhaseAfterProgress();
       break;
 
     case "model_loading":
@@ -432,6 +457,7 @@ function handleMessage(data) {
       timerInterval = null;
       statusPhaseEl.textContent = data.message;
       statusTimerEl.textContent = "";
+      progressShown = true;
       break;
 
     case "download_progress": {
@@ -511,6 +537,8 @@ function resetAudio() {
   _tagIdx = 0;
   window.setLipSyncData?.([], null);
   window.setEmotion?.(null);
+  // A system message that was waiting for this audio can go now.
+  if (systemAudioQueue.length > 0 && !systemPlaying) playNextSystemAudio();
 }
 
 function enqueueChunk({ audio_url, text, phonemes, words, tags }) {
@@ -528,6 +556,14 @@ function playNext() {
   _clearSubtitleTimer();
   if (systemPlaying) {
     isPlaying = false;
+    return;
+  }
+  // A system message that arrived while a description chunk was playing waits
+  // for that chunk to end, then goes first (see playNextSystemAudio).
+  if (systemAudioQueue.length > 0) {
+    isPlaying = false;
+    currentAudio = null;
+    playNextSystemAudio();
     return;
   }
   if (audioQueue.length === 0) {
@@ -591,6 +627,9 @@ function playNextSystemAudio() {
     if (!isPlaying && audioQueue.length > 0) playNext();
     return;
   }
+  // Never over a description chunk that is already playing: stay queued;
+  // playNext hands over at the end of that chunk.
+  if (isPlaying) return;
   systemPlaying = true;
   const { audio_url, timeline, tags, text, words } = systemAudioQueue.shift();
   _clearSubtitleTimer();
@@ -648,6 +687,7 @@ function stopCycle() {
     clearTimeout(_startCycleTimer);
     _startCycleTimer = null;
   }
+  _cycleStartPending = false;
   setRunning(false);
   resetAudio();
   window.clearSubtitle?.();
@@ -672,10 +712,14 @@ startStopBtn.addEventListener("click", () => {
     diffInfoEl.classList.add("hidden");
     const delayMs = (currentConfig.pre_screenshot_delay ?? 2.0) * 1000;
     setPhase("Screenshot in", "down", delayMs);
+    _cycleStartPending = true;
     _startCycleTimer = setTimeout(() => {
       _startCycleTimer = null;
-      if (!running) return;
-      invoke("start_cycle").then(takeScreenshot).catch(reportError);
+      if (!running) { _cycleStartPending = false; return; }
+      invoke("start_cycle")
+        .finally(() => { _cycleStartPending = false; })
+        .then(takeScreenshot)
+        .catch(reportError);
     }, delayMs);
   }
 });
@@ -689,7 +733,14 @@ toggleSubtitleBtn.addEventListener("click", () => {
 // --- Settings modal ---
 settingsBtn.addEventListener("click", openModal);
 modalCancel.addEventListener("click", closeModal);
-modalOverlay.addEventListener("click", (e) => { if (e.target === modalOverlay) closeModal(); });
+// Close on a click on the backdrop only if the press started there too: a text
+// selection dragged out of a field ends over the backdrop, and the browser
+// then reports the click on the overlay.
+let modalPressOnBackdrop = false;
+modalOverlay.addEventListener("mousedown", (e) => { modalPressOnBackdrop = e.target === modalOverlay; });
+modalOverlay.addEventListener("click", (e) => {
+  if (e.target === modalOverlay && modalPressOnBackdrop) closeModal();
+});
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && pickerOverlay.classList.contains("hidden")) closeModal();
 });
@@ -1047,17 +1098,12 @@ modalOk.addEventListener("click", () => {
   const configSaved = invoke("set_config", { data: updates, persist: true }).catch(reportError);
   window.setIdleToDanceSecs?.(updates.idle_to_dance_secs);
 
-  const avatarModelChanged = updates.active_model !== (currentConfig.active_model ?? "default");
-  if (avatarModelChanged) {
-    closeModal();
-    setPhase("Reloading for model change…", "up");
-    configSaved.then(() => setTimeout(() => location.reload(), 500));
-    return;
-  }
-
   // Apply the prompt fields exactly as shown, whether or not they were saved as
   // a named promptset. Session-only — a Save persists them, a restart reverts.
-  invoke("apply_prompts", {
+  // After set_config (a change of avatar model resets the pre-generated
+  // messages there, and this must come after that), and before the reload
+  // below, which would otherwise throw the edited fields away.
+  const promptsApplied = configSaved.then(() => invoke("apply_prompts", {
     fields: {
       system_prompt:   cfgSystemPrompt.value,
       prompt:          cfgPromptText.value,
@@ -1068,7 +1114,15 @@ modalOk.addEventListener("click", () => {
       farewell_prompt: cfgFarewellPrompt.value,
       lonely_prompt:   cfgLonelyPrompt.value,
     },
-  }).catch(reportError);
+  })).catch(reportError);
+
+  const avatarModelChanged = updates.active_model !== (currentConfig.active_model ?? "default");
+  if (avatarModelChanged) {
+    closeModal();
+    setPhase("Reloading for model change…", "up");
+    promptsApplied.then(() => setTimeout(() => location.reload(), 500));
+    return;
+  }
   closeModal();
 });
 

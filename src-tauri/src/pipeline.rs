@@ -310,6 +310,14 @@ struct FrameState {
     last_rejected: bool,
 }
 
+/// A pre-generated system message with the prompts it was generated from, so
+/// `pregen_system_messages` can tell whether it is still current.
+struct PregenMessage {
+    prompt: String,
+    system_prompt: String,
+    chunks: Vec<ChunkEvent>,
+}
+
 /// Frame differencing plus the VLM/TTS worker threads. Generic over the
 /// describer/synthesizer traits so it can be driven by fakes in tests.
 pub struct Pipeline<D, S> {
@@ -322,7 +330,10 @@ pub struct Pipeline<D, S> {
     /// `tts_busy_error...` test).
     #[cfg_attr(not(test), allow(dead_code))]
     pending_cycle_tts: Arc<AtomicBool>,
-    pregen_messages: Mutex<HashMap<String, Vec<ChunkEvent>>>,
+    pregen_messages: Mutex<HashMap<String, PregenMessage>>,
+    /// Bumped by every `pregen_system_messages` and `discard_pregen_messages`;
+    /// a pre-generation that finds it changed has been superseded.
+    pregen_epoch: AtomicU64,
     vlm_tx: mpsc::Sender<VlmJob<D>>,
     tts_tx: mpsc::Sender<TtsJob<S>>,
     sink: EventSink,
@@ -364,6 +375,7 @@ where
             pending_frame,
             pending_cycle_tts,
             pregen_messages: Mutex::new(HashMap::new()),
+            pregen_epoch: AtomicU64::new(0),
             vlm_tx,
             tts_tx,
             sink,
@@ -380,6 +392,7 @@ where
     /// lock, since the worker thread already serializes every describer
     /// access.
     pub fn set_describer(&self, describer: Option<D>) {
+        self.discard_pregen_messages();
         let (ack, rx) = mpsc::channel();
         if self.vlm_tx.send(VlmJob::SetDescriber(describer, ack)).is_ok() {
             let _ = rx.recv();
@@ -388,6 +401,7 @@ where
 
     /// Replaces the live synthesizer, waiting the same way as `set_describer`.
     pub fn set_synthesizer(&self, synthesizer: Option<S>) {
+        self.discard_pregen_messages();
         let (ack, rx) = mpsc::channel();
         if self.tts_tx.send(TtsJob::SetSynthesizer(synthesizer, ack)).is_ok() {
             let _ = rx.recv();
@@ -486,7 +500,7 @@ where
     /// Replays previously pre-generated chunks for `name`, always ending
     /// with `system_tts_done`.
     pub fn play_system_message(&self, name: &str) {
-        let chunks = self.pregen_messages.lock().expect("pregen mutex should not be poisoned").get(name).cloned();
+        let chunks = self.pregen_messages.lock().expect("pregen mutex should not be poisoned").get(name).map(|m| m.chunks.clone());
         for chunk in chunks.into_iter().flatten() {
             (self.sink)(Event::Chunk(chunk));
         }
@@ -496,23 +510,38 @@ where
     /// Generates and synthesizes each non-empty prompt in `prompts` in turn
     /// (keys are message names, e.g. `"greeting"`), storing the finished
     /// chunks for later replay by `play_system_message`, then calls
-    /// `on_done`. Runs on its own thread, driving the VLM/TTS workers through
-    /// their job queues like everything else.
+    /// `on_done`. A stored message made from the same prompt and
+    /// `system_prompt` is kept as it is, until `discard_pregen_messages`. A
+    /// newer call, or a discard, cancels this one: it stops at the next
+    /// message and stores nothing more (`on_done` is still called). Runs on
+    /// its own thread, driving the VLM/TTS workers through their job queues
+    /// like everything else.
     pub fn pregen_system_messages(
         self: Arc<Self>,
         prompts: HashMap<String, String>,
         system_prompt: String,
         on_done: impl FnOnce() + Send + 'static,
     ) {
+        let epoch = self.pregen_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         std::thread::spawn(move || {
-            // Reset so stale clips don't survive if one generation fails mid-way.
-            self.pregen_messages.lock().expect("pregen mutex should not be poisoned").clear();
+            let is_current = |name: &str, prompt: &str, stored: &HashMap<String, PregenMessage>| {
+                stored.get(name).is_some_and(|m| m.prompt == prompt && m.system_prompt == system_prompt)
+            };
+            // Drop everything that changed (or is no longer asked for) up front,
+            // so stale clips don't survive if one generation fails mid-way.
+            self.prune_pregen_messages(&prompts, &system_prompt);
             for (name, prompt) in prompts {
+                if self.pregen_epoch.load(Ordering::SeqCst) != epoch {
+                    break;
+                }
                 if prompt.trim().is_empty() {
                     continue;
                 }
+                if is_current(&name, &prompt, &self.pregen_messages.lock().expect("pregen mutex should not be poisoned")) {
+                    continue;
+                }
                 let (reply, rx) = mpsc::channel();
-                let job = VlmJob::Generate { prompt, system_prompt: Some(system_prompt.clone()), reply };
+                let job = VlmJob::Generate { prompt: prompt.clone(), system_prompt: Some(system_prompt.clone()), reply };
                 if self.vlm_tx.send(job).is_err() {
                     continue;
                 }
@@ -531,7 +560,11 @@ where
                 }
                 match rx.recv() {
                     Ok(Ok(chunks)) => {
-                        self.pregen_messages.lock().expect("pregen mutex should not be poisoned").insert(name, chunks);
+                        let message = PregenMessage { prompt, system_prompt: system_prompt.clone(), chunks };
+                        let mut stored = self.pregen_messages.lock().expect("pregen mutex should not be poisoned");
+                        if self.pregen_epoch.load(Ordering::SeqCst) == epoch {
+                            stored.insert(name, message);
+                        }
                     }
                     Ok(Err(message)) => log::warn!("System message synthesis for {name:?} failed: {message}"),
                     Err(_) => {}
@@ -539,6 +572,24 @@ where
             }
             on_done();
         });
+    }
+
+    /// Drops the stored messages that no longer match `prompts` and
+    /// `system_prompt` (changed, blanked or no longer asked for), so a stale
+    /// clip can't be played. Returns whether any non-blank prompt is left
+    /// without its message, i.e. whether `pregen_system_messages` has
+    /// anything to generate.
+    pub fn prune_pregen_messages(&self, prompts: &HashMap<String, String>, system_prompt: &str) -> bool {
+        let mut stored = self.pregen_messages.lock().expect("pregen mutex should not be poisoned");
+        stored.retain(|name, m| prompts.get(name).is_some_and(|prompt| m.prompt == *prompt && m.system_prompt == system_prompt));
+        prompts.iter().any(|(name, prompt)| !prompt.trim().is_empty() && !stored.contains_key(name))
+    }
+
+    /// Forgets every pre-generated message and cancels a pre-generation in
+    /// progress, so the next `pregen_system_messages` generates them all.
+    pub fn discard_pregen_messages(&self) {
+        self.pregen_epoch.fetch_add(1, Ordering::SeqCst);
+        self.pregen_messages.lock().expect("pregen mutex should not be poisoned").clear();
     }
 
     /// Blocks until every job sent to the VLM worker before this call has
@@ -603,6 +654,7 @@ mod tests {
         }
 
         async fn generate(&mut self, _prompt: &str, _system_prompt: Option<&str>) -> Result<String, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             self.reply.clone()
         }
 
@@ -989,6 +1041,70 @@ mod tests {
         });
         done_rx.recv_timeout(Duration::from_secs(2)).expect("pregen should finish");
 
+        assert!(pipeline.pregen_messages.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pregen_only_regenerates_messages_whose_prompts_changed() {
+        let (sink, _events) = capturing_sink();
+        let pipeline = Arc::new(new_pipeline(sink));
+        let describer = FakeDescriber::ok("hi there");
+        let calls = Arc::clone(&describer.calls);
+        pipeline.set_describer(Some(describer));
+        pipeline.set_synthesizer(Some(FakeSynthesizer::with_chunks(vec!["hi there"])));
+
+        let pregen = |greeting: &str, farewell: &str, system_prompt: &str| {
+            let (done_tx, done_rx) = mpsc::channel();
+            let prompts = HashMap::from([
+                ("greeting".to_string(), greeting.to_string()),
+                ("farewell".to_string(), farewell.to_string()),
+            ]);
+            Arc::clone(&pipeline).pregen_system_messages(prompts, system_prompt.to_string(), move || {
+                let _ = done_tx.send(());
+            });
+            done_rx.recv_timeout(Duration::from_secs(2)).expect("pregen should finish");
+            calls.load(Ordering::SeqCst)
+        };
+
+        assert_eq!(pregen("say hi", "say bye", "be nice"), 2, "first run generates both");
+        assert_eq!(pregen("say hi", "say bye", "be nice"), 2, "nothing changed: nothing generated");
+        assert_eq!(pregen("say hello", "say bye", "be nice"), 3, "only the greeting changed");
+        assert_eq!(pregen("say hello", "  ", "be nice"), 3, "a blanked prompt is dropped, not generated");
+        assert!(!pipeline.pregen_messages.lock().unwrap().contains_key("farewell"));
+        assert_eq!(pregen("say hello", "say bye", "be kind"), 5, "a new system prompt changes every message");
+
+        pipeline.discard_pregen_messages(); // a new avatar model, even with identical prompts
+        assert_eq!(pregen("say hello", "say bye", "be kind"), 7, "after a discard everything is generated again");
+
+        let prompts = |greeting: &str, farewell: &str| {
+            HashMap::from([("greeting".to_string(), greeting.to_string()), ("farewell".to_string(), farewell.to_string())])
+        };
+        let stored = |name: &str| pipeline.pregen_messages.lock().unwrap().contains_key(name);
+        assert!(!pipeline.prune_pregen_messages(&prompts("say hello", "say bye"), "be kind"), "nothing to generate");
+        assert!(stored("greeting") && stored("farewell"));
+        assert!(pipeline.prune_pregen_messages(&prompts("say hi", "say bye"), "be kind"), "a prompt changed");
+        assert!(!stored("greeting") && stored("farewell"), "only the stale message is dropped");
+        assert!(!pipeline.prune_pregen_messages(&prompts(" ", "say bye"), "be kind"), "a blanked prompt needs no generation");
+        assert!(pipeline.prune_pregen_messages(&prompts("say hi", "say bye"), "be nice"), "the system prompt changed");
+        assert!(!stored("farewell"));
+    }
+
+    #[test]
+    fn swapping_the_describer_discards_pregenerated_messages() {
+        let (sink, _events) = capturing_sink();
+        let pipeline = Arc::new(new_pipeline(sink));
+        pipeline.set_describer(Some(FakeDescriber::ok("hi there")));
+        pipeline.set_synthesizer(Some(FakeSynthesizer::with_chunks(vec!["hi there"])));
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let prompts = HashMap::from([("greeting".to_string(), "say hi".to_string())]);
+        Arc::clone(&pipeline).pregen_system_messages(prompts, "be nice".to_string(), move || {
+            let _ = done_tx.send(());
+        });
+        done_rx.recv_timeout(Duration::from_secs(2)).expect("pregen should finish");
+        assert_eq!(pipeline.pregen_messages.lock().unwrap().len(), 1);
+
+        pipeline.set_describer(Some(FakeDescriber::ok("other")));
         assert!(pipeline.pregen_messages.lock().unwrap().is_empty());
     }
 
