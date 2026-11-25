@@ -7,6 +7,9 @@ pub const TAGS_PLACEHOLDER: &str = "<|tags|>";
 /// Placeholder for an image inside a prompt, e.g. `"Current image:\n<image>"`.
 pub const IMAGE_PLACEHOLDER: &str = "<image>";
 
+/// Replaced by what the user said, in [`Prompts::voice_prompt`].
+pub const SPEECH_PLACEHOLDER: &str = "<|speech|>";
+
 macro_rules! default_ending {
     () => {
         concat!(
@@ -53,6 +56,13 @@ pub const DEFAULT_FIRST_PROMPT: &str = concat!(
     default_ending!(),
 );
 
+pub const DEFAULT_VOICE_PROMPT: &str = concat!(
+    "The user just said to you: \"<|speech|>\"\n\n",
+    "Reply to them directly, in your own voice, taking into account what you can see in the current image. ",
+    "If they ask about something on the screen, answer from the current image. ",
+    default_ending!(),
+);
+
 pub const DEFAULT_HISTORY_PROMPT: &str = "This is what you commented before: ";
 
 pub const DEFAULT_COMPACT_PROMPT: &str = concat!(
@@ -77,6 +87,9 @@ pub struct Prompts {
     pub history_prompt: String,
     /// Asks the model to summarize the history when it gets too long.
     pub compact_prompt: String,
+    /// Added after `prompt` or `first_prompt` when the user spoke; its
+    /// [`SPEECH_PLACEHOLDER`] is replaced by what they said.
+    pub voice_prompt: String,
 }
 
 impl Default for Prompts {
@@ -87,6 +100,7 @@ impl Default for Prompts {
             first_prompt: DEFAULT_FIRST_PROMPT.to_string(),
             history_prompt: DEFAULT_HISTORY_PROMPT.to_string(),
             compact_prompt: DEFAULT_COMPACT_PROMPT.to_string(),
+            voice_prompt: DEFAULT_VOICE_PROMPT.to_string(),
         }
     }
 }
@@ -109,6 +123,19 @@ impl Prompts {
             first_prompt: fill(&self.first_prompt),
             history_prompt: fill(&self.history_prompt),
             compact_prompt: fill(&self.compact_prompt),
+            voice_prompt: fill(&self.voice_prompt),
+        }
+    }
+
+    /// The text added to the prompt when the user spoke: `voice_prompt` with
+    /// `speech` in place of its [`SPEECH_PLACEHOLDER`]. A template without the
+    /// placeholder gets the speech on a line of its own at the end, rather
+    /// than losing what the user said.
+    pub fn voice_text(&self, speech: &str) -> String {
+        if self.voice_prompt.contains(SPEECH_PLACEHOLDER) {
+            self.voice_prompt.replace(SPEECH_PLACEHOLDER, speech)
+        } else {
+            format!("{}\n{speech}", self.voice_prompt)
         }
     }
 }
@@ -161,5 +188,24 @@ mod tests {
         let prompts = Prompts::default().with_tags(&["joy", "surprised", "joy"]);
         assert!(prompts.system_prompt.contains("chosen from: {joy}, {surprised}, {neutral}. "));
         assert!(!prompts.system_prompt.contains(TAGS_PLACEHOLDER));
+    }
+
+    #[test]
+    fn tags_are_filled_into_the_voice_prompt_too() {
+        let prompts = Prompts { voice_prompt: "Use <|tags|>.".to_string(), ..Prompts::default() }.with_tags(&["joy"]);
+        assert_eq!(prompts.voice_prompt, "Use {joy}, {neutral}.");
+    }
+
+    #[test]
+    fn the_speech_goes_where_the_placeholder_is() {
+        let prompts = Prompts { voice_prompt: "They said \"<|speech|>\". Answer.".to_string(), ..Prompts::default() };
+        assert_eq!(prompts.voice_text("hello"), "They said \"hello\". Answer.");
+        assert!(Prompts::default().voice_prompt.contains(SPEECH_PLACEHOLDER));
+    }
+
+    #[test]
+    fn a_voice_prompt_without_the_placeholder_still_carries_the_speech() {
+        let prompts = Prompts { voice_prompt: "Answer the user.".to_string(), ..Prompts::default() };
+        assert_eq!(prompts.voice_text("hello"), "Answer the user.\nhello");
     }
 }

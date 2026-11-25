@@ -15,7 +15,7 @@ const DEFAULT_FAREWELL_PROMPT: &str =
 const DEFAULT_LONELY_PROMPT: &str =
     "Give a single short sentence expressing that you are bored waiting for the user.";
 
-/// All eight promptset fields, in the order `save` writes them in.
+/// All nine promptset fields, in the order `save` writes them in.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Promptset {
     pub system_prompt: String,
@@ -23,6 +23,7 @@ pub struct Promptset {
     pub first_prompt: String,
     pub history_prompt: String,
     pub compact_prompt: String,
+    pub voice_prompt: String,
     pub greeting_prompt: String,
     pub farewell_prompt: String,
     pub lonely_prompt: String,
@@ -37,6 +38,7 @@ impl Default for Promptset {
             first_prompt: prompts.first_prompt,
             history_prompt: prompts.history_prompt,
             compact_prompt: prompts.compact_prompt,
+            voice_prompt: prompts.voice_prompt,
             greeting_prompt: DEFAULT_GREETING_PROMPT.to_string(),
             farewell_prompt: DEFAULT_FAREWELL_PROMPT.to_string(),
             lonely_prompt: DEFAULT_LONELY_PROMPT.to_string(),
@@ -58,6 +60,7 @@ impl Promptset {
             first_prompt: get("first_prompt", d.first_prompt),
             history_prompt: get("history_prompt", d.history_prompt),
             compact_prompt: get("compact_prompt", d.compact_prompt),
+            voice_prompt: get("voice_prompt", d.voice_prompt),
             greeting_prompt: get("greeting_prompt", d.greeting_prompt),
             farewell_prompt: get("farewell_prompt", d.farewell_prompt),
             lonely_prompt: get("lonely_prompt", d.lonely_prompt),
@@ -81,6 +84,7 @@ impl Promptset {
             first_prompt: fill(&self.first_prompt),
             history_prompt: fill(&self.history_prompt),
             compact_prompt: fill(&self.compact_prompt),
+            voice_prompt: fill(&self.voice_prompt),
             greeting_prompt: fill(&self.greeting_prompt),
             farewell_prompt: fill(&self.farewell_prompt),
             lonely_prompt: fill(&self.lonely_prompt),
@@ -89,7 +93,7 @@ impl Promptset {
 }
 
 impl Promptset {
-    /// The five fields a [`vlm_describer::Describer`] takes, dropping the
+    /// The six fields a [`vlm_describer::Describer`] takes, dropping the
     /// three system-message prompts (used to push the active promptset onto
     /// the live describer without a model reload).
     pub fn describer_prompts(&self) -> vlm_describer::Prompts {
@@ -99,6 +103,7 @@ impl Promptset {
             first_prompt: self.first_prompt.clone(),
             history_prompt: self.history_prompt.clone(),
             compact_prompt: self.compact_prompt.clone(),
+            voice_prompt: self.voice_prompt.clone(),
         }
     }
 }
@@ -236,6 +241,8 @@ mod tests {
         assert_eq!(loaded.system_prompt, "custom system prompt");
         assert_eq!(loaded.prompt, Promptset::default().prompt);
         assert_eq!(loaded.greeting_prompt, DEFAULT_GREETING_PROMPT);
+        // A promptset saved before voice input existed has no voice prompt.
+        assert_eq!(loaded.voice_prompt, vlm_describer::DEFAULT_VOICE_PROMPT);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -269,17 +276,22 @@ mod tests {
         let fields = Promptset { system_prompt: "chosen from: <|tags|>.".to_string(), ..Promptset::default() };
         let substituted = fields.substitute_tags(&["joy", "surprised", "joy"]);
         assert_eq!(substituted.system_prompt, "chosen from: {joy}, {surprised}, {neutral}.");
+
+        let fields = Promptset { voice_prompt: "use <|tags|>".to_string(), ..Promptset::default() };
+        assert_eq!(fields.substitute_tags(&["joy"]).voice_prompt, "use {joy}, {neutral}");
     }
 
     #[test]
-    fn describer_prompts_carries_the_five_describer_fields() {
+    fn describer_prompts_carries_the_six_describer_fields() {
         let fields = Promptset {
             system_prompt: "custom system".to_string(),
+            voice_prompt: "custom voice <|speech|>".to_string(),
             greeting_prompt: "custom greeting".to_string(),
             ..Promptset::default()
         };
         let prompts = fields.describer_prompts();
         assert_eq!(prompts.system_prompt, "custom system");
+        assert_eq!(prompts.voice_prompt, "custom voice <|speech|>");
         assert_eq!(prompts.prompt, Promptset::default().prompt);
         // Greeting isn't a describer field; describer_prompts has no such slot.
     }

@@ -218,7 +218,7 @@ async fn cancelling_abandons_a_request_in_flight_and_leaves_the_history_alone() 
     let mut describer = openai_describer(&server);
     let cancelled = AtomicBool::new(false);
     let cancel = || cancelled.load(Ordering::SeqCst);
-    let options = DescribeOptions { cancel: Some(&cancel) };
+    let options = DescribeOptions { cancel: Some(&cancel), ..DescribeOptions::default() };
 
     let current = image();
     let started = Instant::now();
@@ -237,7 +237,8 @@ async fn cancelling_before_the_request_sends_nothing() {
     let server = openai_server("A cat.").await;
     let mut describer = openai_describer(&server);
     let cancel = || true;
-    let options = DescribeOptions { cancel: Some(&cancel) };
+    // A voice turn: not even the user's line may reach the history.
+    let options = DescribeOptions { cancel: Some(&cancel), user_text: Some("hello") };
 
     let result = describer.describe_with(&image(), None, &options).await;
 
@@ -251,10 +252,41 @@ async fn a_cancel_function_that_never_fires_changes_nothing() {
     let server = openai_server("A cat.").await;
     let mut describer = openai_describer(&server);
     let cancel = || false;
-    let options = DescribeOptions { cancel: Some(&cancel) };
+    let options = DescribeOptions { cancel: Some(&cancel), ..DescribeOptions::default() };
 
     let comment = describer.describe_with(&image(), None, &options).await.unwrap();
 
     assert_eq!(comment, "A cat.");
     assert_eq!(describer.history(), ["A cat."]);
+}
+
+#[tokio::test]
+async fn what_the_user_said_is_added_to_the_prompt_and_the_history() {
+    let server = openai_server("comment").await;
+    let mut describer = openai_describer(&server);
+    describer.max_history_size = 5;
+    describer.prompts.history_prompt = "HISTORY".into();
+    describer.prompts.prompt = "NEXT".into();
+    describer.prompts.first_prompt = "FIRST".into();
+    describer.prompts.voice_prompt = "SAID <|speech|> END".into();
+    let speaking = |text| DescribeOptions { user_text: Some(text), ..DescribeOptions::default() };
+
+    // The first frame, with the user speaking: first_prompt, then the voice prompt.
+    describer.describe_with(&image(), None, &speaking("hello")).await.unwrap();
+    // A later frame, with history and speech.
+    describer.describe_with(&image(), Some(&image()), &speaking("what is that?")).await.unwrap();
+    // Without speech, nothing is added.
+    describer.describe(&image(), Some(&image())).await.unwrap();
+
+    let texts: Vec<String> = bodies(&server).await.iter().map(user_text).collect();
+    assert_eq!(texts[0], "FIRST\n\nSAID hello END");
+    assert_eq!(
+        texts[1],
+        "HISTORY\nUser said: hello\ncomment\n---\nNEXT\n\nSAID what is that? END"
+    );
+    assert!(!texts[2].contains("SAID"), "{}", texts[2]);
+    assert_eq!(
+        describer.history(),
+        ["User said: hello", "comment", "User said: what is that?", "comment", "comment"]
+    );
 }

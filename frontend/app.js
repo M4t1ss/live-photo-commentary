@@ -74,6 +74,7 @@ const cfgPromptText      = document.getElementById("cfg-prompt");
 const cfgFirstPrompt     = document.getElementById("cfg-first-prompt");
 const cfgHistoryPrompt   = document.getElementById("cfg-history-prompt");
 const cfgCompactPrompt   = document.getElementById("cfg-compact-prompt");
+const cfgVoicePrompt     = document.getElementById("cfg-voice-prompt");
 const cfgGreetingPrompt  = document.getElementById("cfg-greeting-prompt");
 const cfgFarewellPrompt  = document.getElementById("cfg-farewell-prompt");
 const cfgLonelyPrompt    = document.getElementById("cfg-lonely-prompt");
@@ -509,6 +510,7 @@ function handleMessage(data) {
       cfgFirstPrompt.value   = data.fields?.first_prompt ?? "";
       cfgHistoryPrompt.value = data.fields?.history_prompt ?? "";
       cfgCompactPrompt.value = data.fields?.compact_prompt ?? "";
+      cfgVoicePrompt.value   = data.fields?.voice_prompt ?? "";
       cfgGreetingPrompt.value = data.fields?.greeting_prompt ?? "";
       cfgFarewellPrompt.value = data.fields?.farewell_prompt ?? "";
       cfgLonelyPrompt.value   = data.fields?.lonely_prompt ?? "";
@@ -1110,6 +1112,7 @@ modalOk.addEventListener("click", () => {
       first_prompt:    cfgFirstPrompt.value,
       history_prompt:  cfgHistoryPrompt.value,
       compact_prompt:  cfgCompactPrompt.value,
+      voice_prompt:    cfgVoicePrompt.value,
       greeting_prompt: cfgGreetingPrompt.value,
       farewell_prompt: cfgFarewellPrompt.value,
       lonely_prompt:   cfgLonelyPrompt.value,
@@ -1188,6 +1191,7 @@ promptsetSave.addEventListener("click", () => {
       first_prompt:    cfgFirstPrompt.value,
       history_prompt:  cfgHistoryPrompt.value,
       compact_prompt:  cfgCompactPrompt.value,
+      voice_prompt:    cfgVoicePrompt.value,
       greeting_prompt: cfgGreetingPrompt.value,
       farewell_prompt: cfgFarewellPrompt.value,
       lonely_prompt:   cfgLonelyPrompt.value,

@@ -22,6 +22,11 @@ pub type CancelFn<'a> = &'a (dyn Fn() -> bool + Sync);
 pub struct DescribeOptions<'a> {
     /// See [`CancelFn`]. `None`: never cancelled.
     pub cancel: Option<CancelFn<'a>>,
+    /// What the user said, if they did: [`Prompts::voice_prompt`] with it is
+    /// added to the prompt, and once the comment has been made, `User said:`
+    /// and the speech go into the history just before it. `None`: a normal
+    /// description.
+    pub user_text: Option<&'a str>,
 }
 
 pub struct Describer {
@@ -97,11 +102,18 @@ impl Describer {
             }
             None => self.prompts.first_prompt.clone(),
         };
+        let user_prompt = match options.user_text {
+            Some(speech) => format!("{user_prompt}\n\n{}", self.prompts.voice_text(speech)),
+            None => user_prompt,
+        };
 
         let response = self
             .run_prompt(&user_prompt, &images, Some(&self.prompts.system_prompt), cancel)
             .await?;
         let comment = self.extract_comment(response);
+        if let Some(speech) = options.user_text {
+            self.history.push(format!("User said: {speech}"));
+        }
         self.history.push(comment.clone());
         Ok(comment)
     }

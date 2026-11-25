@@ -21,8 +21,9 @@ use crate::events::{Event, ModelKind};
 use crate::pipeline::Pipeline;
 use crate::promptsets::{Promptset, Promptsets};
 
-/// The five fields pushed onto the live describer.
-const DESCRIBER_FIELDS: [&str; 5] = ["system_prompt", "prompt", "first_prompt", "history_prompt", "compact_prompt"];
+/// The six fields pushed onto the live describer.
+const DESCRIBER_FIELDS: [&str; 6] =
+    ["system_prompt", "prompt", "first_prompt", "history_prompt", "compact_prompt", "voice_prompt"];
 /// The three system-message prompts.
 const SYSTEM_MESSAGE_FIELDS: [&str; 3] = ["greeting_prompt", "farewell_prompt", "lonely_prompt"];
 
@@ -185,7 +186,7 @@ impl SessionState {
         self.sys_msg_override.clear();
     }
 
-    /// All eight fields as the Settings text boxes should show them: `base`
+    /// All nine fields as the Settings text boxes should show them: `base`
     /// with both ad-hoc overrides layered on top, tags left as written.
     pub fn displayed_fields(&self, base: &Promptset) -> Promptset {
         let mut fields = base.clone();
@@ -196,7 +197,7 @@ impl SessionState {
         fields
     }
 
-    /// The five describer fields: `base` (the active promptset) with the
+    /// The six describer fields: `base` (the active promptset) with the
     /// ad-hoc override layered on top, tag-substituted.
     pub fn describer_fields(&self, base: &Promptset, tag_names: &[&str]) -> Promptset {
         let mut fields = base.clone();
@@ -206,7 +207,7 @@ impl SessionState {
         fields.substitute_tags(tag_names)
     }
 
-    /// All eight fields, merged for pre-generation and tag-substituted. Every
+    /// All nine fields, merged for pre-generation and tag-substituted. Every
     /// field is substituted before the describer fields and the three message
     /// prompts are read from the result, so a custom greeting, farewell or
     /// lonely prompt that itself contains the tag placeholder gets it
@@ -229,6 +230,7 @@ fn apply_fields(target: &mut Promptset, values: &HashMap<String, String>) {
             "first_prompt" => target.first_prompt = value.clone(),
             "history_prompt" => target.history_prompt = value.clone(),
             "compact_prompt" => target.compact_prompt = value.clone(),
+            "voice_prompt" => target.voice_prompt = value.clone(),
             "greeting_prompt" => target.greeting_prompt = value.clone(),
             "farewell_prompt" => target.farewell_prompt = value.clone(),
             "lonely_prompt" => target.lonely_prompt = value.clone(),
@@ -466,7 +468,7 @@ impl AppState {
         self.avatar_models.tag_names(&model).unwrap_or_default()
     }
 
-    /// The five describer fields for the active promptset, with the
+    /// The six describer fields for the active promptset, with the
     /// session's ad-hoc override layered on top.
     pub fn describer_fields(&self) -> Promptset {
         let base = self.active_promptset();
@@ -860,6 +862,18 @@ model runs on: {:?}", vlm_describer::preferred_gpu(&devices));
 
         session.clear();
         assert_eq!(session.displayed_fields(&base), base);
+    }
+
+    #[test]
+    fn a_voice_prompt_override_reaches_the_describer_but_not_the_system_messages() {
+        let mut session = SessionState::default();
+        let base = Promptset::default();
+        session.set_override(&HashMap::from([("voice_prompt".to_string(), "they said <|speech|> {x}".to_string())]));
+
+        let for_describer = session.describer_fields(&base, &[]);
+        assert_eq!(for_describer.voice_prompt, "they said <|speech|> {x}");
+        assert_eq!(session.displayed_fields(&base).voice_prompt, "they said <|speech|> {x}");
+        assert_eq!(system_message_prompts(&session.pregen_fields(&base, &[])), system_message_prompts(&base));
     }
 
     #[test]

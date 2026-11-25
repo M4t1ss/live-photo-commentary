@@ -30,15 +30,16 @@ use crate::events::{ChunkEvent, ChunkOrigin, Event, EventSink};
 pub trait DescriberOps: Send {
     fn set_max_history_size(&mut self, n: usize);
     fn set_prompts(&mut self, prompts: vlm_describer::Prompts);
-    /// `cancelled` returns true once the result would be discarded anyway
-    /// (the generation moved on); the describer should then give up early.
-    /// Its error is not reported, because the worker drops the results and
-    /// errors of a stale generation.
+    /// `options.cancel` returns true once the result would be discarded
+    /// anyway (the generation moved on); the describer should then give up
+    /// early. Its error is not reported, because the worker drops the results
+    /// and errors of a stale generation. `options.user_text` is what the user
+    /// said, for a voice turn.
     fn describe(
         &mut self,
         current: &DynamicImage,
         previous: Option<&DynamicImage>,
-        cancelled: vlm_describer::CancelFn<'_>,
+        options: &vlm_describer::DescribeOptions<'_>,
     ) -> impl Future<Output = Result<String, String>> + Send;
     fn generate(&mut self, prompt: &str, system_prompt: Option<&str>) -> impl Future<Output = Result<String, String>> + Send;
     fn reset(&mut self);
@@ -57,10 +58,9 @@ impl DescriberOps for vlm_describer::Describer {
         &mut self,
         current: &DynamicImage,
         previous: Option<&DynamicImage>,
-        cancelled: vlm_describer::CancelFn<'_>,
+        options: &vlm_describer::DescribeOptions<'_>,
     ) -> Result<String, String> {
-        let options = vlm_describer::DescribeOptions { cancel: Some(cancelled) };
-        vlm_describer::Describer::describe_with(self, current, previous, &options).await.map_err(|e| e.to_string())
+        vlm_describer::Describer::describe_with(self, current, previous, options).await.map_err(|e| e.to_string())
     }
 
     async fn generate(&mut self, prompt: &str, system_prompt: Option<&str>) -> Result<String, String> {
@@ -95,7 +95,14 @@ impl SynthesizerOps for kokoro_timestamped::KokoroSynthesizer {
 // ── Jobs ────────────────────────────────────────────────────────────────────
 
 enum VlmJob<D> {
-    Frame { gen: u64, current: Arc<DynamicImage>, previous: Option<Arc<DynamicImage>>, max_history_size: usize },
+    Frame {
+        gen: u64,
+        current: Arc<DynamicImage>,
+        previous: Option<Arc<DynamicImage>>,
+        max_history_size: usize,
+        /// What the user said, for a voice turn.
+        user_text: Option<String>,
+    },
     SetDescriber(Option<D>, mpsc::Sender<()>),
     SetPrompts(vlm_describer::Prompts),
     Generate { prompt: String, system_prompt: Option<String>, reply: mpsc::Sender<Result<String, String>> },
@@ -174,7 +181,7 @@ fn run_vlm_worker<D, S>(
 
     while let Ok(job) = rx.recv() {
         match job {
-            VlmJob::Frame { gen, current, previous, max_history_size } => {
+            VlmJob::Frame { gen, current, previous, max_history_size, user_text } => {
                 // Dequeuing frees the "queue of one" slot immediately, even
                 // though describing is still ahead of us.
                 pending_frame.store(false, Ordering::SeqCst);
@@ -189,7 +196,8 @@ fn run_vlm_worker<D, S>(
                 // A newer generation (stop, or a new frame) makes this result
                 // worthless, so the describer is told to stop generating it.
                 let cancelled = || gen != generation.load(Ordering::SeqCst);
-                let result = rt.block_on(d.describe(&current, previous.as_deref(), &cancelled));
+                let options = vlm_describer::DescribeOptions { cancel: Some(&cancelled), user_text: user_text.as_deref() };
+                let result = rt.block_on(d.describe(&current, previous.as_deref(), &options));
                 // Checked before the result, so a cancelled description (an
                 // error) and a stale one are both dropped silently.
                 if cancelled() {
@@ -492,6 +500,7 @@ where
             current: image,
             previous,
             max_history_size: cfg.max_history_size as usize,
+            user_text: None,
         });
     }
 
@@ -651,6 +660,8 @@ mod tests {
         started: Option<mpsc::Sender<()>>,
         /// Set by `describe` when it saw the cancel function fire.
         saw_cancel: Arc<AtomicBool>,
+        /// The `user_text` of each `describe` call, in order.
+        seen_user_text: Arc<Mutex<Vec<Option<String>>>>,
     }
 
     impl FakeDescriber {
@@ -661,6 +672,7 @@ mod tests {
                 calls: Arc::new(AtomicU64::new(0)),
                 started: None,
                 saw_cancel: Arc::new(AtomicBool::new(false)),
+                seen_user_text: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
@@ -695,9 +707,12 @@ mod tests {
             &mut self,
             _current: &DynamicImage,
             _previous: Option<&DynamicImage>,
-            cancelled: vlm_describer::CancelFn<'_>,
+            options: &vlm_describer::DescribeOptions<'_>,
         ) -> Result<String, String> {
+            let never = || false;
+            let cancelled = options.cancel.unwrap_or(&never);
             self.calls.fetch_add(1, Ordering::SeqCst);
+            self.seen_user_text.lock().unwrap().push(options.user_text.map(str::to_string));
             if let Some(started) = &self.started {
                 let _ = started.send(());
                 let give_up = Instant::now() + Duration::from_secs(5);
@@ -985,6 +1000,34 @@ mod tests {
         let events = events.lock().unwrap();
         assert!(!events.iter().any(|e| matches!(e, Event::Error { message } if message == "TTS busy")));
         assert!(events.iter().any(|e| matches!(e, Event::TtsDone { .. })), "the new reply should be spoken");
+    }
+
+    #[test]
+    fn what_the_user_said_reaches_the_describer_and_a_normal_frame_carries_none() {
+        let (sink, _events) = capturing_sink();
+        let pipeline = new_pipeline(sink);
+        let describer = FakeDescriber::ok("a comment");
+        let seen = Arc::clone(&describer.seen_user_text);
+        pipeline.set_describer(Some(describer));
+        pipeline.set_synthesizer(Some(FakeSynthesizer::empty()));
+
+        // A voice turn is built by the voice flow; here its job is sent directly.
+        let gen = pipeline.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        pipeline
+            .vlm_tx
+            .send(VlmJob::Frame {
+                gen,
+                current: Arc::new(test_image()),
+                previous: None,
+                max_history_size: 0,
+                user_text: Some("what is that?".to_string()),
+            })
+            .unwrap();
+        pipeline.flush_vlm();
+        pipeline.trigger(&Config::default(), test_image());
+        pipeline.flush_vlm();
+
+        assert_eq!(*seen.lock().unwrap(), [Some("what is that?".to_string()), None]);
     }
 
     #[test]
