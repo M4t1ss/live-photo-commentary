@@ -16,6 +16,7 @@ mod promptsets;
 mod screensaver;
 mod screenshot;
 mod state;
+mod voice;
 mod voice_turn;
 
 use screenshot::ScreenshotState;
@@ -110,6 +111,8 @@ pub fn run() {
             commands::get_config,
             commands::set_config,
             commands::get_models,
+            commands::list_input_devices,
+            commands::asr_models,
             commands::start_cycle,
             commands::stop_cycle,
             commands::list_promptsets,

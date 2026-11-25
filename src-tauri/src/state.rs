@@ -20,6 +20,7 @@ use crate::config::Config;
 use crate::events::{Event, ModelKind};
 use crate::pipeline::Pipeline;
 use crate::promptsets::{Promptset, Promptsets};
+use crate::voice::asr::{AsrWorker, Whisper};
 
 /// The six fields pushed onto the live describer.
 const DESCRIBER_FIELDS: [&str; 6] =
@@ -32,11 +33,14 @@ const SYSTEM_MESSAGE_FIELDS: [&str; 3] = ["greeting_prompt", "farewell_prompt", 
 pub struct ReloadTriggers {
     pub vlm: bool,
     pub tts: bool,
+    pub asr: bool,
 }
 
 /// Decides which models need reloading after `old` becomes `new`: the VLM
 /// provider, model or overrides changed, or the active provider's own API
-/// key did; the TTS voice changed.
+/// key did; the TTS voice changed; voice input was switched on or off, or its
+/// model changed while it is on (changing between push-to-talk and the
+/// threshold keeps the model).
 pub fn reload_triggers(old: &Config, new: &Config) -> ReloadTriggers {
     let api_key_changed = match new.vlm_provider.as_deref() {
         Some("gemini") => old.gemini_api_key != new.gemini_api_key,
@@ -52,7 +56,9 @@ pub fn reload_triggers(old: &Config, new: &Config) -> ReloadTriggers {
         || old.vlm_model_overrides != new.vlm_model_overrides
         || api_key_changed;
     let tts = old.tts_voice != new.tts_voice;
-    ReloadTriggers { vlm, tts }
+    let voice_on = |cfg: &Config| cfg.voice_activation != "off";
+    let asr = voice_on(old) != voice_on(new) || (voice_on(new) && old.voice_model != new.voice_model);
+    ReloadTriggers { vlm, tts, asr }
 }
 
 /// Parses `tts_voice` as a plain voice name, or as a JSON object of
@@ -321,6 +327,8 @@ pub struct AppState {
     tts_ready: AtomicBool,
     system_messages_ready: AtomicBool,
     model_errors: Mutex<HashMap<String, String>>,
+    /// Speech recognition, for voice input; no model until voice input is on.
+    asr: Arc<AsrWorker>,
     model_dir: PathBuf,
     animations_dir: PathBuf,
 }
@@ -374,6 +382,7 @@ impl AppState {
             tts_ready: AtomicBool::new(false),
             system_messages_ready: AtomicBool::new(true),
             model_errors: Mutex::new(HashMap::new()),
+            asr: Arc::new(AsrWorker::new()),
             model_dir,
             animations_dir: animations_dir(app),
         })
@@ -381,6 +390,11 @@ impl AppState {
 
     pub fn pipeline(&self) -> &Arc<AppPipeline> {
         &self.pipeline
+    }
+
+    #[allow(dead_code)] // used by the voice controller
+    pub fn asr(&self) -> &Arc<AsrWorker> {
+        &self.asr
     }
 
     pub fn promptsets(&self) -> &Promptsets {
@@ -645,9 +659,49 @@ impl AppState {
         }
     }
 
-    /// Loads both models in parallel at startup.
+    /// (Re)loads the speech recognition model for the current config: none
+    /// while voice input is off (which frees the previous one), else the
+    /// chosen one, downloaded first if needed, with progress and errors on the
+    /// channel. Failing leaves voice input without a model; it does not stop
+    /// the cycle.
+    pub async fn reinit_asr(self: &Arc<Self>) {
+        self.model_errors.lock().expect("model_errors mutex should not be poisoned").remove("asr");
+        let cfg = self.config();
+        let worker = Arc::clone(&self.asr);
+        if cfg.voice_activation == "off" {
+            let _ = tokio::task::spawn_blocking(move || worker.set_model(None)).await;
+            return;
+        }
+
+        let progress: vlm_describer::DownloadProgress = {
+            let this = Arc::clone(self);
+            Arc::new(move |file, downloaded, total| {
+                this.send(Event::DownloadProgress { file: file.to_string(), downloaded, total });
+            })
+        };
+        let model = crate::voice::models::find(&cfg.voice_model);
+        let loaded = match crate::voice::models::download(model, progress).await {
+            Ok(path) => {
+                tokio::task::spawn_blocking(move || {
+                    let whisper = Whisper::load(&path)?;
+                    worker.set_model(Some(Box::new(whisper)));
+                    Ok(())
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+            }
+            Err(message) => Err(message),
+        };
+        if let Err(message) = loaded {
+            let message = format!("Speech recognition init failed: {message}");
+            self.model_errors.lock().expect("model_errors mutex should not be poisoned").insert("asr".to_string(), message.clone());
+            self.send(Event::Error { message });
+        }
+    }
+
+    /// Loads the models in parallel at startup.
     pub async fn init_models(self: &Arc<Self>) {
-        tokio::join!(self.reinit_describer(), self.reinit_synthesizer());
+        tokio::join!(self.reinit_describer(), self.reinit_synthesizer(), self.reinit_asr());
     }
 
     /// `set_describer`/`set_synthesizer` block the calling thread until the
@@ -672,12 +726,12 @@ mod tests {
     fn reload_triggers_on_provider_model_or_overrides_change() {
         let old = Config::default();
         let new = Config { vlm_model: Some("some/model".to_string()), ..Config::default() };
-        assert_eq!(reload_triggers(&old, &new), ReloadTriggers { vlm: true, tts: false });
+        assert_eq!(reload_triggers(&old, &new), ReloadTriggers { vlm: true, ..ReloadTriggers::default() });
 
         let old = new.clone();
         let mut new = old.clone();
         new.vlm_model_overrides = Some("{}".to_string());
-        assert_eq!(reload_triggers(&old, &new), ReloadTriggers { vlm: true, tts: false });
+        assert_eq!(reload_triggers(&old, &new), ReloadTriggers { vlm: true, ..ReloadTriggers::default() });
     }
 
     #[test]
@@ -701,6 +755,35 @@ mod tests {
         let triggers = reload_triggers(&old, &new);
         assert!(triggers.tts);
         assert!(!triggers.vlm);
+    }
+
+    #[test]
+    fn the_speech_model_loads_when_voice_input_is_switched_on_and_goes_when_it_is_switched_off() {
+        let off = Config::default();
+        let on = Config { voice_activation: "push_to_talk".to_string(), ..Config::default() };
+        assert_eq!(reload_triggers(&off, &on), ReloadTriggers { asr: true, ..ReloadTriggers::default() });
+        assert_eq!(reload_triggers(&on, &off), ReloadTriggers { asr: true, ..ReloadTriggers::default() });
+    }
+
+    #[test]
+    fn the_speech_model_reloads_for_another_model_only_while_voice_input_is_on() {
+        let on = Config { voice_activation: "push_to_talk".to_string(), ..Config::default() };
+        let other_model = Config { voice_model: "small".to_string(), ..on.clone() };
+        assert!(reload_triggers(&on, &other_model).asr);
+
+        let off = Config::default();
+        let off_other_model = Config { voice_model: "small".to_string(), ..off.clone() };
+        assert!(!reload_triggers(&off, &off_other_model).asr, "nothing is loaded to replace");
+    }
+
+    #[test]
+    fn the_speech_model_stays_for_a_change_of_how_voice_input_starts_or_of_the_rest() {
+        let ptt = Config { voice_activation: "push_to_talk".to_string(), ..Config::default() };
+        let threshold = Config { voice_activation: "threshold".to_string(), ..ptt.clone() };
+        assert!(!reload_triggers(&ptt, &threshold).asr);
+
+        let other = Config { voice_language: "ja".to_string(), voice_input_device: Some("x".to_string()), ..ptt.clone() };
+        assert_eq!(reload_triggers(&ptt, &other), ReloadTriggers::default());
     }
 
     #[test]

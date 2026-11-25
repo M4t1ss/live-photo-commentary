@@ -29,6 +29,21 @@ pub async fn download_model(
     mmproj_file: &str,
     progress: Option<DownloadProgress>,
 ) -> Result<(PathBuf, PathBuf)> {
+    let repo = open_repo(repo)?;
+    let model = download_file(&repo, model_file, progress.clone()).await?;
+    let mmproj = download_file(&repo, mmproj_file, progress).await?;
+    Ok((model, mmproj))
+}
+
+/// Downloads one file of the Hugging Face repo `repo` (`owner/name`) and
+/// returns its local path, with the same cache and progress behaviour as
+/// [`download_model`]. For files that aren't a model with a projector, such
+/// as a speech recognition model.
+pub async fn download_repo_file(repo: &str, file: &str, progress: Option<DownloadProgress>) -> Result<PathBuf> {
+    download_file(&open_repo(repo)?, file, progress).await
+}
+
+fn open_repo(repo: &str) -> Result<HFRepository<RepoTypeModel>> {
     let (owner, name) = repo.split_once('/').ok_or_else(|| Error::InvalidRepo(repo.to_string()))?;
     let mut builder = HFClient::builder();
     if let Some(cache_dir) = hf_cache_dir() {
@@ -37,10 +52,7 @@ pub async fn download_model(
     let client = builder
         .build()
         .map_err(|source| Error::Download { file: repo.to_string(), source })?;
-    let repo = client.model(owner, name);
-    let model = download_file(&repo, model_file, progress.clone()).await?;
-    let mmproj = download_file(&repo, mmproj_file, progress).await?;
-    Ok((model, mmproj))
+    Ok(client.model(owner, name))
 }
 
 /// Uses the cached file if there is one, without checking for updates.

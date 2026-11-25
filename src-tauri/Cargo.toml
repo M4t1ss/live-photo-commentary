@@ -53,6 +53,11 @@ serde_yaml_ng = "0.10"
 hound = "3.5"
 tauri-plugin-opener = "2"
 sha2 = "0.10"
+# Voice input: microphone capture, resampling to 16 kHz, and whisper.cpp. No GPU
+# features: the speech is short, and the GPU is llama.cpp's.
+cpal = "0.18"
+rubato = "5.1"
+whisper-rs = { version = "0.16", features = ["log_backend"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]

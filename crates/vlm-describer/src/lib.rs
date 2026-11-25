@@ -34,8 +34,8 @@ pub use error::{Error, Result};
 pub use gemini::Gemini;
 #[cfg(feature = "llama-cpp")]
 pub use llama_cpp::{
-    BackendDevice, DownloadProgress, LlamaCpp, Sampling, backend_devices, download_model, load_backends,
-    preferred_gpu,
+    BackendDevice, DownloadProgress, LlamaCpp, Sampling, backend_devices, download_model, download_repo_file,
+    load_backends, preferred_gpu,
 };
 pub use openai::OpenAi;
 pub use prompts::{

@@ -80,6 +80,10 @@ pub fn set_config(
         let app_state = Arc::clone(&app_state);
         tauri::async_runtime::spawn(async move { app_state.reinit_describer().await });
     }
+    if triggers.asr {
+        let app_state = Arc::clone(&app_state);
+        tauri::async_runtime::spawn(async move { app_state.reinit_asr().await });
+    }
     if triggers.tts {
         tauri::async_runtime::spawn(async move { app_state.reinit_synthesizer().await });
     }
@@ -221,6 +225,19 @@ pub fn upload_model(request: tauri::ipc::Request<'_>, state: State<'_, Arc<AppSt
     let name = state.avatar_models().save_user_model(&filename, body)?;
     let names = state.avatar_models().list_names();
     Ok(UploadPayload { name, names })
+}
+
+/// The microphones, the system default first, for the voice input settings.
+#[tauri::command]
+pub async fn list_input_devices() -> Result<Vec<crate::voice::audio::InputDevice>, String> {
+    // Asking the audio system takes a moment.
+    tauri::async_runtime::spawn_blocking(crate::voice::audio::list_input_devices).await.map_err(|e| e.to_string())
+}
+
+/// The speech recognition models to choose from.
+#[tauri::command]
+pub fn asr_models() -> Vec<&'static crate::voice::models::AsrModel> {
+    crate::voice::models::MODELS.iter().collect()
 }
 
 /// Which GPU backend local models run on, and the state of the optional CUDA

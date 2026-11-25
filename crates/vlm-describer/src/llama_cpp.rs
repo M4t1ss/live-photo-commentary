@@ -6,5 +6,5 @@ mod download;
 mod local;
 
 pub use backends::{BackendDevice, backend_devices, load_backends, preferred_gpu};
-pub use download::{DownloadProgress, download_model};
+pub use download::{DownloadProgress, download_model, download_repo_file};
 pub use local::{LlamaCpp, Sampling};

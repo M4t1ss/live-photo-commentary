@@ -27,6 +27,16 @@ pub struct Config {
     pub active_promptset: String,
     pub active_model: String,
     pub idle_to_dance_secs: u32,
+    /// How a voice turn starts: `"off"`, `"push_to_talk"` or `"threshold"`.
+    /// The speech recognition model is only loaded when this isn't `"off"`.
+    pub voice_activation: String,
+    /// A name from `voice::models::MODELS`.
+    pub voice_model: String,
+    /// A language code such as `"en"`, or `"auto"` to detect it.
+    pub voice_language: String,
+    /// The id of the microphone (`voice::audio::InputDevice::id`); `None` for
+    /// the operating system's default.
+    pub voice_input_device: Option<String>,
 }
 
 impl Default for Config {
@@ -47,6 +57,10 @@ impl Default for Config {
             active_promptset: "default".to_string(),
             active_model: "default".to_string(),
             idle_to_dance_secs: 180,
+            voice_activation: "off".to_string(),
+            voice_model: crate::voice::models::DEFAULT_MODEL.to_string(),
+            voice_language: "auto".to_string(),
+            voice_input_device: None,
         }
     }
 }
@@ -138,6 +152,10 @@ impl Config {
             active_promptset: get("ACTIVE_PROMPTSET").map(str::to_string).unwrap_or(d.active_promptset),
             active_model: get("ACTIVE_MODEL").map(str::to_string).unwrap_or(d.active_model),
             idle_to_dance_secs: parse_or_u32("IDLE_TO_DANCE_SECS", d.idle_to_dance_secs),
+            voice_activation: d.voice_activation,
+            voice_model: d.voice_model,
+            voice_language: d.voice_language,
+            voice_input_device: d.voice_input_device,
         }
         // MODEL_DIR is intentionally ignored: Rust resolves the bundled models
         // directory itself (see avatar.rs), so the field doesn't exist here.
@@ -185,6 +203,20 @@ mod tests {
         assert_eq!(d.active_promptset, "default");
         assert_eq!(d.active_model, "default");
         assert_eq!(d.idle_to_dance_secs, 180);
+    }
+
+    #[test]
+    fn voice_input_is_off_by_default_and_a_settings_file_without_it_still_loads() {
+        let d = Config::default();
+        assert_eq!(d.voice_activation, "off");
+        assert_eq!(d.voice_model, "base");
+        assert_eq!(d.voice_language, "auto");
+        assert_eq!(d.voice_input_device, None);
+
+        // A settings.json from before voice input: serde fills in the defaults.
+        let old: Config = serde_json::from_str(r#"{"tts_voice": "af_nicole"}"#).unwrap();
+        assert_eq!(old.voice_activation, "off");
+        assert_eq!(old.tts_voice, "af_nicole");
     }
 
     #[test]
