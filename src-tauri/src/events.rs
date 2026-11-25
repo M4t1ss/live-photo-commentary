@@ -84,6 +84,19 @@ pub enum Event {
     Models { vlm: Vec<(String, Vec<CatalogueEntry>)>, tts: Vec<String> },
     PromptsetLoaded { name: String, fields: Promptset, names: Vec<String> },
     Config { data: Config },
+    /// A voice turn began (the hotkey was pressed): the frontend stops its
+    /// audio and its pending screenshot timer.
+    VoiceListening { turn: u64 },
+    /// Take the screenshot for this voice turn now, and pass `turn` back to
+    /// `take_screenshot`.
+    VoiceCapture { turn: u64 },
+    /// The user is done speaking; the recording is being transcribed.
+    VoiceTranscribing,
+    /// What the user said, for display.
+    VoiceTranscript { text: String },
+    /// The voice turn ended without anything to answer (nothing recognised,
+    /// or it failed): the frontend goes back to its normal screenshot timing.
+    VoiceEmpty,
 }
 
 /// Where the pipeline and model lifecycle send their events. The app's sink
@@ -161,6 +174,11 @@ impl Event {
                 json!({ "type": "promptset_loaded", "name": name, "fields": fields, "names": names })
             }
             Event::Config { data } => json!({ "type": "config", "data": data }),
+            Event::VoiceListening { turn } => json!({ "type": "voice_listening", "turn": turn }),
+            Event::VoiceCapture { turn } => json!({ "type": "voice_capture", "turn": turn }),
+            Event::VoiceTranscribing => json!({ "type": "voice_transcribing" }),
+            Event::VoiceTranscript { text } => json!({ "type": "voice_transcript", "text": text }),
+            Event::VoiceEmpty => json!({ "type": "voice_empty" }),
         }
     }
 }
@@ -236,6 +254,19 @@ mod tests {
             Event::Error { message: "No VLM configured".to_string() }.to_json(),
             serde_json::json!({ "type": "error", "message": "No VLM configured" })
         );
+    }
+
+    #[test]
+    fn voice_event_shapes() {
+        use serde_json::json;
+        assert_eq!(Event::VoiceListening { turn: 2 }.to_json(), json!({ "type": "voice_listening", "turn": 2 }));
+        assert_eq!(Event::VoiceCapture { turn: 2 }.to_json(), json!({ "type": "voice_capture", "turn": 2 }));
+        assert_eq!(Event::VoiceTranscribing.to_json(), json!({ "type": "voice_transcribing" }));
+        assert_eq!(
+            Event::VoiceTranscript { text: "what is that?".to_string() }.to_json(),
+            json!({ "type": "voice_transcript", "text": "what is that?" })
+        );
+        assert_eq!(Event::VoiceEmpty.to_json(), json!({ "type": "voice_empty" }));
     }
 
     #[test]

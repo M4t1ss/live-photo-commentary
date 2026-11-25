@@ -145,6 +145,9 @@ pub async fn take_screenshot(
     app_state: State<'_, std::sync::Arc<crate::state::AppState>>,
     monitor_idx: Option<u32>,
     clip: Option<[i32; 4]>,
+    // The number from a `voice_capture` event: the frame belongs to that
+    // voice turn instead of the normal cycle.
+    voice_turn: Option<u64>,
 ) -> Result<(), String> {
     if !app_state.pipeline().running() {
         return Ok(());
@@ -192,7 +195,10 @@ pub async fn take_screenshot(
             Ok(image) => {
                 // The cycle may have been stopped while the capture ran.
                 if app_state.pipeline().running() {
-                    app_state.pipeline().trigger(&app_state.config(), image);
+                    match voice_turn {
+                        Some(turn) => app_state.pipeline().voice_set_frame(&app_state.config(), turn, image),
+                        None => app_state.pipeline().trigger(&app_state.config(), image),
+                    }
                 }
                 Ok(())
             }

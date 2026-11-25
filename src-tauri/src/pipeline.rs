@@ -21,6 +21,7 @@ use image::DynamicImage;
 use crate::config::Config;
 use crate::difference;
 use crate::events::{ChunkEvent, ChunkOrigin, Event, EventSink};
+use crate::voice_turn::VoiceTurn;
 
 // ── Describer/synthesizer traits ───────────────────────────────────────────
 
@@ -353,6 +354,8 @@ pub struct Pipeline<D, S> {
     generation: Arc<AtomicU64>,
     running: Arc<AtomicBool>,
     frame_state: Mutex<FrameState>,
+    /// The voice turn in progress, if any.
+    voice: Mutex<VoiceTurn>,
     pending_frame: Arc<AtomicBool>,
     /// The generation of the cycle TTS job waiting in the TTS queue, or 0 for
     /// none. Only the clones handed to the workers are used in production;
@@ -402,6 +405,7 @@ where
             generation,
             running: Arc::new(AtomicBool::new(false)),
             frame_state: Mutex::new(FrameState { prev_image: None, last_rejected: false }),
+            voice: Mutex::new(VoiceTurn::default()),
             pending_frame,
             pending_cycle_tts,
             pregen_messages: Mutex::new(HashMap::new()),
@@ -451,15 +455,27 @@ where
     }
 
     /// Diffs `image` against the previous frame, decides whether to push it
-    /// to the VLM, and sends the `frame`/`skipped`/`busy` events.
+    /// to the VLM, and sends the `frame`/`skipped`/`busy` events. Ignored
+    /// while a voice turn is in progress: a screenshot taken for the normal
+    /// cycle that arrives late must not get ahead of the voice turn's.
     pub fn trigger(&self, cfg: &Config, image: DynamicImage) {
+        if self.voice.lock().expect("voice mutex should not be poisoned").is_active() {
+            return;
+        }
+        self.submit(cfg, image, None);
+    }
+
+    /// The common part of `trigger` and a finished voice turn. A voice turn
+    /// (`user_text` is set) is always described: it skips the difference
+    /// check, and is not dropped as "busy".
+    fn submit(&self, cfg: &Config, image: DynamicImage, user_text: Option<String>) {
         let image = Arc::new(image);
         let mut state = self.frame_state.lock().expect("frame state mutex should not be poisoned");
         let previous = state.prev_image.clone();
 
         let mut diff = None;
         if let Some(prev) = &previous {
-            if cfg.difference_threshold > 0.0 {
+            if cfg.difference_threshold > 0.0 && user_text.is_none() {
                 match difference::difference(&image, prev, &cfg.difference_measure) {
                     Ok(d) => diff = Some(d),
                     Err(message) => (self.sink)(Event::Error { message }),
@@ -491,7 +507,9 @@ where
             return;
         }
 
-        if self.pending_frame.swap(true, Ordering::SeqCst) {
+        // A voice turn has bumped the generation (`interrupt`), so a job still
+        // queued from before is dropped by the worker; it is not "busy".
+        if self.pending_frame.swap(true, Ordering::SeqCst) && user_text.is_none() {
             (self.sink)(Event::Busy { message: "VLM busy, cycle skipped".to_string() });
             return;
         }
@@ -500,8 +518,91 @@ where
             current: image,
             previous,
             max_history_size: cfg.max_history_size as usize,
-            user_text: None,
+            user_text,
         });
+    }
+
+    /// Stops what the avatar is doing for the user to speak: the generation
+    /// moves on, so a description in progress is abandoned (see
+    /// `DescriberOps::describe`) and no more speech of the old turn is sent.
+    /// Speech already being synthesized finishes, and is dropped.
+    pub fn interrupt(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.pending_frame.store(false, Ordering::SeqCst);
+    }
+
+    // ── Voice turns ──
+    // The voice controller drives these; a turn ends in `submit` (both
+    // parts arrived), `voice_abort`, or a stop of the cycle.
+
+    /// Starts a voice turn, interrupting whatever is going on, and returns its
+    /// number. Sends `voice_listening`.
+    #[allow(dead_code)] // called by the voice controller
+    pub fn voice_begin(&self) -> u64 {
+        self.interrupt();
+        let turn = self.voice.lock().expect("voice mutex should not be poisoned").begin();
+        (self.sink)(Event::VoiceListening { turn });
+        turn
+    }
+
+    /// Asks the frontend to take this turn's screenshot now (`voice_capture`).
+    /// The controller calls this when the screenshot is wanted, which decides
+    /// whether it shows the screen when the user starts or when they finish.
+    #[allow(dead_code)] // called by the voice controller
+    pub fn voice_request_capture(&self, turn: u64) {
+        if self.voice.lock().expect("voice mutex should not be poisoned").is_current(turn) {
+            (self.sink)(Event::VoiceCapture { turn });
+        }
+    }
+
+    /// Tells the frontend the recording ended and is being transcribed.
+    #[allow(dead_code)] // called by the voice controller
+    pub fn voice_transcribing(&self, turn: u64) {
+        if self.voice.lock().expect("voice mutex should not be poisoned").is_current(turn) {
+            (self.sink)(Event::VoiceTranscribing);
+        }
+    }
+
+    /// The screenshot taken for `turn`. If the transcript is already there,
+    /// the turn is described.
+    pub fn voice_set_frame(&self, cfg: &Config, turn: u64, image: DynamicImage) {
+        let ready = self.voice.lock().expect("voice mutex should not be poisoned").set_frame(turn, image);
+        if let Some(ready) = ready {
+            self.submit(cfg, ready.image, Some(ready.text));
+        }
+    }
+
+    /// What the user said in `turn`. Sends `voice_transcript`; if the
+    /// screenshot is already there, the turn is described. Nothing said
+    /// (only whitespace) ends the turn like `voice_abort`.
+    #[allow(dead_code)] // called by the voice controller
+    pub fn voice_set_transcript(&self, cfg: &Config, turn: u64, text: String) {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            self.voice_abort(turn);
+            return;
+        }
+        let ready = {
+            let mut voice = self.voice.lock().expect("voice mutex should not be poisoned");
+            if !voice.is_current(turn) {
+                return;
+            }
+            voice.set_transcript(turn, text.clone())
+        };
+        (self.sink)(Event::VoiceTranscript { text });
+        if let Some(ready) = ready {
+            self.submit(cfg, ready.image, Some(ready.text));
+        }
+    }
+
+    /// Ends `turn` without an answer (nothing recognised, or it failed): the
+    /// screenshot it may have taken is dropped, and `voice_empty` tells the
+    /// frontend to resume its normal screenshot timing.
+    #[allow(dead_code)] // called by the voice controller
+    pub fn voice_abort(&self, turn: u64) {
+        if self.voice.lock().expect("voice mutex should not be poisoned").abort(turn) {
+            (self.sink)(Event::VoiceEmpty);
+        }
     }
 
     /// Resets the frame-diffing state and the describer's history for a
@@ -520,6 +621,7 @@ where
     pub fn stop_cycle(&self) {
         self.running.store(false, Ordering::SeqCst);
         self.generation.fetch_add(1, Ordering::SeqCst);
+        self.voice.lock().expect("voice mutex should not be poisoned").reset();
     }
 
     /// Synthesizes arbitrary text and streams it as system chunks, always
@@ -1028,6 +1130,182 @@ mod tests {
         pipeline.flush_vlm();
 
         assert_eq!(*seen.lock().unwrap(), [Some("what is that?".to_string()), None]);
+    }
+
+    // ── Voice turns ──
+
+    /// A pipeline with a describer that records what the user said.
+    fn voice_pipeline() -> (Pipeline<FakeDescriber, FakeSynthesizer>, Arc<Mutex<Vec<Event>>>, Arc<Mutex<Vec<Option<String>>>>) {
+        let (sink, events) = capturing_sink();
+        let pipeline = new_pipeline(sink);
+        let describer = FakeDescriber::ok("a comment");
+        let seen = Arc::clone(&describer.seen_user_text);
+        pipeline.set_describer(Some(describer));
+        pipeline.set_synthesizer(Some(FakeSynthesizer::empty()));
+        (pipeline, events, seen)
+    }
+
+    fn count(events: &Mutex<Vec<Event>>, matching: impl Fn(&Event) -> bool) -> usize {
+        events.lock().unwrap().iter().filter(|e| matching(e)).count()
+    }
+
+    #[test]
+    fn a_voice_turn_is_described_with_what_was_said_when_the_screenshot_comes_first() {
+        let (pipeline, events, seen) = voice_pipeline();
+        let cfg = Config::default();
+
+        let turn = pipeline.voice_begin();
+        pipeline.voice_set_frame(&cfg, turn, test_image());
+        assert_eq!(count(&events, |e| matches!(e, Event::Frame { .. })), 0, "not before the user has spoken");
+        pipeline.voice_set_transcript(&cfg, turn, "  what is that?  ".to_string());
+        pipeline.flush_vlm();
+
+        assert_eq!(*seen.lock().unwrap(), [Some("what is that?".to_string())]);
+        let kinds: Vec<&str> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                Event::VoiceListening { .. } => Some("listening"),
+                Event::VoiceTranscript { text } if text == "what is that?" => Some("transcript"),
+                Event::Frame { .. } => Some("frame"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, ["listening", "transcript", "frame"]);
+    }
+
+    #[test]
+    fn a_voice_turn_is_described_when_the_transcript_comes_first() {
+        let (pipeline, events, seen) = voice_pipeline();
+        let cfg = Config::default();
+
+        let turn = pipeline.voice_begin();
+        pipeline.voice_set_transcript(&cfg, turn, "hello".to_string());
+        assert_eq!(count(&events, |e| matches!(e, Event::Frame { .. })), 0, "not before the screenshot");
+        pipeline.voice_set_frame(&cfg, turn, test_image());
+        pipeline.flush_vlm();
+
+        assert_eq!(*seen.lock().unwrap(), [Some("hello".to_string())]);
+        assert_eq!(count(&events, |e| matches!(e, Event::Frame { .. })), 1);
+    }
+
+    #[test]
+    fn a_voice_turn_is_described_even_if_the_screen_did_not_change_and_even_if_the_vlm_is_busy() {
+        let (pipeline, events, seen) = voice_pipeline();
+        let cfg = Config { difference_threshold: 0.5, ..Config::default() };
+        pipeline.trigger(&cfg, test_image());
+        pipeline.flush_vlm();
+
+        // The same screen again: a normal frame would be skipped. And a frame is "pending".
+        pipeline.pending_frame.store(true, Ordering::SeqCst);
+        let turn = pipeline.voice_begin();
+        pipeline.voice_set_frame(&cfg, turn, test_image());
+        pipeline.voice_set_transcript(&cfg, turn, "hello".to_string());
+        pipeline.flush_vlm();
+
+        assert_eq!(*seen.lock().unwrap(), [None, Some("hello".to_string())]);
+        assert_eq!(count(&events, |e| matches!(e, Event::Skipped { .. } | Event::Busy { .. })), 0);
+    }
+
+    #[test]
+    fn a_regular_screenshot_arriving_during_a_voice_turn_is_ignored() {
+        let (pipeline, events, seen) = voice_pipeline();
+        let cfg = Config::default();
+
+        let turn = pipeline.voice_begin();
+        pipeline.trigger(&cfg, test_image()); // taken for the normal cycle before the key press
+        pipeline.flush_vlm();
+        assert_eq!(count(&events, |e| matches!(e, Event::Frame { .. })), 0);
+        assert!(seen.lock().unwrap().is_empty());
+
+        // Once the turn is over, regular screenshots count again.
+        pipeline.voice_abort(turn);
+        pipeline.trigger(&cfg, test_image());
+        pipeline.flush_vlm();
+        assert_eq!(*seen.lock().unwrap(), [None]);
+    }
+
+    #[test]
+    fn beginning_a_voice_turn_cancels_a_description_in_flight_without_an_error() {
+        let (sink, events) = capturing_sink();
+        let pipeline = new_pipeline(sink);
+        let (describer, started) = FakeDescriber::until_cancelled();
+        let saw_cancel = Arc::clone(&describer.saw_cancel);
+        pipeline.set_describer(Some(describer));
+        pipeline.set_synthesizer(Some(FakeSynthesizer::with_chunks(vec!["one"])));
+
+        pipeline.trigger(&Config::default(), test_image());
+        started.recv_timeout(Duration::from_secs(2)).expect("the describer should start");
+        pipeline.voice_begin();
+        pipeline.flush_vlm();
+        pipeline.flush_tts();
+
+        assert!(saw_cancel.load(Ordering::SeqCst), "the describer should have been told to stop");
+        assert_eq!(count(&events, |e| matches!(e, Event::Error { .. } | Event::Chunk(_) | Event::TtsDone { .. })), 0);
+    }
+
+    #[test]
+    fn an_aborted_voice_turn_says_so_and_drops_the_screenshot() {
+        let (pipeline, events, seen) = voice_pipeline();
+        let cfg = Config::default();
+
+        let turn = pipeline.voice_begin();
+        pipeline.voice_set_frame(&cfg, turn, test_image()); // taken at the start
+        pipeline.voice_abort(turn); // nothing was recognised
+        pipeline.voice_set_transcript(&cfg, turn, "too late".to_string());
+        pipeline.flush_vlm();
+
+        assert_eq!(count(&events, |e| matches!(e, Event::VoiceEmpty)), 1);
+        assert_eq!(count(&events, |e| matches!(e, Event::Frame { .. } | Event::VoiceTranscript { .. })), 0);
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_transcript_with_nothing_in_it_ends_the_turn() {
+        let (pipeline, events, seen) = voice_pipeline();
+        let turn = pipeline.voice_begin();
+        pipeline.voice_set_transcript(&Config::default(), turn, " \n ".to_string());
+        pipeline.flush_vlm();
+
+        assert_eq!(count(&events, |e| matches!(e, Event::VoiceEmpty)), 1);
+        assert_eq!(count(&events, |e| matches!(e, Event::VoiceTranscript { .. })), 0);
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_new_voice_turn_supersedes_the_one_before() {
+        let (pipeline, events, seen) = voice_pipeline();
+        let cfg = Config::default();
+
+        let first = pipeline.voice_begin();
+        let second = pipeline.voice_begin();
+        // Only the turn in progress can be asked for a screenshot.
+        pipeline.voice_request_capture(first);
+        assert_eq!(count(&events, |e| matches!(e, Event::VoiceCapture { .. })), 0);
+        pipeline.voice_request_capture(second);
+        assert_eq!(count(&events, |e| matches!(e, Event::VoiceCapture { turn } if *turn == second)), 1);
+
+        // Late parts of the first turn change nothing.
+        pipeline.voice_set_frame(&cfg, first, test_image());
+        pipeline.voice_set_transcript(&cfg, first, "old".to_string());
+        pipeline.flush_vlm();
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(count(&events, |e| matches!(e, Event::VoiceTranscript { .. })), 0);
+    }
+
+    #[test]
+    fn stopping_the_cycle_ends_the_voice_turn() {
+        let (pipeline, _events, seen) = voice_pipeline();
+        let cfg = Config::default();
+
+        let turn = pipeline.voice_begin();
+        pipeline.stop_cycle();
+        pipeline.voice_set_frame(&cfg, turn, test_image());
+        pipeline.voice_set_transcript(&cfg, turn, "hello".to_string());
+        pipeline.flush_vlm();
+
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[test]

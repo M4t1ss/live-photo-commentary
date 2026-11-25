@@ -16,6 +16,7 @@ mod promptsets;
 mod screensaver;
 mod screenshot;
 mod state;
+mod voice_turn;
 
 use screenshot::ScreenshotState;
 
