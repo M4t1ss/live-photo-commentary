@@ -1,8 +1,12 @@
 //! The model a describer sends its prompts to.
 
+use std::future::Future;
+use std::time::Duration;
+
 use base64::Engine;
 use image::DynamicImage;
 
+use crate::describer::CancelFn;
 use crate::error::{Error, Result};
 use crate::gemini::Gemini;
 #[cfg(feature = "llama-cpp")]
@@ -22,17 +26,42 @@ pub enum Backend {
 }
 
 impl Backend {
+    /// Returns [`Error::Cancelled`] as soon as `cancel` returns true.
     pub(crate) async fn prompt_model(
         &self,
         user_prompt: &str,
         images: &[&DynamicImage],
         system_prompt: Option<&str>,
+        cancel: CancelFn<'_>,
     ) -> Result<String> {
         match self {
-            Self::Gemini(gemini) => gemini.prompt_model(user_prompt, images, system_prompt).await,
-            Self::OpenAi(openai) => openai.prompt_model(user_prompt, images, system_prompt).await,
+            Self::Gemini(gemini) => {
+                until_cancelled(cancel, gemini.prompt_model(user_prompt, images, system_prompt)).await
+            }
+            Self::OpenAi(openai) => {
+                until_cancelled(cancel, openai.prompt_model(user_prompt, images, system_prompt)).await
+            }
+            // Checks `cancel` itself, before every token.
             #[cfg(feature = "llama-cpp")]
-            Self::LlamaCpp(model) => model.prompt_model(user_prompt, images, system_prompt).await,
+            Self::LlamaCpp(model) => model.prompt_model(user_prompt, images, system_prompt, cancel).await,
+        }
+    }
+}
+
+/// How often a cloud request checks whether it has been cancelled.
+const CANCEL_POLL: Duration = Duration::from_millis(100);
+
+/// Runs `request` until it finishes or `cancel` returns true. Dropping the
+/// request's future aborts the HTTP request.
+async fn until_cancelled<T>(cancel: CancelFn<'_>, request: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::pin!(request);
+    loop {
+        if cancel() {
+            return Err(Error::Cancelled);
+        }
+        tokio::select! {
+            result = &mut request => return result,
+            () = tokio::time::sleep(CANCEL_POLL) => {}
         }
     }
 }

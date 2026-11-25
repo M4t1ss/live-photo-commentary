@@ -29,7 +29,7 @@ mod openai;
 mod prompts;
 
 pub use backend::Backend;
-pub use describer::Describer;
+pub use describer::{CancelFn, DescribeOptions, Describer};
 pub use error::{Error, Result};
 pub use gemini::Gemini;
 #[cfg(feature = "llama-cpp")]

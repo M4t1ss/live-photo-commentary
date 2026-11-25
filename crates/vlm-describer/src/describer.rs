@@ -11,6 +11,19 @@ use crate::backend::Backend;
 use crate::error::Result;
 use crate::prompts::Prompts;
 
+/// Polled while a request is in flight; when it returns true the request is
+/// abandoned and the call returns [`Error::Cancelled`](crate::Error::Cancelled).
+/// A local model checks it before every token; a cloud request is dropped
+/// within about 100 ms.
+pub type CancelFn<'a> = &'a (dyn Fn() -> bool + Sync);
+
+/// Per-call settings of [`Describer::describe_with`].
+#[derive(Clone, Copy, Default)]
+pub struct DescribeOptions<'a> {
+    /// See [`CancelFn`]. `None`: never cancelled.
+    pub cancel: Option<CancelFn<'a>>,
+}
+
 pub struct Describer {
     backend: Backend,
     pub prompts: Prompts,
@@ -52,13 +65,27 @@ impl Describer {
         current: &DynamicImage,
         previous: Option<&DynamicImage>,
     ) -> Result<String> {
+        self.describe_with(current, previous, &DescribeOptions::default()).await
+    }
+
+    /// Like [`describe`](Self::describe), with per-call options. If the
+    /// cancel function fires, returns [`Error::Cancelled`](crate::Error::Cancelled) and leaves the
+    /// history as it was (a history compaction that already finished stays).
+    pub async fn describe_with(
+        &mut self,
+        current: &DynamicImage,
+        previous: Option<&DynamicImage>,
+        options: &DescribeOptions<'_>,
+    ) -> Result<String> {
+        let never = || false;
+        let cancel: CancelFn<'_> = options.cancel.unwrap_or(&never);
         let mut images = vec![current];
         let user_prompt = match previous {
             Some(previous) => {
                 images.push(previous);
                 if self.max_history_size > 0 {
                     if self.history.len() >= self.max_history_size {
-                        self.compact_history().await?;
+                        self.compact_history(cancel).await?;
                     }
                     let mut lines = vec![self.prompts.history_prompt.as_str()];
                     lines.extend(self.history.iter().map(String::as_str));
@@ -72,7 +99,7 @@ impl Describer {
         };
 
         let response = self
-            .run_prompt(&user_prompt, &images, Some(&self.prompts.system_prompt))
+            .run_prompt(&user_prompt, &images, Some(&self.prompts.system_prompt), cancel)
             .await?;
         let comment = self.extract_comment(response);
         self.history.push(comment.clone());
@@ -83,7 +110,7 @@ impl Describer {
     /// prompt unless another is given. Doesn't touch the history.
     pub async fn generate(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
         let system_prompt = system_prompt.unwrap_or(&self.prompts.system_prompt);
-        self.run_prompt(prompt, &[], Some(system_prompt)).await
+        self.run_prompt(prompt, &[], Some(system_prompt), &|| false).await
     }
 
     /// The comments so far, oldest first.
@@ -98,13 +125,13 @@ impl Describer {
 
     /// Replaces the history with a summary, keeping the newest
     /// `min_history_size` comments as they are.
-    async fn compact_history(&mut self) -> Result<()> {
+    async fn compact_history(&mut self, cancel: CancelFn<'_>) -> Result<()> {
         let keep = self.min_history_size.min(self.history.len());
         let split = self.history.len() - keep;
         let mut lines = vec![self.prompts.compact_prompt.as_str()];
         lines.extend(self.history[..split].iter().map(String::as_str));
         let summary = self
-            .run_prompt(&lines.join("\n"), &[], Some(&self.prompts.system_prompt))
+            .run_prompt(&lines.join("\n"), &[], Some(&self.prompts.system_prompt), cancel)
             .await?;
         let kept = self.history.split_off(split);
         self.history = std::iter::once(summary).chain(kept).collect();
@@ -116,11 +143,12 @@ impl Describer {
         user_prompt: &str,
         images: &[&DynamicImage],
         system_prompt: Option<&str>,
+        cancel: CancelFn<'_>,
     ) -> Result<String> {
         log::debug!("system_prompt:\n{}", system_prompt.unwrap_or(""));
         log::debug!("user_prompt:\n{user_prompt}");
         let start = Instant::now();
-        let response = self.backend.prompt_model(user_prompt, images, system_prompt).await?;
+        let response = self.backend.prompt_model(user_prompt, images, system_prompt, cancel).await?;
         log::info!("response ({:.1}s):\n{response}", start.elapsed().as_secs_f64());
         Ok(response)
     }

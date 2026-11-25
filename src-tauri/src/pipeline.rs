@@ -30,10 +30,15 @@ use crate::events::{ChunkEvent, ChunkOrigin, Event, EventSink};
 pub trait DescriberOps: Send {
     fn set_max_history_size(&mut self, n: usize);
     fn set_prompts(&mut self, prompts: vlm_describer::Prompts);
+    /// `cancelled` returns true once the result would be discarded anyway
+    /// (the generation moved on); the describer should then give up early.
+    /// Its error is not reported, because the worker drops the results and
+    /// errors of a stale generation.
     fn describe(
         &mut self,
         current: &DynamicImage,
         previous: Option<&DynamicImage>,
+        cancelled: vlm_describer::CancelFn<'_>,
     ) -> impl Future<Output = Result<String, String>> + Send;
     fn generate(&mut self, prompt: &str, system_prompt: Option<&str>) -> impl Future<Output = Result<String, String>> + Send;
     fn reset(&mut self);
@@ -48,8 +53,14 @@ impl DescriberOps for vlm_describer::Describer {
         self.prompts = prompts;
     }
 
-    async fn describe(&mut self, current: &DynamicImage, previous: Option<&DynamicImage>) -> Result<String, String> {
-        vlm_describer::Describer::describe(self, current, previous).await.map_err(|e| e.to_string())
+    async fn describe(
+        &mut self,
+        current: &DynamicImage,
+        previous: Option<&DynamicImage>,
+        cancelled: vlm_describer::CancelFn<'_>,
+    ) -> Result<String, String> {
+        let options = vlm_describer::DescribeOptions { cancel: Some(cancelled) };
+        vlm_describer::Describer::describe_with(self, current, previous, &options).await.map_err(|e| e.to_string())
     }
 
     async fn generate(&mut self, prompt: &str, system_prompt: Option<&str>) -> Result<String, String> {
@@ -148,7 +159,7 @@ fn run_vlm_worker<D, S>(
     rx: mpsc::Receiver<VlmJob<D>>,
     generation: Arc<AtomicU64>,
     pending_frame: Arc<AtomicBool>,
-    pending_cycle_tts: Arc<AtomicBool>,
+    pending_cycle_tts: Arc<AtomicU64>,
     tts_tx: mpsc::Sender<TtsJob<S>>,
     sink: EventSink,
 ) where
@@ -175,7 +186,15 @@ fn run_vlm_worker<D, S>(
                     continue;
                 };
                 d.set_max_history_size(max_history_size);
-                let result = rt.block_on(d.describe(&current, previous.as_deref()));
+                // A newer generation (stop, or a new frame) makes this result
+                // worthless, so the describer is told to stop generating it.
+                let cancelled = || gen != generation.load(Ordering::SeqCst);
+                let result = rt.block_on(d.describe(&current, previous.as_deref(), &cancelled));
+                // Checked before the result, so a cancelled description (an
+                // error) and a stale one are both dropped silently.
+                if cancelled() {
+                    continue;
+                }
                 let text = match result {
                     Ok(text) => text,
                     Err(e) => {
@@ -183,10 +202,10 @@ fn run_vlm_worker<D, S>(
                         continue;
                     }
                 };
-                if gen != generation.load(Ordering::SeqCst) {
-                    continue;
-                }
-                if pending_cycle_tts.swap(true, Ordering::SeqCst) {
+                // Busy only if a job of this very generation is already
+                // queued. A job left by an older generation is dropped by the
+                // TTS worker when it gets to it, so it must not block this one.
+                if pending_cycle_tts.swap(gen, Ordering::SeqCst) == gen {
                     sink(Event::Error { message: "TTS busy".to_string() });
                 } else {
                     let _ = tts_tx.send(TtsJob::Cycle { gen, text });
@@ -223,7 +242,7 @@ fn run_vlm_worker<D, S>(
 fn run_tts_worker<S: SynthesizerOps>(
     rx: mpsc::Receiver<TtsJob<S>>,
     generation: Arc<AtomicU64>,
-    pending_cycle_tts: Arc<AtomicBool>,
+    pending_cycle_tts: Arc<AtomicU64>,
     sink: EventSink,
 ) {
     let mut synthesizer: Option<S> = None;
@@ -231,7 +250,9 @@ fn run_tts_worker<S: SynthesizerOps>(
     while let Ok(job) = rx.recv() {
         match job {
             TtsJob::Cycle { gen, text } => {
-                pending_cycle_tts.store(false, Ordering::SeqCst);
+                // Clear the "queued" mark, unless a newer generation has set
+                // its own since.
+                let _ = pending_cycle_tts.compare_exchange(gen, 0, Ordering::SeqCst, Ordering::SeqCst);
                 if gen != generation.load(Ordering::SeqCst) {
                     continue;
                 }
@@ -325,11 +346,12 @@ pub struct Pipeline<D, S> {
     running: Arc<AtomicBool>,
     frame_state: Mutex<FrameState>,
     pending_frame: Arc<AtomicBool>,
-    /// Only the clone handed to the TTS worker is read in production; this
-    /// copy exists so tests can simulate "already queued" directly (see the
-    /// `tts_busy_error...` test).
+    /// The generation of the cycle TTS job waiting in the TTS queue, or 0 for
+    /// none. Only the clones handed to the workers are used in production;
+    /// this copy exists so tests can simulate "already queued" directly (see
+    /// the `tts_busy_error...` test).
     #[cfg_attr(not(test), allow(dead_code))]
-    pending_cycle_tts: Arc<AtomicBool>,
+    pending_cycle_tts: Arc<AtomicU64>,
     pregen_messages: Mutex<HashMap<String, PregenMessage>>,
     /// Bumped by every `pregen_system_messages` and `discard_pregen_messages`;
     /// a pre-generation that finds it changed has been superseded.
@@ -348,7 +370,7 @@ where
     pub fn new(sink: EventSink) -> Self {
         let generation = Arc::new(AtomicU64::new(0));
         let pending_frame = Arc::new(AtomicBool::new(false));
-        let pending_cycle_tts = Arc::new(AtomicBool::new(false));
+        let pending_cycle_tts = Arc::new(AtomicU64::new(0));
 
         let (vlm_tx, vlm_rx) = mpsc::channel::<VlmJob<D>>();
         let (tts_tx, tts_rx) = mpsc::channel::<TtsJob<S>>();
@@ -624,20 +646,44 @@ mod tests {
         /// test control exactly when an in-flight generation "finishes".
         gate: Option<mpsc::Receiver<()>>,
         calls: Arc<AtomicU64>,
+        /// If set, `describe` signals it, then waits until the cancel
+        /// function fires (see `until_cancelled`).
+        started: Option<mpsc::Sender<()>>,
+        /// Set by `describe` when it saw the cancel function fire.
+        saw_cancel: Arc<AtomicBool>,
     }
 
     impl FakeDescriber {
+        fn new(reply: Result<String, String>, gate: Option<mpsc::Receiver<()>>) -> Self {
+            Self {
+                reply,
+                gate,
+                calls: Arc::new(AtomicU64::new(0)),
+                started: None,
+                saw_cancel: Arc::new(AtomicBool::new(false)),
+            }
+        }
+
         fn ok(text: &str) -> Self {
-            Self { reply: Ok(text.to_string()), gate: None, calls: Arc::new(AtomicU64::new(0)) }
+            Self::new(Ok(text.to_string()), None)
         }
 
         fn err(message: &str) -> Self {
-            Self { reply: Err(message.to_string()), gate: None, calls: Arc::new(AtomicU64::new(0)) }
+            Self::new(Err(message.to_string()), None)
         }
 
         fn gated(text: &str) -> (Self, mpsc::Sender<()>) {
             let (tx, rx) = mpsc::channel();
-            (Self { reply: Ok(text.to_string()), gate: Some(rx), calls: Arc::new(AtomicU64::new(0)) }, tx)
+            (Self::new(Ok(text.to_string()), Some(rx)), tx)
+        }
+
+        /// A describer that, like a model generating tokens, runs until its
+        /// cancel function fires; the receiver tells when it has started.
+        fn until_cancelled() -> (Self, mpsc::Receiver<()>) {
+            let (tx, rx) = mpsc::channel();
+            let mut describer = Self::ok("never delivered");
+            describer.started = Some(tx);
+            (describer, rx)
         }
     }
 
@@ -645,8 +691,25 @@ mod tests {
         fn set_max_history_size(&mut self, _n: usize) {}
         fn set_prompts(&mut self, _prompts: vlm_describer::Prompts) {}
 
-        async fn describe(&mut self, _current: &DynamicImage, _previous: Option<&DynamicImage>) -> Result<String, String> {
+        async fn describe(
+            &mut self,
+            _current: &DynamicImage,
+            _previous: Option<&DynamicImage>,
+            cancelled: vlm_describer::CancelFn<'_>,
+        ) -> Result<String, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(started) = &self.started {
+                let _ = started.send(());
+                let give_up = Instant::now() + Duration::from_secs(5);
+                while !cancelled() {
+                    if Instant::now() > give_up {
+                        return Ok("the cancel function never fired".to_string());
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                self.saw_cancel.store(true, Ordering::SeqCst);
+                return Err("cancelled".to_string());
+            }
             if let Some(gate) = &self.gate {
                 let _ = gate.recv();
             }
@@ -895,13 +958,56 @@ mod tests {
         let pipeline = new_pipeline(sink);
         pipeline.set_describer(Some(FakeDescriber::ok("a comment")));
 
-        // Simulate a cycle TTS job already queued ahead of this one.
-        pipeline.pending_cycle_tts.store(true, Ordering::SeqCst);
+        // Simulate a job of this very generation (the first, 1) already
+        // queued ahead of this one.
+        pipeline.pending_cycle_tts.store(1, Ordering::SeqCst);
         pipeline.trigger(&Config::default(), test_image());
         pipeline.flush_vlm();
 
         let events = events.lock().unwrap();
         assert!(events.iter().any(|e| matches!(e, Event::Error { message } if message == "TTS busy")));
+    }
+
+    #[test]
+    fn a_cycle_tts_job_left_by_an_older_generation_does_not_make_the_next_one_busy() {
+        let (sink, events) = capturing_sink();
+        let pipeline = new_pipeline(sink);
+        pipeline.set_describer(Some(FakeDescriber::ok("a comment")));
+        pipeline.set_synthesizer(Some(FakeSynthesizer::with_chunks(vec!["one"])));
+
+        // A job of an earlier generation is still queued, as after an
+        // interruption while the TTS worker was busy.
+        pipeline.pending_cycle_tts.store(99, Ordering::SeqCst);
+        pipeline.trigger(&Config::default(), test_image());
+        pipeline.flush_vlm();
+        pipeline.flush_tts();
+
+        let events = events.lock().unwrap();
+        assert!(!events.iter().any(|e| matches!(e, Event::Error { message } if message == "TTS busy")));
+        assert!(events.iter().any(|e| matches!(e, Event::TtsDone { .. })), "the new reply should be spoken");
+    }
+
+    #[test]
+    fn a_new_generation_cancels_a_description_in_flight_without_an_error() {
+        let (sink, events) = capturing_sink();
+        let pipeline = new_pipeline(sink);
+        let (describer, started) = FakeDescriber::until_cancelled();
+        let saw_cancel = Arc::clone(&describer.saw_cancel);
+        pipeline.set_describer(Some(describer));
+        pipeline.set_synthesizer(Some(FakeSynthesizer::with_chunks(vec!["one"])));
+
+        pipeline.trigger(&Config::default(), test_image());
+        started.recv_timeout(Duration::from_secs(2)).expect("the describer should start");
+        pipeline.stop_cycle();
+        // Returns once the worker is free, which it is only after the
+        // describer gave up.
+        pipeline.flush_vlm();
+        pipeline.flush_tts();
+
+        assert!(saw_cancel.load(Ordering::SeqCst), "the describer should have been told to stop");
+        let events = events.lock().unwrap();
+        assert!(!events.iter().any(|e| matches!(e, Event::Error { .. })), "a cancellation is not an error: {events:?}");
+        assert!(!events.iter().any(|e| matches!(e, Event::Chunk(_) | Event::TtsDone { .. })));
     }
 
     #[test]

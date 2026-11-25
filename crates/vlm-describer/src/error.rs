@@ -55,6 +55,11 @@ pub enum Error {
     /// The response regex is invalid.
     #[error("invalid response regex")]
     InvalidRegex(#[from] regex::Error),
+
+    /// The caller's cancel function returned true, so the request was
+    /// abandoned. Not a failure; nothing was added to the history.
+    #[error("cancelled")]
+    Cancelled,
 }
 
 /// `Result` with this crate's [`Error`].

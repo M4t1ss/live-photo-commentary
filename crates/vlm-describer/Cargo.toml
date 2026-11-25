@@ -17,6 +17,8 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.21"
+# Cancelling an HTTP request: `select!` between it and a timer.
+tokio = { version = "1.53.2", features = ["time", "macros"] }
 
 [dev-dependencies]
 anyhow = "1.0.104"

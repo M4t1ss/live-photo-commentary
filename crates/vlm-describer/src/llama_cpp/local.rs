@@ -16,6 +16,7 @@ use llama_cpp_2::mtmd::{
 };
 use llama_cpp_2::sampling::LlamaSampler;
 
+use crate::describer::CancelFn;
 use crate::error::{Error, Result};
 use crate::prompts::{Segment, segments};
 
@@ -112,12 +113,20 @@ impl LlamaCpp {
 
     /// Runs on the calling thread; llama.cpp is not async, so this blocks
     /// until the reply is complete. Call it from a thread of its own.
+    ///
+    /// `cancel` is checked before every token, so a cancelled reply stops
+    /// within one token's time; evaluating the prompt and images (a second or
+    /// so) can't be interrupted, so it is checked before and after that.
     pub(crate) async fn prompt_model(
         &self,
         user_prompt: &str,
         images: &[&DynamicImage],
         system_prompt: Option<&str>,
+        cancel: CancelFn<'_>,
     ) -> Result<String> {
+        if cancel() {
+            return Err(Error::Cancelled);
+        }
         // Images are marked in the text and passed in the same order.
         // Without placeholders, the images come first (as in Python).
         let marker = mtmd_default_marker();
@@ -173,6 +182,9 @@ impl LlamaCpp {
             .model
             .new_context(&self.backend, context_params())
             .map_err(local_error)?;
+        if cancel() {
+            return Err(Error::Cancelled);
+        }
         let mut n_past = chunks
             .eval_chunks(&self.mtmd, &context, 0, 0, BATCH_SIZE as i32, true)
             .map_err(local_error)?;
@@ -182,6 +194,9 @@ impl LlamaCpp {
         let mut output = Vec::new();
         let mut batch = LlamaBatch::new(1, 1);
         for _ in 0..self.sampling.max_new_tokens {
+            if cancel() {
+                return Err(Error::Cancelled);
+            }
             let token = sampler.sample(&context, -1);
             sampler.accept(token);
             if vocab.is_eog(token) {

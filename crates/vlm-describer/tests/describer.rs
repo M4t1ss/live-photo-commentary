@@ -1,9 +1,12 @@
 //! Tests against a mock HTTP server, checking the requests the describer
 //! sends and how it handles the responses.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
 use image::DynamicImage;
 use serde_json::{Value, json};
-use vlm_describer::{Backend, Describer, Error, Gemini, OpenAi, Prompts};
+use vlm_describer::{Backend, DescribeOptions, Describer, Error, Gemini, OpenAi, Prompts};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -196,4 +199,62 @@ async fn generate_uses_no_images_or_history() {
     assert_eq!(body["messages"][0]["content"][0]["text"], "Be brief.");
     assert_eq!(body["messages"][1]["content"], json!([{ "type": "text", "text": "Say hello." }]));
     assert!(describer.history().is_empty());
+}
+
+/// A server whose reply takes `delay`, so a test can cancel while it waits.
+async fn slow_openai_server(delay: Duration) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(openai_reply("late").set_delay(delay))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn cancelling_abandons_a_request_in_flight_and_leaves_the_history_alone() {
+    let server = slow_openai_server(Duration::from_secs(30)).await;
+    let mut describer = openai_describer(&server);
+    let cancelled = AtomicBool::new(false);
+    let cancel = || cancelled.load(Ordering::SeqCst);
+    let options = DescribeOptions { cancel: Some(&cancel) };
+
+    let current = image();
+    let started = Instant::now();
+    let (result, ()) = tokio::join!(describer.describe_with(&current, None, &options), async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        cancelled.store(true, Ordering::SeqCst);
+    });
+
+    assert!(matches!(result, Err(Error::Cancelled)), "got {:?}", result.map(|_| ()));
+    assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+    assert!(describer.history().is_empty());
+}
+
+#[tokio::test]
+async fn cancelling_before_the_request_sends_nothing() {
+    let server = openai_server("A cat.").await;
+    let mut describer = openai_describer(&server);
+    let cancel = || true;
+    let options = DescribeOptions { cancel: Some(&cancel) };
+
+    let result = describer.describe_with(&image(), None, &options).await;
+
+    assert!(matches!(result, Err(Error::Cancelled)));
+    assert!(bodies(&server).await.is_empty());
+    assert!(describer.history().is_empty());
+}
+
+#[tokio::test]
+async fn a_cancel_function_that_never_fires_changes_nothing() {
+    let server = openai_server("A cat.").await;
+    let mut describer = openai_describer(&server);
+    let cancel = || false;
+    let options = DescribeOptions { cancel: Some(&cancel) };
+
+    let comment = describer.describe_with(&image(), None, &options).await.unwrap();
+
+    assert_eq!(comment, "A cat.");
+    assert_eq!(describer.history(), ["A cat."]);
 }
