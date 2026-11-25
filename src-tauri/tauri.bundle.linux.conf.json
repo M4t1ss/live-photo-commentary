@@ -1,5 +1,10 @@
 {
   "bundle": {
+    "linux": {
+      "deb": {
+        "depends": ["libvulkan1"]
+      }
+    },
     "resources": {
       "resources/screenshot*.exe": "resources/"
     }

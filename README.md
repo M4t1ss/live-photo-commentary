@@ -97,6 +97,8 @@ The AppImage has the same layout as the deb, inside the mounted image. The insta
 | The program | Install folder: `app.exe` (Windows), `app` (macOS, Linux) | |
 | **eSpeak helper** (`kokoro-espeak`) | Install folder (next to the executable) | A separate program that the app starts for pronunciation. `KOKORO_ESPEAK` can point to another one. |
 | **eSpeak's data** (`espeak-ng-data`) | Resources | The helper inherits `PIPER_ESPEAKNG_DATA_DIRECTORY`, which the app sets on macOS and Linux (on Windows it is next to the helper). |
+| **Speech recognition helper** (`whisper-helper`) | Install folder (next to the executable) | A separate program that the app starts for voice input; it runs whisper.cpp, on the GPU if there is room (Vulkan; Metal on macOS) and else on the CPU. `WHISPER_HELPER` can point to another one. On Linux it needs the Vulkan loader (`libvulkan1`, which the deb depends on). |
+| Speech recognition models | Hugging Face cache (`~/.cache/huggingface/hub`, models `ggerganov/whisper.cpp`) | Downloaded the first time voice input is switched on: 32 to 574 MB depending on the model chosen. |
 | llama.cpp libraries | Resources (the DLLs and `.so`/`.dylib` files), and `backends/` in it for the GPU backend (Vulkan or Metal) | |
 | **Bundled avatar model and animations** | Resources, `resources/models/` (`model.glb`, `model.yaml`, `animations/`) | Not in the installers from GitHub yet. Development builds read the repository's `models/` instead. |
 | Licences | Resources, `licenses/` | Settings, About, Licences opens it. |
@@ -125,10 +127,11 @@ You need Rust (1.95 or newer), the [Tauri prerequisites](https://tauri.app/start
 ### Run in development
 
 ```sh
+cargo build -p whisper-helper --features vulkan   # once, and after changing it: voice input needs it
 cargo tauri dev --features devtools,dynamic-backends,vulkan
 ```
 
-`devtools` adds the DevTools (Ctrl+Shift+I). `dynamic-backends` with `vulkan` (`metal` on macOS) makes llama.cpp load its GPU backend at run time, as the installer does. The first run also builds the `kokoro-espeak` helper. Development builds read the avatar models and animations from `models/` in the repository.
+`devtools` adds the DevTools (Ctrl+Shift+I). `dynamic-backends` with `vulkan` (`metal` on macOS) makes llama.cpp load its GPU backend at run time, as the installer does. The first run also builds the `kokoro-espeak` helper; the `whisper-helper` is built by the command above (it is a separate Cargo invocation because the GPU feature must be chosen, and `rundev.ps1` does it too; with `metal` on macOS, or no feature for a CPU-only one). Development builds read the avatar models and animations from `models/` in the repository.
 
 ### Tests
 
@@ -150,7 +153,7 @@ Use `metal` instead of `vulkan` on macOS, and on Linux also add `--config src-ta
 ### Other tasks
 
 ```sh
-cargo xtask package-helper OUT_DIR [--tauri]       # build kokoro-espeak with its espeak-ng-data
+cargo xtask package-helper OUT_DIR [--tauri]       # build kokoro-espeak (with its espeak-ng-data) and whisper-helper
 cargo xtask package-cuda-backend dist --release    # the downloadable CUDA backend (needs the CUDA Toolkit)
 ```
 
@@ -163,7 +166,7 @@ The CUDA backend archive is what Settings downloads (from the GitHub release of 
 
 ## Licences
 
-MIT for the app, MIT OR Apache-2.0 for the `kokoro-timestamped` and `vlm-describer` crates, and GPL-3.0-or-later for the separate `kokoro-espeak` helper program (it contains eSpeak NG). The installer includes the licences and the offer of the GPL source (Settings, About, Licences). The details are in [`NOTICE.md`](NOTICE.md).
+MIT for the app, MIT OR Apache-2.0 for the `kokoro-timestamped`, `vlm-describer`, `whisper-helper` and `whisper-protocol` crates, and GPL-3.0-or-later for the separate `kokoro-espeak` helper program (it contains eSpeak NG). The installer includes the licences and the offer of the GPL source (Settings, About, Licences). The details are in [`NOTICE.md`](NOTICE.md).
 
 ## History
 

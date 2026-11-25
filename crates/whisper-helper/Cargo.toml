@@ -1,0 +1,21 @@
+[package]
+name = "whisper-helper"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+edition = "2024"
+description = "whisper.cpp as a separate program, for the app's voice input"
+
+[features]
+# GPU backends, as whisper-rs has them. Build with the one for the platform:
+# Vulkan on Windows and Linux (needs the Vulkan SDK), Metal on macOS.
+vulkan = ["whisper-rs/vulkan"]
+metal = ["whisper-rs/metal"]
+
+[dependencies]
+log = "0.4.34"
+whisper-protocol = { path = "../whisper-protocol" }
+# `log_backend` sends whisper.cpp's and ggml's output to the `log` crate.
+whisper-rs = { version = "0.16", features = ["log_backend"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_LibraryLoader"] }

@@ -20,7 +20,10 @@ use crate::config::Config;
 use crate::events::{Event, ModelKind};
 use crate::pipeline::Pipeline;
 use crate::promptsets::{Promptset, Promptsets};
-use crate::voice::asr::{AsrWorker, Whisper};
+use crate::voice::asr::AsrWorker;
+use crate::voice::gpu::{AsrStatus, UseGpu};
+use crate::voice::controller::{Input, Settings};
+use crate::voice::live::VoiceHandle;
 
 /// The six fields pushed onto the live describer.
 const DESCRIBER_FIELDS: [&str; 6] =
@@ -39,8 +42,8 @@ pub struct ReloadTriggers {
 /// Decides which models need reloading after `old` becomes `new`: the VLM
 /// provider, model or overrides changed, or the active provider's own API
 /// key did; the TTS voice changed; voice input was switched on or off, or its
-/// model changed while it is on (changing between push-to-talk and the
-/// threshold keeps the model).
+/// model or its CPU/GPU setting changed while it is on (changing between
+/// push-to-talk and the threshold keeps the model).
 pub fn reload_triggers(old: &Config, new: &Config) -> ReloadTriggers {
     let api_key_changed = match new.vlm_provider.as_deref() {
         Some("gemini") => old.gemini_api_key != new.gemini_api_key,
@@ -57,7 +60,8 @@ pub fn reload_triggers(old: &Config, new: &Config) -> ReloadTriggers {
         || api_key_changed;
     let tts = old.tts_voice != new.tts_voice;
     let voice_on = |cfg: &Config| cfg.voice_activation != "off";
-    let asr = voice_on(old) != voice_on(new) || (voice_on(new) && old.voice_model != new.voice_model);
+    let asr = voice_on(old) != voice_on(new)
+        || (voice_on(new) && (old.voice_model != new.voice_model || old.voice_use_gpu != new.voice_use_gpu));
     ReloadTriggers { vlm, tts, asr }
 }
 
@@ -312,7 +316,8 @@ fn animations_dir(app: &tauri::AppHandle) -> PathBuf {
 /// background work (model loads,
 /// pre-generation) can hold its own reference.
 pub struct AppState {
-    config: Mutex<Config>,
+    /// Shared with the voice controller's thread.
+    config: Arc<Mutex<Config>>,
     settings_path: PathBuf,
     promptsets: Promptsets,
     avatar_models: AvatarModels,
@@ -329,6 +334,12 @@ pub struct AppState {
     model_errors: Mutex<HashMap<String, String>>,
     /// Speech recognition, for voice input; no model until voice input is on.
     asr: Arc<AsrWorker>,
+    /// The voice input controller, which runs on a thread of its own.
+    voice: VoiceHandle,
+    /// Where the speech recognition model is, once loaded.
+    asr_status: Mutex<Option<AsrStatus>>,
+    /// Loading or freeing the speech recognition model, one at a time.
+    asr_lock: tokio::sync::Mutex<()>,
     model_dir: PathBuf,
     animations_dir: PathBuf,
 }
@@ -366,10 +377,13 @@ impl AppState {
                 }
             })
         };
-        let pipeline = Arc::new(AppPipeline::new(sink));
+        let pipeline = Arc::new(AppPipeline::new(Arc::clone(&sink)));
+        let config = Arc::new(Mutex::new(config));
+        let asr = Arc::new(AsrWorker::new());
+        let voice = crate::voice::live::start(Arc::clone(&pipeline), Arc::clone(&asr), Arc::clone(&config), sink);
 
         Ok(AppState {
-            config: Mutex::new(config),
+            config,
             settings_path,
             promptsets,
             avatar_models,
@@ -382,7 +396,10 @@ impl AppState {
             tts_ready: AtomicBool::new(false),
             system_messages_ready: AtomicBool::new(true),
             model_errors: Mutex::new(HashMap::new()),
-            asr: Arc::new(AsrWorker::new()),
+            asr,
+            voice,
+            asr_status: Mutex::new(None),
+            asr_lock: tokio::sync::Mutex::new(()),
             model_dir,
             animations_dir: animations_dir(app),
         })
@@ -392,9 +409,37 @@ impl AppState {
         &self.pipeline
     }
 
-    #[allow(dead_code)] // used by the voice controller
-    pub fn asr(&self) -> &Arc<AsrWorker> {
-        &self.asr
+    pub fn voice(&self) -> &VoiceHandle {
+        &self.voice
+    }
+
+    /// Starts the commentary cycle (the voice input works while it runs).
+    pub fn start_cycle(&self) {
+        self.pipeline.start_cycle();
+        self.voice.send(Input::CycleStarted);
+    }
+
+    /// Stops the commentary cycle.
+    pub fn stop_cycle(&self) {
+        self.pipeline.stop_cycle();
+        self.voice.send(Input::CycleStopped);
+    }
+
+    /// Records that the push-to-talk key could not be registered, or clears
+    /// that. An error is sent at once and again whenever the page connects
+    /// (like a model that failed to load).
+    pub fn set_hotkey_error(&self, error: Option<String>) {
+        let mut errors = self.model_errors.lock().expect("model_errors mutex should not be poisoned");
+        match error {
+            Some(message) => {
+                errors.insert("hotkey".to_string(), message.clone());
+                drop(errors);
+                self.send(Event::Error { message });
+            }
+            None => {
+                errors.remove("hotkey");
+            }
+        }
     }
 
     pub fn promptsets(&self) -> &Promptsets {
@@ -429,6 +474,8 @@ impl AppState {
         let old = guard.clone();
         let new = old.apply(updates)?;
         *guard = new.clone();
+        drop(guard);
+        self.voice.send(Input::Settings(Settings::from_config(&new)));
         Ok((old, new))
     }
 
@@ -582,11 +629,21 @@ impl AppState {
         });
     }
 
+    /// (Re)loads the VLM describer for the current config, and then speech
+    /// recognition. The vision model has priority for the video memory:
+    /// speech recognition gives its GPU memory up first, so that the VLM sees
+    /// all of it free, and takes what is left afterwards.
+    pub async fn reinit_describer(self: &Arc<Self>) {
+        self.release_asr_gpu().await;
+        self.load_describer().await;
+        self.reinit_asr().await;
+    }
+
     /// (Re)loads the VLM describer for the current config, reporting
     /// progress and errors on the channel.
     /// A no-op (besides a `ready_state`) when no provider or model is
     /// configured yet.
-    pub async fn reinit_describer(self: &Arc<Self>) {
+    async fn load_describer(self: &Arc<Self>) {
         self.model_errors.lock().expect("model_errors mutex should not be poisoned").remove("vlm");
         let had_describer = self.vlm_ready.swap(false, Ordering::SeqCst);
         let cfg = self.config();
@@ -665,11 +722,13 @@ impl AppState {
     /// channel. Failing leaves voice input without a model; it does not stop
     /// the cycle.
     pub async fn reinit_asr(self: &Arc<Self>) {
+        let _one_at_a_time = self.asr_lock.lock().await;
         self.model_errors.lock().expect("model_errors mutex should not be poisoned").remove("asr");
         let cfg = self.config();
         let worker = Arc::clone(&self.asr);
         if cfg.voice_activation == "off" {
             let _ = tokio::task::spawn_blocking(move || worker.set_model(None)).await;
+            *self.asr_status.lock().expect("asr_status mutex should not be poisoned") = None;
             return;
         }
 
@@ -682,26 +741,55 @@ impl AppState {
         let model = crate::voice::models::find(&cfg.voice_model);
         let loaded = match crate::voice::models::download(model, progress).await {
             Ok(path) => {
+                let model_bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
+                let setting = UseGpu::from_config(&cfg.voice_use_gpu);
+                let llama_devices = vlm_describer::backend_devices();
                 tokio::task::spawn_blocking(move || {
-                    let whisper = Whisper::load(&path)?;
-                    worker.set_model(Some(Box::new(whisper)));
-                    Ok(())
+                    let helper = crate::voice::asr::helper_path().ok_or("whisper-helper was not found next to the app")?;
+                    // Where it runs is decided now, after the VLM has taken its share.
+                    let (asr, placement) =
+                        crate::voice::asr::start_placed(&helper, &path, model_bytes, setting, &llama_devices)?;
+                    worker.set_model(Some(Box::new(asr)));
+                    Ok(placement)
                 })
                 .await
                 .unwrap_or_else(|e| Err(e.to_string()))
             }
             Err(message) => Err(message),
         };
-        if let Err(message) = loaded {
-            let message = format!("Speech recognition init failed: {message}");
-            self.model_errors.lock().expect("model_errors mutex should not be poisoned").insert("asr".to_string(), message.clone());
-            self.send(Event::Error { message });
+        match loaded {
+            Ok(placement) => {
+                log::info!("speech recognition ({}) runs on: {placement:?}", model.name);
+                *self.asr_status.lock().expect("asr_status mutex should not be poisoned") = Some((&placement).into());
+            }
+            Err(message) => {
+                *self.asr_status.lock().expect("asr_status mutex should not be poisoned") = None;
+                let message = format!("Speech recognition init failed: {message}");
+                self.model_errors.lock().expect("model_errors mutex should not be poisoned").insert("asr".to_string(), message.clone());
+                self.send(Event::Error { message });
+            }
         }
     }
 
-    /// Loads the models in parallel at startup.
+    /// Frees speech recognition if it is on the GPU, before the VLM loads.
+    async fn release_asr_gpu(self: &Arc<Self>) {
+        let _one_at_a_time = self.asr_lock.lock().await;
+        let on_gpu = self.asr_status().is_some_and(|status| status.device == "GPU");
+        if on_gpu {
+            let worker = Arc::clone(&self.asr);
+            let _ = tokio::task::spawn_blocking(move || worker.set_model(None)).await;
+            *self.asr_status.lock().expect("asr_status mutex should not be poisoned") = None;
+        }
+    }
+
+    /// Where speech recognition runs, if it is loaded.
+    pub fn asr_status(&self) -> Option<AsrStatus> {
+        self.asr_status.lock().expect("asr_status mutex should not be poisoned").clone()
+    }
+
+    /// Loads the models at startup: the VLM (then speech recognition) and the TTS in parallel.
     pub async fn init_models(self: &Arc<Self>) {
-        tokio::join!(self.reinit_describer(), self.reinit_synthesizer(), self.reinit_asr());
+        tokio::join!(self.reinit_describer(), self.reinit_synthesizer());
     }
 
     /// `set_describer`/`set_synthesizer` block the calling thread until the
@@ -774,6 +862,17 @@ mod tests {
         let off = Config::default();
         let off_other_model = Config { voice_model: "small".to_string(), ..off.clone() };
         assert!(!reload_triggers(&off, &off_other_model).asr, "nothing is loaded to replace");
+    }
+
+    #[test]
+    fn the_speech_model_moves_when_the_cpu_or_gpu_setting_changes_while_voice_input_is_on() {
+        let on = Config { voice_activation: "push_to_talk".to_string(), ..Config::default() };
+        let on_cpu = Config { voice_use_gpu: "cpu".to_string(), ..on.clone() };
+        assert!(reload_triggers(&on, &on_cpu).asr);
+
+        let off = Config::default();
+        let off_cpu = Config { voice_use_gpu: "cpu".to_string(), ..off.clone() };
+        assert!(!reload_triggers(&off, &off_cpu).asr, "nothing is loaded");
     }
 
     #[test]

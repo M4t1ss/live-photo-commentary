@@ -3,7 +3,7 @@
 //! what whisper takes (16 kHz mono).
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
@@ -142,18 +142,15 @@ impl Recorder {
         self.recording = true;
     }
 
-    pub fn is_recording(&self) -> bool {
+    #[cfg(test)]
+    fn is_recording(&self) -> bool {
         self.recording
     }
 
     /// How many samples have been kept (the pre-roll included).
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    fn len(&self) -> usize {
         self.samples.len()
-    }
-
-    /// Whether the recording has reached its longest length.
-    pub fn is_full(&self) -> bool {
-        self.recording && self.samples.len() >= self.max_len
     }
 
     /// Ends the recording and returns it, starting over with an empty buffer.
@@ -177,9 +174,9 @@ pub struct Mic {
 
 impl Mic {
     /// Opens the device with id `device` (the default input if `None`, or if
-    /// that one is gone) and starts capturing. The level in dBFS of each
-    /// `FRAME_MS` goes to `levels`.
-    pub fn open(device: Option<&str>, levels: mpsc::Sender<f32>) -> Result<Mic, String> {
+    /// that one is gone) and starts capturing. `on_level` gets the level in
+    /// dBFS of each `FRAME_MS`, on the audio thread, so it must be quick.
+    pub fn open(device: Option<&str>, on_level: impl Fn(f32) + Send + 'static) -> Result<Mic, String> {
         let host = cpal::default_host();
         let (device, warning) = find_device(&host, device)?;
         let config = device.default_input_config().map_err(|e| format!("cannot use the microphone: {e}"))?;
@@ -188,10 +185,10 @@ impl Mic {
         let recorder = Arc::new(Mutex::new(Recorder::new(sample_rate)));
 
         let stream = match config.sample_format() {
-            SampleFormat::F32 => Self::build::<f32>(&device, config.into(), channels, &recorder, levels),
-            SampleFormat::I16 => Self::build::<i16>(&device, config.into(), channels, &recorder, levels),
-            SampleFormat::I32 => Self::build::<i32>(&device, config.into(), channels, &recorder, levels),
-            SampleFormat::U16 => Self::build::<u16>(&device, config.into(), channels, &recorder, levels),
+            SampleFormat::F32 => Self::build::<f32>(&device, config.into(), channels, &recorder, on_level),
+            SampleFormat::I16 => Self::build::<i16>(&device, config.into(), channels, &recorder, on_level),
+            SampleFormat::I32 => Self::build::<i32>(&device, config.into(), channels, &recorder, on_level),
+            SampleFormat::U16 => Self::build::<u16>(&device, config.into(), channels, &recorder, on_level),
             other => return Err(format!("the microphone uses an unsupported sample format ({other})")),
         }
         .map_err(|e| format!("cannot open the microphone: {e}"))?;
@@ -204,7 +201,7 @@ impl Mic {
         config: cpal::StreamConfig,
         channels: usize,
         recorder: &Arc<Mutex<Recorder>>,
-        levels: mpsc::Sender<f32>,
+        on_level: impl Fn(f32) + Send + 'static,
     ) -> Result<cpal::Stream, cpal::Error>
     where
         T: SizedSample,
@@ -221,10 +218,14 @@ impl Mic {
                     Err(_) => return,
                 };
                 for db in measured {
-                    let _ = levels.send(db);
+                    on_level(db);
                 }
             },
-            |e| log::warn!("microphone stream error: {e}"),
+            |e| match e.kind() {
+                // A late buffer, once per callback while the CPU is busy.
+                cpal::ErrorKind::Xrun => log::debug!("microphone stream: {e}"),
+                _ => log::warn!("microphone stream error: {e}"),
+            },
             None,
         )
     }
@@ -311,14 +312,16 @@ mod tests {
     }
 
     #[test]
-    fn a_recording_is_capped_and_says_when_it_is_full() {
+    fn a_recording_is_capped_and_the_oldest_audio_is_dropped() {
         let mut recorder = Recorder::new(1_000);
         recorder.start();
         recorder.push(&vec![0.1; 1_000 * (MAX_RECORDING_S - 1)]);
-        assert!(!recorder.is_full());
-        recorder.push(&vec![0.1; 1_000 * 5]);
-        assert!(recorder.is_full());
-        assert_eq!(recorder.len(), 1_000 * MAX_RECORDING_S, "the oldest audio is dropped");
+        assert_eq!(recorder.len(), 1_000 * (MAX_RECORDING_S - 1));
+        recorder.push(&vec![0.2; 1_000 * 5]);
+        assert_eq!(recorder.len(), 1_000 * MAX_RECORDING_S);
+        let recording = recorder.finish();
+        assert_eq!(recording[0], 0.1);
+        assert_eq!(*recording.last().unwrap(), 0.2);
     }
 
     /// Needs a microphone, and opens it for a moment (the system's recording
@@ -330,8 +333,11 @@ mod tests {
         for device in list_input_devices() {
             eprintln!("input device: {device:?}");
         }
-        let (tx, rx) = mpsc::channel();
-        let mic = Mic::open(None, tx).expect("the default microphone should open");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mic = Mic::open(None, move |db| {
+            let _ = tx.send(db);
+        })
+        .expect("the default microphone should open");
         eprintln!("opened at {} Hz, warning: {:?}", mic.sample_rate, mic.warning);
         std::thread::sleep(std::time::Duration::from_millis(1500));
         let levels: Vec<f32> = rx.try_iter().collect();

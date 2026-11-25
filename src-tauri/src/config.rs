@@ -37,6 +37,22 @@ pub struct Config {
     /// The id of the microphone (`voice::audio::InputDevice::id`); `None` for
     /// the operating system's default.
     pub voice_input_device: Option<String>,
+    /// Where speech recognition runs: `"auto"` (a GPU with room for it, else
+    /// the CPU), `"cpu"` or `"gpu"`.
+    pub voice_use_gpu: String,
+    /// The push-to-talk key, such as `"Ctrl+Shift+Space"`; `None` for none.
+    pub voice_hotkey: Option<String>,
+    /// How a push-to-talk recording ends: `"release"` of the key, a second
+    /// press (`"toggle"`), or `"silence"`.
+    pub voice_input_end: String,
+    /// When the screenshot for a voice turn is taken: `"start"` of the
+    /// speech, or its `"end"`.
+    pub voice_capture_moment: String,
+    /// The level in dBFS above which speech starts a turn, in `"threshold"`
+    /// mode (and starts the end-on-silence detection in push to talk).
+    pub voice_threshold_db: f32,
+    /// Whether the user's voice may start a turn while the avatar speaks.
+    pub voice_barge_in: bool,
 }
 
 impl Default for Config {
@@ -61,6 +77,12 @@ impl Default for Config {
             voice_model: crate::voice::models::DEFAULT_MODEL.to_string(),
             voice_language: "auto".to_string(),
             voice_input_device: None,
+            voice_use_gpu: "auto".to_string(),
+            voice_hotkey: None,
+            voice_input_end: "release".to_string(),
+            voice_capture_moment: "start".to_string(),
+            voice_threshold_db: -45.0,
+            voice_barge_in: false,
         }
     }
 }
@@ -156,6 +178,12 @@ impl Config {
             voice_model: d.voice_model,
             voice_language: d.voice_language,
             voice_input_device: d.voice_input_device,
+            voice_use_gpu: d.voice_use_gpu,
+            voice_hotkey: d.voice_hotkey,
+            voice_input_end: d.voice_input_end,
+            voice_capture_moment: d.voice_capture_moment,
+            voice_threshold_db: d.voice_threshold_db,
+            voice_barge_in: d.voice_barge_in,
         }
         // MODEL_DIR is intentionally ignored: Rust resolves the bundled models
         // directory itself (see avatar.rs), so the field doesn't exist here.
@@ -212,6 +240,10 @@ mod tests {
         assert_eq!(d.voice_model, "base");
         assert_eq!(d.voice_language, "auto");
         assert_eq!(d.voice_input_device, None);
+        assert_eq!(d.voice_use_gpu, "auto");
+        assert_eq!(d.voice_hotkey, None);
+        assert_eq!((d.voice_input_end.as_str(), d.voice_capture_moment.as_str()), ("release", "start"));
+        assert_eq!((d.voice_threshold_db, d.voice_barge_in), (-45.0, false));
 
         // A settings.json from before voice input: serde fills in the defaults.
         let old: Config = serde_json::from_str(r#"{"tts_voice": "af_nicole"}"#).unwrap();

@@ -94,6 +94,9 @@ pub enum Event {
     VoiceTranscribing,
     /// What the user said, for display.
     VoiceTranscript { text: String },
+    /// The microphone's level, for the settings screen's meter (only while it
+    /// asked for it).
+    VoiceLevel { db: f32 },
     /// The voice turn ended without anything to answer (nothing recognised,
     /// or it failed): the frontend goes back to its normal screenshot timing.
     VoiceEmpty,
@@ -179,6 +182,7 @@ impl Event {
             Event::VoiceTranscribing => json!({ "type": "voice_transcribing" }),
             Event::VoiceTranscript { text } => json!({ "type": "voice_transcript", "text": text }),
             Event::VoiceEmpty => json!({ "type": "voice_empty" }),
+            Event::VoiceLevel { db } => json!({ "type": "voice_level", "db": round(f64::from(*db), 1) }),
         }
     }
 }
@@ -267,6 +271,7 @@ mod tests {
             json!({ "type": "voice_transcript", "text": "what is that?" })
         );
         assert_eq!(Event::VoiceEmpty.to_json(), json!({ "type": "voice_empty" }));
+        assert_eq!(Event::VoiceLevel { db: -33.456 }.to_json(), json!({ "type": "voice_level", "db": -33.5 }));
     }
 
     #[test]

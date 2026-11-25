@@ -40,7 +40,7 @@ xcap = "0.9"
 image = "0.25"
 base64 = "0.22"
 dunce = "1"
-tokio = { version = "1", features = ["time", "rt", "macros", "fs", "io-util"] }
+tokio = { version = "1", features = ["time", "rt", "macros", "fs", "io-util", "sync"] }
 kokoro-timestamped = { path = "../crates/kokoro-timestamped" }
 vlm-describer = { path = "../crates/vlm-describer", features = ["llama-cpp"] }
 # Only for build.rs: as a direct dependent of this crate (its `links = "llama"`),
@@ -52,12 +52,16 @@ llama-cpp-sys-2 = "=0.1.158"
 serde_yaml_ng = "0.10"
 hound = "3.5"
 tauri-plugin-opener = "2"
+# The push-to-talk hotkey, which works while the app is not in focus.
+tauri-plugin-global-shortcut = "2"
 sha2 = "0.10"
-# Voice input: microphone capture, resampling to 16 kHz, and whisper.cpp. No GPU
-# features: the speech is short, and the GPU is llama.cpp's.
+# Voice input: microphone capture, resampling to 16 kHz, and the messages to
+# `whisper-helper`, the program that runs whisper.cpp. It is a program of its own
+# because whisper.cpp's copy of ggml and llama.cpp's are different versions, which
+# on Linux the dynamic linker mixes up if they share a process.
 cpal = "0.18"
 rubato = "5.1"
-whisper-rs = { version = "0.16", features = ["log_backend"] }
+whisper-protocol = { path = "../crates/whisper-protocol" }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]

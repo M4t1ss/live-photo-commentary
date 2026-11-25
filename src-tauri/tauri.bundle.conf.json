@@ -3,7 +3,7 @@
     "beforeBuildCommand": "cargo xtask package-helper src-tauri/binaries --tauri"
   },
   "bundle": {
-    "externalBin": ["binaries/kokoro-espeak"],
+    "externalBin": ["binaries/kokoro-espeak", "binaries/whisper-helper"],
     "resources": {
       "binaries/espeak-ng-data": "espeak-ng-data",
       "resources/models/model.*": "resources/models/",

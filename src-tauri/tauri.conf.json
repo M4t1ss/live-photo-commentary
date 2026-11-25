@@ -52,6 +52,9 @@
       "../crates/kokoro-timestamped/LICENSES": "licenses/kokoro-timestamped/LICENSES",
       "../crates/vlm-describer/LICENSE-MIT": "licenses/vlm-describer/LICENSE-MIT",
       "../crates/vlm-describer/LICENSE-APACHE": "licenses/vlm-describer/LICENSE-APACHE",
+      "../crates/whisper-helper/LICENSE-MIT": "licenses/whisper-helper/LICENSE-MIT",
+      "../crates/whisper-helper/LICENSE-APACHE": "licenses/whisper-helper/LICENSE-APACHE",
+      "../crates/whisper-helper/NOTICE.md": "licenses/whisper-helper/NOTICE.md",
       "../crates/kokoro-espeak/LICENSE": "licenses/kokoro-espeak/LICENSE",
       "../crates/kokoro-espeak/NOTICE.md": "licenses/kokoro-espeak/NOTICE.md",
       "../crates/kokoro-espeak/LICENSES": "licenses/kokoro-espeak/LICENSES"

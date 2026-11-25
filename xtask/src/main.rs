@@ -3,8 +3,10 @@
 //! `cargo xtask package-helper OUT_DIR [--target TRIPLE] [--tauri]`
 //!
 //! Builds `kokoro-espeak` in release mode and copies it, with eSpeak's
-//! `espeak-ng-data` folder, into `OUT_DIR`. With `--tauri`, the helper is
-//! named `kokoro-espeak-<target triple>`, as Tauri sidecars require.
+//! `espeak-ng-data` folder, into `OUT_DIR`, and does the same for
+//! `whisper-helper` (with Vulkan, or Metal on Apple targets). With `--tauri`,
+//! the helpers are named `kokoro-espeak-<target triple>` and
+//! `whisper-helper-<target triple>`, as Tauri sidecars require.
 //!
 //! `cargo xtask package-cuda-backend OUT_DIR [--release]`
 //!
@@ -59,33 +61,81 @@ fn package_helper(args: &[String]) -> Result<(), Box<dyn Error>> {
     let out_dir = std::path::absolute(out_dir.ok_or(USAGE)?)?;
 
     let (helper, data) = build_helper(target.as_deref())?;
+    let whisper = build_whisper_helper(target.as_deref())?;
+    let triple = match (tauri, &target) {
+        (false, _) => None,
+        (true, Some(triple)) => Some(triple.clone()),
+        (true, None) => Some(host_triple()?),
+    };
 
     fs::create_dir_all(&out_dir)?;
-    let helper_name = if tauri {
-        let triple = match target {
-            Some(triple) => triple,
-            None => host_triple()?,
-        };
-        let mut name = format!("kokoro-espeak-{triple}");
-        if let Some(extension) = helper.extension() {
-            name = format!("{name}.{}", extension.to_string_lossy());
-        }
-        name.into()
-    } else {
-        helper.file_name().ok_or("helper has no file name")?.to_owned()
-    };
+    let helper_name = sidecar_name("kokoro-espeak", &helper, triple.as_deref())?;
     fs::copy(&helper, out_dir.join(&helper_name))?;
+    let whisper_name = sidecar_name("whisper-helper", &whisper, triple.as_deref())?;
+    fs::copy(&whisper, out_dir.join(&whisper_name))?;
     let data_destination = out_dir.join("espeak-ng-data");
     if data_destination.exists() {
         fs::remove_dir_all(&data_destination)?;
     }
     copy_dir(&data, &data_destination)?;
     println!(
-        "copied {} and espeak-ng-data to {}",
+        "copied {}, {} and espeak-ng-data to {}",
         helper_name.to_string_lossy(),
+        whisper_name.to_string_lossy(),
         out_dir.display()
     );
     Ok(())
+}
+
+/// The file name a helper gets in the output folder: its own, or with the
+/// target triple before the extension, as Tauri sidecars need.
+fn sidecar_name(base: &str, built: &Path, triple: Option<&str>) -> Result<std::ffi::OsString, Box<dyn Error>> {
+    let Some(triple) = triple else {
+        return Ok(built.file_name().ok_or("helper has no file name")?.to_owned());
+    };
+    let mut name = format!("{base}-{triple}");
+    if let Some(extension) = built.extension() {
+        name = format!("{name}.{}", extension.to_string_lossy());
+    }
+    Ok(name.into())
+}
+
+/// The GPU backend of whisper.cpp for a target (or the host, with `None`):
+/// Metal on Apple's platforms, Vulkan on the others.
+fn whisper_gpu_feature(target: Option<&str>) -> Result<&'static str, Box<dyn Error>> {
+    let triple = match target {
+        Some(triple) => triple.to_string(),
+        None => host_triple()?,
+    };
+    Ok(if triple.contains("apple") { "metal" } else { "vulkan" })
+}
+
+/// Builds `whisper-helper` in release mode with the GPU backend of the
+/// platform, returning its path. A separate build from the eSpeak helper's, so
+/// that the two don't share a Cargo invocation.
+fn build_whisper_helper(target: Option<&str>) -> Result<PathBuf, Box<dyn Error>> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut command = Command::new(cargo);
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask should be in the workspace");
+    command.current_dir(workspace);
+    command.args(["build", "--release", "-p", "whisper-helper", "--features", whisper_gpu_feature(target)?]);
+    command.arg("--message-format=json-render-diagnostics");
+    if let Some(target) = target {
+        command.args(["--target", target]);
+    }
+    let output = command.stderr(Stdio::inherit()).output()?;
+    if !output.status.success() {
+        return Err("building whisper-helper failed".into());
+    }
+    for line in output.stdout.lines() {
+        let message: Value = serde_json::from_str(&line?)?;
+        if message["reason"] == "compiler-artifact" && message["target"]["name"] == "whisper-helper" {
+            if let Some(executable) = message["executable"].as_str() {
+                return Ok(PathBuf::from(executable));
+            }
+        }
+    }
+    Err("Cargo didn't report the whisper-helper executable".into())
 }
 
 /// Builds the helper, returning its path and that of `espeak-ng-data`.

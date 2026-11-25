@@ -37,7 +37,7 @@ pub struct UploadPayload {
 /// the session).
 #[tauri::command]
 pub fn connect(state: State<'_, Arc<AppState>>, events: Channel<serde_json::Value>) -> Result<(), String> {
-    state.pipeline().stop_cycle();
+    state.stop_cycle();
     state.set_channel(events);
 
     let cfg = state.config();
@@ -65,6 +65,7 @@ pub fn get_config(state: State<'_, Arc<AppState>>) -> Config {
 /// Reloads the VLM and/or TTS exactly when `state::reload_triggers` says to.
 #[tauri::command]
 pub fn set_config(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     data: serde_json::Map<String, serde_json::Value>,
     persist: bool,
@@ -74,13 +75,22 @@ pub fn set_config(
         new.save(state.settings_path())?;
     }
 
+    // The push-to-talk key follows the settings. A key that another program
+    // has taken is reported, and the rest of the settings still apply.
+    let (old_key, new_key) = (crate::voice::hotkey::effective(&old), crate::voice::hotkey::effective(&new));
+    if old_key != new_key {
+        let result = crate::voice::hotkey::apply(&app, old_key.as_deref(), new_key.as_deref());
+        state.set_hotkey_error(result.err());
+    }
+
     let triggers = crate::state::reload_triggers(&old, &new);
     let app_state = Arc::clone(state.inner());
     if triggers.vlm {
         let app_state = Arc::clone(&app_state);
         tauri::async_runtime::spawn(async move { app_state.reinit_describer().await });
     }
-    if triggers.asr {
+    // A VLM reload loads speech recognition after it, so then this is not needed.
+    if triggers.asr && !triggers.vlm {
         let app_state = Arc::clone(&app_state);
         tauri::async_runtime::spawn(async move { app_state.reinit_asr().await });
     }
@@ -111,13 +121,13 @@ pub async fn get_models(state: State<'_, Arc<AppState>>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn start_cycle(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.pipeline().start_cycle();
+    state.start_cycle();
     Ok(())
 }
 
 #[tauri::command]
 pub fn stop_cycle(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.pipeline().stop_cycle();
+    state.stop_cycle();
     Ok(())
 }
 
@@ -227,11 +237,32 @@ pub fn upload_model(request: tauri::ipc::Request<'_>, state: State<'_, Arc<AppSt
     Ok(UploadPayload { name, names })
 }
 
+/// The frontend reports whether the avatar is speaking (its audio is playing),
+/// so that voice input doesn't take the avatar's own voice for the user's.
+#[tauri::command]
+pub fn voice_set_speaking(state: State<'_, Arc<AppState>>, speaking: bool) {
+    state.voice().send(crate::voice::controller::Input::Speaking(speaking));
+}
+
+/// The settings screen starts or stops asking for the microphone's level
+/// (`voice_level` events) for its meter.
+#[tauri::command]
+pub fn voice_monitor(state: State<'_, Arc<AppState>>, on: bool) {
+    state.voice().send(crate::voice::controller::Input::Monitor(on));
+}
+
 /// The microphones, the system default first, for the voice input settings.
 #[tauri::command]
 pub async fn list_input_devices() -> Result<Vec<crate::voice::audio::InputDevice>, String> {
     // Asking the audio system takes a moment.
     tauri::async_runtime::spawn_blocking(crate::voice::audio::list_input_devices).await.map_err(|e| e.to_string())
+}
+
+/// Where speech recognition runs (`{device: "GPU" | "CPU", detail}`: the GPU's
+/// name, or why it is the CPU), or nothing while it is not loaded.
+#[tauri::command]
+pub fn asr_status(state: State<'_, Arc<AppState>>) -> Option<crate::voice::gpu::AsrStatus> {
+    state.asr_status()
 }
 
 /// The speech recognition models to choose from.

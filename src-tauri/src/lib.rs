@@ -96,11 +96,21 @@ pub fn run() {
             let _ = scope.allow_directory(app_state.avatar_models().user_dir(), true);
             let _ = scope.allow_directory(app_state.animations_dir(), true);
             app.manage(Arc::clone(&app_state));
+            if let Some(key) = voice::hotkey::effective(&app_state.config()) {
+                if let Err(message) = voice::hotkey::apply(app.handle(), None, Some(&key)) {
+                    app_state.set_hotkey_error(Some(message));
+                }
+            }
             tauri::async_runtime::spawn(async move { app_state.init_models().await });
 
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
+        .plugin(voice::hotkey::plugin(|app, input| {
+            if let Some(state) = app.try_state::<Arc<state::AppState>>() {
+                state.voice().send(input);
+            }
+        }))
         .invoke_handler(tauri::generate_handler![
             screenshot::list_monitors,
             screenshot::capture_monitor_preview,
@@ -113,6 +123,9 @@ pub fn run() {
             commands::get_models,
             commands::list_input_devices,
             commands::asr_models,
+            commands::asr_status,
+            commands::voice_set_speaking,
+            commands::voice_monitor,
             commands::start_cycle,
             commands::stop_cycle,
             commands::list_promptsets,
