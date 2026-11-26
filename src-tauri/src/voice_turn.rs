@@ -5,12 +5,16 @@
 //! number it was made for, and one for a turn that was superseded or aborted
 //! is ignored.
 
+use std::sync::Arc;
+
 use image::DynamicImage;
 
 /// A finished turn: the screenshot and the transcript, ready to describe.
 pub struct Ready {
-    pub image: DynamicImage,
+    pub image: Arc<DynamicImage>,
     pub text: String,
+    /// Whether the screenshot was already sent to the page (see `mark_previewed`).
+    pub previewed: bool,
 }
 
 #[derive(Default)]
@@ -19,7 +23,9 @@ pub struct VoiceTurn {
     current: u64,
     /// Whether that turn is still waiting for a part (or for the user).
     active: bool,
-    frame: Option<DynamicImage>,
+    frame: Option<Arc<DynamicImage>>,
+    /// The screenshot has been shown to the user while waiting for the transcript.
+    previewed: bool,
     transcript: Option<String>,
 }
 
@@ -29,6 +35,7 @@ impl VoiceTurn {
         self.current += 1;
         self.active = true;
         self.frame = None;
+        self.previewed = false;
         self.transcript = None;
         self.current
     }
@@ -46,12 +53,20 @@ impl VoiceTurn {
 
     /// The screenshot for `turn`. Returns the finished turn if the transcript
     /// was already there.
-    pub fn set_frame(&mut self, turn: u64, image: DynamicImage) -> Option<Ready> {
+    pub fn set_frame(&mut self, turn: u64, image: Arc<DynamicImage>) -> Option<Ready> {
         if !self.is_current(turn) {
             return None;
         }
         self.frame = Some(image);
         self.take_if_ready()
+    }
+
+    /// Notes that the screenshot of `turn` has been shown to the user, so that
+    /// the finished turn doesn't show it again.
+    pub fn mark_previewed(&mut self, turn: u64) {
+        if self.is_current(turn) {
+            self.previewed = true;
+        }
     }
 
     /// What the user said in `turn`. Returns the finished turn if the
@@ -78,6 +93,7 @@ impl VoiceTurn {
     pub fn reset(&mut self) {
         self.active = false;
         self.frame = None;
+        self.previewed = false;
         self.transcript = None;
     }
 
@@ -87,6 +103,7 @@ impl VoiceTurn {
             Some(Ready {
                 image: self.frame.take().expect("checked above"),
                 text: self.transcript.take().expect("checked above"),
+                previewed: std::mem::take(&mut self.previewed),
             })
         } else {
             None
@@ -98,8 +115,8 @@ impl VoiceTurn {
 mod tests {
     use super::*;
 
-    fn image() -> DynamicImage {
-        DynamicImage::ImageRgb8(image::RgbImage::new(2, 2))
+    fn image() -> Arc<DynamicImage> {
+        Arc::new(DynamicImage::ImageRgb8(image::RgbImage::new(2, 2)))
     }
 
     #[test]
@@ -119,6 +136,25 @@ mod tests {
         assert!(turn.set_transcript(n, "hello".to_string()).is_none());
         let ready = turn.set_frame(n, image()).expect("both parts are there");
         assert_eq!(ready.text, "hello");
+    }
+
+    #[test]
+    fn the_finished_turn_says_whether_its_screenshot_was_already_shown() {
+        let mut turn = VoiceTurn::default();
+        let n = turn.begin();
+        turn.set_frame(n, image());
+        turn.mark_previewed(n);
+        assert!(turn.set_transcript(n, "hello".to_string()).expect("both parts").previewed);
+
+        let n = turn.begin(); // the mark does not carry over
+        turn.set_frame(n, image());
+        assert!(!turn.set_transcript(n, "hello".to_string()).expect("both parts").previewed);
+
+        let old = turn.begin();
+        let new = turn.begin();
+        turn.mark_previewed(old); // a mark for an older turn is ignored
+        turn.set_frame(new, image());
+        assert!(!turn.set_transcript(new, "hello".to_string()).expect("both parts").previewed);
     }
 
     #[test]

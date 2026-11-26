@@ -462,14 +462,14 @@ where
         if self.voice.lock().expect("voice mutex should not be poisoned").is_active() {
             return;
         }
-        self.submit(cfg, image, None);
+        self.submit(cfg, Arc::new(image), None, false);
     }
 
     /// The common part of `trigger` and a finished voice turn. A voice turn
     /// (`user_text` is set) is always described: it skips the difference
-    /// check, and is not dropped as "busy".
-    fn submit(&self, cfg: &Config, image: DynamicImage, user_text: Option<String>) {
-        let image = Arc::new(image);
+    /// check, and is not dropped as "busy". `shown`: the page already shows
+    /// `image` (see `voice_set_frame`), so it is not sent again.
+    fn submit(&self, cfg: &Config, image: Arc<DynamicImage>, user_text: Option<String>, shown: bool) {
         let mut state = self.frame_state.lock().expect("frame state mutex should not be poisoned");
         let previous = state.prev_image.clone();
 
@@ -495,10 +495,12 @@ where
         let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         (self.sink)(Event::Frame {
             image: Arc::clone(&image),
-            push,
+            // Shown early already, and then pushed.
+            push: push && !shown,
             gen,
             diff,
             measure: diff.map(|_| cfg.difference_measure.clone()),
+            shown,
         });
 
         if !accepted {
@@ -564,11 +566,26 @@ where
     }
 
     /// The screenshot taken for `turn`. If the transcript is already there,
-    /// the turn is described.
+    /// the turn is described. If not, the screenshot is shown to the user now
+    /// (`voice_frame`), so that they see what the answer will be about while their
+    /// speech is still being transcribed; the VLM's own "previous image" stays
+    /// what it was until the turn is described.
     pub fn voice_set_frame(&self, cfg: &Config, turn: u64, image: DynamicImage) {
-        let ready = self.voice.lock().expect("voice mutex should not be poisoned").set_frame(turn, image);
+        let image = Arc::new(image);
+        let ready = {
+            // Held while the event goes out, so that the turn can't finish (and send its own
+            // `frame`) between the screenshot being stored and being shown.
+            let mut voice = self.voice.lock().expect("voice mutex should not be poisoned");
+            let ready = voice.set_frame(turn, Arc::clone(&image));
+            if ready.is_none() && voice.is_current(turn) {
+                let push = !self.frame_state.lock().expect("frame state mutex should not be poisoned").last_rejected;
+                voice.mark_previewed(turn);
+                (self.sink)(Event::VoiceFrame { image, push });
+            }
+            ready
+        };
         if let Some(ready) = ready {
-            self.submit(cfg, ready.image, Some(ready.text));
+            self.submit(cfg, ready.image, Some(ready.text), ready.previewed);
         }
     }
 
@@ -591,7 +608,7 @@ where
         };
         (self.sink)(Event::VoiceTranscript { text });
         if let Some(ready) = ready {
-            self.submit(cfg, ready.image, Some(ready.text));
+            self.submit(cfg, ready.image, Some(ready.text), ready.previewed);
         }
     }
 
@@ -1167,12 +1184,54 @@ mod tests {
             .iter()
             .filter_map(|e| match e {
                 Event::VoiceListening { .. } => Some("listening"),
+                Event::VoiceFrame { .. } => Some("voice_frame"),
                 Event::VoiceTranscript { text } if text == "what is that?" => Some("transcript"),
                 Event::Frame { .. } => Some("frame"),
                 _ => None,
             })
             .collect();
-        assert_eq!(kinds, ["listening", "transcript", "frame"]);
+        // The screenshot is shown as soon as it is taken, and not again with the turn.
+        assert_eq!(kinds, ["listening", "voice_frame", "transcript", "frame"]);
+        let shown = events.lock().unwrap().iter().any(|e| matches!(e, Event::Frame { shown: true, push: false, .. }));
+        assert!(shown, "the turn's frame must say that the page has the image already");
+    }
+
+    #[test]
+    fn a_screenshot_that_arrives_after_the_transcript_is_shown_with_the_turn_not_before() {
+        let (pipeline, events, _seen) = voice_pipeline();
+        let cfg = Config::default();
+
+        let turn = pipeline.voice_begin();
+        pipeline.voice_set_transcript(&cfg, turn, "hello".to_string());
+        pipeline.voice_set_frame(&cfg, turn, test_image());
+        pipeline.flush_vlm();
+
+        assert_eq!(count(&events, |e| matches!(e, Event::VoiceFrame { .. })), 0, "nothing to show early");
+        let frames: Vec<bool> =
+            events.lock().unwrap().iter().filter_map(|e| if let Event::Frame { shown, .. } = e { Some(*shown) } else { None }).collect();
+        assert_eq!(frames, [false], "one frame, carrying its image");
+    }
+
+    #[test]
+    fn showing_the_screenshot_early_does_not_touch_what_the_vlm_gets_as_the_previous_image() {
+        let (pipeline, events, _seen) = voice_pipeline();
+        let cfg = Config::default();
+        let earlier = DynamicImage::ImageRgb8(image::RgbImage::new(4, 4));
+        pipeline.trigger(&cfg, earlier);
+        pipeline.flush_vlm();
+
+        let turn = pipeline.voice_begin();
+        pipeline.voice_set_frame(&cfg, turn, DynamicImage::ImageRgb8(image::RgbImage::new(6, 6)));
+        let previous = pipeline.frame_state.lock().unwrap().prev_image.clone().expect("the earlier frame");
+        assert_eq!((previous.width(), previous.height()), (4, 4), "still the earlier frame while the turn waits");
+        // The early frame is pushed like a normal one: the page's current frame becomes "previous".
+        let early_push = events.lock().unwrap().iter().find_map(|e| if let Event::VoiceFrame { push, .. } = e { Some(*push) } else { None });
+        assert_eq!(early_push, Some(true));
+
+        pipeline.voice_set_transcript(&cfg, turn, "hello".to_string());
+        pipeline.flush_vlm();
+        let current = pipeline.frame_state.lock().unwrap().prev_image.clone().expect("the turn's frame");
+        assert_eq!((current.width(), current.height()), (6, 6), "the turn's frame is the next previous");
     }
 
     #[test]
@@ -1258,6 +1317,8 @@ mod tests {
 
         assert_eq!(count(&events, |e| matches!(e, Event::VoiceEmpty)), 1);
         assert_eq!(count(&events, |e| matches!(e, Event::Frame { .. } | Event::VoiceTranscript { .. })), 0);
+        // It was shown when it was taken; the page puts back what it showed before (it reacts to voice_empty).
+        assert_eq!(count(&events, |e| matches!(e, Event::VoiceFrame { .. })), 1);
         assert!(seen.lock().unwrap().is_empty());
     }
 

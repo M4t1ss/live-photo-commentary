@@ -232,7 +232,7 @@ mod tests {
             let image = std::sync::Arc::new(image::DynamicImage::ImageRgba8(img));
 
             let t = Instant::now();
-            let json = crate::events::Event::Frame { image: image.clone(), push: true, gen: 1, diff: None, measure: None }.to_json();
+            let json = crate::events::Event::Frame { image: image.clone(), push: true, gen: 1, diff: None, measure: None, shown: false }.to_json();
             let frame_event = t.elapsed();
 
             let t = Instant::now();

@@ -64,7 +64,9 @@ pub struct ChunkEvent {
 /// variant to the JSON shape the frontend reads.
 #[derive(Debug)]
 pub enum Event {
-    Frame { image: Arc<DynamicImage>, push: bool, gen: u64, diff: Option<f64>, measure: Option<String> },
+    /// A frame sent to the VLM. `shown`: the page already shows this image (a voice turn's
+    /// screenshot, sent early as `VoiceFrame`), so the JSON leaves the image out.
+    Frame { image: Arc<DynamicImage>, push: bool, gen: u64, diff: Option<f64>, measure: Option<String>, shown: bool },
     Skipped { diff: f64 },
     Busy { message: String },
     TakeScreenshot,
@@ -94,6 +96,11 @@ pub enum Event {
     VoiceTranscribing,
     /// What the user said, for display.
     VoiceTranscript { text: String },
+    /// The screenshot of a voice turn, to be shown as soon as it is taken, while the
+    /// user's speech is still being transcribed. It is not sent to the VLM yet: that
+    /// happens with the turn's `Frame`. `push`: the frame shown so far becomes the
+    /// "previous" one, as with `Frame`.
+    VoiceFrame { image: Arc<DynamicImage>, push: bool },
     /// The microphone's level, for the settings screen's meter (only while it
     /// asked for it).
     VoiceLevel { db: f32 },
@@ -138,8 +145,12 @@ impl Event {
     pub fn to_json(&self) -> serde_json::Value {
         use serde_json::json;
         match self {
-            Event::Frame { image, push, gen, diff, measure } => {
-                let mut value = json!({ "type": "frame", "url": png_data_url(image), "push": push, "gen": gen });
+            Event::Frame { image, push, gen, diff, measure, shown } => {
+                let mut value = if *shown {
+                    json!({ "type": "frame", "shown": true, "push": push, "gen": gen })
+                } else {
+                    json!({ "type": "frame", "url": png_data_url(image), "push": push, "gen": gen })
+                };
                 if let (Some(diff), Some(measure)) = (diff, measure) {
                     value["diff"] = json!(round(*diff, 6));
                     value["measure"] = json!(measure);
@@ -182,6 +193,9 @@ impl Event {
             Event::VoiceTranscribing => json!({ "type": "voice_transcribing" }),
             Event::VoiceTranscript { text } => json!({ "type": "voice_transcript", "text": text }),
             Event::VoiceEmpty => json!({ "type": "voice_empty" }),
+            Event::VoiceFrame { image, push } => {
+                json!({ "type": "voice_frame", "url": png_data_url(image), "push": push })
+            }
             Event::VoiceLevel { db } => json!({ "type": "voice_level", "db": round(f64::from(*db), 1) }),
         }
     }
@@ -221,7 +235,8 @@ mod tests {
 
     #[test]
     fn frame_includes_diff_and_measure_only_when_both_present() {
-        let json = Event::Frame { image: Arc::new(tiny_image()), push: true, gen: 3, diff: None, measure: None }.to_json();
+        let json =
+            Event::Frame { image: Arc::new(tiny_image()), push: true, gen: 3, diff: None, measure: None, shown: false }.to_json();
         assert_eq!(json["type"], "frame");
         assert_eq!(json["push"], true);
         assert_eq!(json["gen"], 3);
@@ -235,10 +250,22 @@ mod tests {
             gen: 4,
             diff: Some(0.123_456_789),
             measure: Some("mse".to_string()),
+            shown: false,
         }
         .to_json();
         assert_eq!(json["diff"], 0.123457); // rounded to 6 decimals
         assert_eq!(json["measure"], "mse");
+    }
+
+    #[test]
+    fn a_frame_the_page_already_shows_leaves_the_image_out() {
+        let shown = Event::Frame { image: Arc::new(tiny_image()), push: false, gen: 5, diff: None, measure: None, shown: true }.to_json();
+        assert_eq!(shown, serde_json::json!({ "type": "frame", "shown": true, "push": false, "gen": 5 }));
+
+        let early = Event::VoiceFrame { image: Arc::new(tiny_image()), push: true }.to_json();
+        assert_eq!(early["type"], "voice_frame");
+        assert_eq!(early["push"], true);
+        assert!(early["url"].as_str().unwrap().starts_with("data:image/png;base64,"));
     }
 
     #[test]

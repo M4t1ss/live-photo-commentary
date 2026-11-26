@@ -380,19 +380,16 @@ function reportError(e) {
 function handleMessage(data) {
   switch (data.type) {
     case "frame": {
-      const newUrl = data.url;
-      if (data.push && currentFrameUrl) {
-        prevFrameEl.src = currentFrameUrl;
-        prevFrameEl.classList.remove("hidden");
-      }
-      currentFrameUrl = newUrl;
-      currentFrameEl.src = newUrl;
-      currentFrameEl.classList.remove("hidden");
-      if (data.diff !== undefined) {
-        diffInfoEl.innerHTML = `${data.measure.toUpperCase()}  Δ=<span id="diff-value" title="Click to copy">${data.diff}</span>`;
-        diffInfoEl.classList.remove("hidden");
-      } else {
-        diffInfoEl.classList.add("hidden");
+      // A voice turn's screenshot was shown when it was taken (voice_frame): `shown`.
+      _previewBackup = null;
+      if (!data.shown) {
+        showFrame(data.url, data.push);
+        if (data.diff !== undefined) {
+          diffInfoEl.innerHTML = `${data.measure.toUpperCase()}  Δ=<span id="diff-value" title="Click to copy">${data.diff}</span>`;
+          diffInfoEl.classList.remove("hidden");
+        } else {
+          diffInfoEl.classList.add("hidden");
+        }
       }
       firstChunkReceived = false;
       if (data.gen !== undefined) _currentAudioGen = data.gen;
@@ -541,6 +538,7 @@ function handleMessage(data) {
     // Voice input: the backend interrupts the avatar and runs the turn; this is what
     // the page has to do about it.
     case "voice_listening":
+      restorePreview();   // the screenshot of a turn that was replaced by this one
       _voiceTurnActive = true;
       _heardText = null;
       cancelScreenshotTimer();
@@ -564,8 +562,27 @@ function handleMessage(data) {
       setPhase(`You said: “${data.text}”`, "none");
       break;
 
+    case "voice_frame":
+      // The voice turn's screenshot, as soon as it is taken, while the speech is still being
+      // transcribed. The model hasn't seen it yet; if the turn comes to nothing, what was
+      // shown before goes back (restorePreview).
+      if (!_previewBackup) {
+        _previewBackup = {
+          current: currentFrameUrl,
+          prev: prevFrameEl.getAttribute("src"),
+          prevHidden: prevFrameEl.classList.contains("hidden"),
+          currentHidden: currentFrameEl.classList.contains("hidden"),
+          diffHtml: diffInfoEl.innerHTML,
+          diffHidden: diffInfoEl.classList.contains("hidden"),
+        };
+      }
+      showFrame(data.url, data.push);
+      diffInfoEl.classList.add("hidden");   // a voice turn has no difference value
+      break;
+
     case "voice_empty":
       // Nothing was understood (or it failed): the avatar goes on as before.
+      restorePreview();
       _voiceTurnActive = false;
       _heardText = null;
       if (running) scheduleScreenshot();
@@ -575,6 +592,34 @@ function handleMessage(data) {
       updateVoiceMeter(data.db);
       break;
   }
+}
+
+// Makes `url` the current frame; with `push`, the frame shown so far becomes the previous one.
+function showFrame(url, push) {
+  if (push && currentFrameUrl) {
+    prevFrameEl.src = currentFrameUrl;
+    prevFrameEl.classList.remove("hidden");
+  }
+  currentFrameUrl = url;
+  currentFrameEl.src = url;
+  currentFrameEl.classList.remove("hidden");
+}
+
+// What the frame panels showed before a voice turn's screenshot was put up early, kept until
+// the turn is described (then the screenshot stays) or comes to nothing (then this goes back).
+let _previewBackup = null;
+
+function restorePreview() {
+  const b = _previewBackup;
+  if (!b) return;
+  _previewBackup = null;
+  currentFrameUrl = b.current;
+  if (b.current) currentFrameEl.src = b.current; else currentFrameEl.removeAttribute("src");
+  currentFrameEl.classList.toggle("hidden", b.currentHidden);
+  if (b.prev) prevFrameEl.src = b.prev; else prevFrameEl.removeAttribute("src");
+  prevFrameEl.classList.toggle("hidden", b.prevHidden);
+  diffInfoEl.innerHTML = b.diffHtml;
+  diffInfoEl.classList.toggle("hidden", b.diffHidden);
 }
 
 // --- Voice input state
@@ -770,6 +815,7 @@ function stopCycle() {
   cancelScreenshotTimer();
   _voiceTurnActive = false;
   _heardText = null;
+  _previewBackup = null;
   setRunning(false);
   resetAudio();
   window.clearSubtitle?.();
