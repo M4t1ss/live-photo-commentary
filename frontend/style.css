@@ -872,3 +872,44 @@ body {
   font-size: 13px;
 }
 #old-python-banner span { flex: 1; }
+
+/* Voice tab of the settings */
+#modal .inline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+#modal .inline-row input:not([type="range"]) { flex: 1; width: auto; min-width: 0; }
+#modal .inline-row input[type="range"] { flex: 1; width: auto; min-width: 0; }
+#cfg-voice-threshold-db { font-size: 13px; color: #aaa; min-width: 6ch; text-align: right; }
+#modal .field {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+#voice-meter {
+  position: relative;
+  height: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+#voice-meter-fill {
+  height: 100%;
+  width: 0;
+  background: #3b6ea8;
+  transition: width 60ms linear;
+}
+#voice-meter.above #voice-meter-fill { background: #4caf50; }
+#voice-meter-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #e0a030;
+}
+#voice-meter.no-threshold #voice-meter-mark { display: none; }

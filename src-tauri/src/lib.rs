@@ -107,6 +107,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(voice::hotkey::plugin(|app, input| {
+            log::info!("voice hotkey: {input:?}");
             if let Some(state) = app.try_state::<Arc<state::AppState>>() {
                 state.voice().send(input);
             }

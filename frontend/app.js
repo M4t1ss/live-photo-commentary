@@ -79,6 +79,27 @@ const cfgGreetingPrompt  = document.getElementById("cfg-greeting-prompt");
 const cfgFarewellPrompt  = document.getElementById("cfg-farewell-prompt");
 const cfgLonelyPrompt    = document.getElementById("cfg-lonely-prompt");
 
+// Voice tab (settings modal)
+const cfgVoiceActivation = document.getElementById("cfg-voice-activation");
+const cfgVoiceHotkey     = document.getElementById("cfg-voice-hotkey");
+const voiceHotkeyRecord  = document.getElementById("voice-hotkey-record");
+const voiceHotkeyClear   = document.getElementById("voice-hotkey-clear");
+const cfgVoiceEnd        = document.getElementById("cfg-voice-end");
+const cfgVoiceThreshold  = document.getElementById("cfg-voice-threshold");
+const cfgVoiceThresholdDb = document.getElementById("cfg-voice-threshold-db");
+const cfgVoiceBargeIn    = document.getElementById("cfg-voice-barge-in");
+const cfgVoiceDevice     = document.getElementById("cfg-voice-device");
+const cfgVoiceLanguage   = document.getElementById("cfg-voice-language");
+const cfgVoiceCapture    = document.getElementById("cfg-voice-capture");
+const cfgVoiceModel      = document.getElementById("cfg-voice-model");
+const cfgVoiceUseGpu     = document.getElementById("cfg-voice-use-gpu");
+const voiceAsrStatus     = document.getElementById("voice-asr-status");
+const voicePttSettings   = document.getElementById("voice-ptt-settings");
+const voiceThresholdSettings = document.getElementById("voice-threshold-settings");
+const voiceMeter         = document.getElementById("voice-meter");
+const voiceMeterFill     = document.getElementById("voice-meter-fill");
+const voiceMeterMark     = document.getElementById("voice-meter-mark");
+
 // Capture section (settings modal)
 const cfgMonitorSelect   = document.getElementById("cfg-monitor");
 const cfgClipX           = document.getElementById("cfg-clip-x");
@@ -376,7 +397,9 @@ function handleMessage(data) {
       firstChunkReceived = false;
       if (data.gen !== undefined) _currentAudioGen = data.gen;
       resetAudio();
-      setPhase("Describing…", "up");
+      _voiceTurnActive = false;
+      setPhase(_heardText ? `Answering “${_heardText}”` : "Describing…", "up");
+      _heardText = null;
       break;
     }
     case "chunk":
@@ -415,13 +438,7 @@ function handleMessage(data) {
       break;
 
     case "take_screenshot":
-      if (running) {
-        const delayMs = (currentConfig.pre_screenshot_delay ?? 2.0) * 1000;
-        setPhase("Screenshot in", "down", delayMs);
-        setTimeout(() => {
-          if (running) takeScreenshot();
-        }, delayMs);
-      }
+      if (running) scheduleScreenshot();
       break;
 
     case "skipped":
@@ -520,8 +537,49 @@ function handleMessage(data) {
     case "promptsets":
       promptsetNames = data.names ?? [];
       break;
+
+    // Voice input: the backend interrupts the avatar and runs the turn; this is what
+    // the page has to do about it.
+    case "voice_listening":
+      _voiceTurnActive = true;
+      _heardText = null;
+      cancelScreenshotTimer();
+      resetAudio();
+      // A system message that is playing or waiting is cut too; cancelSystemTts also
+      // swallows the next system chunks, so only when there is something to cut.
+      if (systemPlaying || systemAudioQueue.length > 0) window.cancelSystemTts?.();
+      setPhase("Listening…", "up");
+      break;
+
+    case "voice_capture":
+      if (running) takeScreenshot(data.turn);
+      break;
+
+    case "voice_transcribing":
+      setPhase("Transcribing…", "up");
+      break;
+
+    case "voice_transcript":
+      _heardText = data.text;
+      setPhase(`You said: “${data.text}”`, "none");
+      break;
+
+    case "voice_empty":
+      // Nothing was understood (or it failed): the avatar goes on as before.
+      _voiceTurnActive = false;
+      _heardText = null;
+      if (running) scheduleScreenshot();
+      break;
+
+    case "voice_level":
+      updateVoiceMeter(data.db);
+      break;
   }
 }
+
+// --- Voice input state
+let _voiceTurnActive = false;   // from voice_listening until its frame (or voice_empty, or Stop)
+let _heardText = null;          // what the user said, until the frame that answers it
 
 // --- Audio queue ---
 function resetAudio() {
@@ -597,11 +655,27 @@ function playNext() {
 function sendSpeechEnded() {
   ttsAllReceived = false;
   window.clearSubtitle?.();
+  scheduleScreenshot();
+}
+
+// The next screenshot of the normal cycle, after the configured delay. At most one
+// is pending; a voice turn cancels it, and does not let a new one start before it
+// has been answered.
+let _screenshotTimer = null;
+
+function scheduleScreenshot() {
+  clearTimeout(_screenshotTimer);
   const delayMs = (currentConfig.pre_screenshot_delay ?? 2.0) * 1000;
   setPhase("Screenshot in", "down", delayMs);
-  setTimeout(() => {
-    if (running) takeScreenshot();
+  _screenshotTimer = setTimeout(() => {
+    _screenshotTimer = null;
+    if (running && !_voiceTurnActive) takeScreenshot();
   }, delayMs);
+}
+
+function cancelScreenshotTimer() {
+  clearTimeout(_screenshotTimer);
+  _screenshotTimer = null;
 }
 
 function enqueueSystemChunk({ audio_url, phonemes, tags, text, words }) {
@@ -669,11 +743,14 @@ window.cancelSystemTts = function() {
   window.clearSubtitle?.();
 };
 
-async function takeScreenshot() {
+// `voiceTurn` is the number from a `voice_capture` event: the screenshot is that
+// voice turn's, not the normal cycle's.
+async function takeScreenshot(voiceTurn = null) {
   try {
     await invoke("take_screenshot", {
       monitorIdx: selectedMonitorIdx,
       clip: selectedClip,
+      voiceTurn,
     });
   } catch (e) {
     console.error("[screenshot] take_screenshot failed:", e);
@@ -690,6 +767,9 @@ function stopCycle() {
     _startCycleTimer = null;
   }
   _cycleStartPending = false;
+  cancelScreenshotTimer();
+  _voiceTurnActive = false;
+  _heardText = null;
   setRunning(false);
   resetAudio();
   window.clearSubtitle?.();
@@ -753,7 +833,10 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     document.getElementById("tab-llm").classList.toggle("hidden", btn.dataset.tab !== "llm");
     document.getElementById("tab-capture").classList.toggle("hidden", btn.dataset.tab !== "capture");
     document.getElementById("tab-ui").classList.toggle("hidden", btn.dataset.tab !== "ui");
+    document.getElementById("tab-voice").classList.toggle("hidden", btn.dataset.tab !== "voice");
     document.getElementById("tab-prompts").classList.toggle("hidden", btn.dataset.tab !== "prompts");
+    // The microphone is only open for the level meter while its tab is showing.
+    setVoiceMonitor(btn.dataset.tab === "voice");
   });
 });
 
@@ -762,12 +845,15 @@ function openModal() {
   document.getElementById("tab-llm").classList.remove("hidden");
   document.getElementById("tab-capture").classList.add("hidden");
   document.getElementById("tab-ui").classList.add("hidden");
+  document.getElementById("tab-voice").classList.add("hidden");
   document.getElementById("tab-prompts").classList.add("hidden");
   populateModal();
   modalOverlay.classList.remove("hidden");
 }
 
 function closeModal() {
+  setVoiceMonitor(false);
+  stopHotkeyRecording();
   modalOverlay.classList.add("hidden");
   // Drop any live previews (e.g. subtitle vertical position) back to saved state.
   window.applySubtitleAppearance?.();
@@ -798,6 +884,7 @@ function populateModal() {
   _updatePromptsetBtns();
   cfgAvatarModel.value = currentConfig.active_model ?? "default";
   cfgIdleToDance.value = currentConfig.idle_to_dance_secs ?? 180;
+  populateVoice();
   invoke("avatar_models")
     .then(names => { avatarModelNames = _toModelCandidates(names); })
     .catch(() => {});
@@ -1042,6 +1129,18 @@ modalOk.addEventListener("click", () => {
     difference_measure: diffMeasureSelect.value || "mse",
     max_history_size: parseInt(maxHistoryInput.value, 10) || 0,
   };
+  Object.assign(updates, {
+    voice_activation: cfgVoiceActivation.value,
+    voice_hotkey: cfgVoiceHotkey.value.trim() || null,
+    voice_input_end: cfgVoiceEnd.value,
+    voice_input_device: cfgVoiceDevice.value || null,
+    voice_language: cfgVoiceLanguage.value.trim() || "auto",
+    voice_capture_moment: cfgVoiceCapture.value,
+    voice_model: cfgVoiceModel.value || "base",
+    voice_use_gpu: cfgVoiceUseGpu.value,
+    voice_threshold_db: parseFloat(cfgVoiceThreshold.value),
+    voice_barge_in: cfgVoiceBargeIn.checked,
+  });
   if (geminiKeyInput.value) updates.gemini_api_key = geminiKeyInput.value;
   if (openaiKeyInput.value) updates.openai_api_key = openaiKeyInput.value;
   updates.openai_base_url = openaiBaseUrlInput.value.trim() || null;
@@ -1208,6 +1307,141 @@ promptsetDelete.addEventListener("click", () => {
     .then(r => handleMessage({ type: "promptset_loaded", ...r }))
     .catch(reportError);
 });
+
+// --- Voice tab ---
+
+// Which parts of the tab apply to the chosen way of starting a turn.
+function updateVoiceVisibility() {
+  const mode = cfgVoiceActivation.value;
+  voicePttSettings.classList.toggle("hidden", mode !== "push_to_talk");
+  voiceThresholdSettings.classList.toggle("hidden", mode !== "threshold");
+  voiceMeter.classList.toggle("no-threshold", mode !== "threshold");
+}
+
+function showVoiceThreshold() {
+  const db = parseFloat(cfgVoiceThreshold.value);
+  cfgVoiceThresholdDb.textContent = `${db} dB`;
+  voiceMeterMark.style.left = `${meterPercent(db)}%`;
+}
+
+// The meter runs from -80 dB (silence) to 0 dB (the loudest there is).
+function meterPercent(db) {
+  return Math.min(100, Math.max(0, ((db + 80) / 80) * 100));
+}
+
+function updateVoiceMeter(db) {
+  voiceMeterFill.style.width = `${meterPercent(db)}%`;
+  const threshold = parseFloat(cfgVoiceThreshold.value);
+  voiceMeter.classList.toggle("above", cfgVoiceActivation.value === "threshold" && db >= threshold);
+}
+
+// Asks the backend for the microphone's level (for the meter) or stops asking.
+let _voiceMonitor = false;
+function setVoiceMonitor(on) {
+  if (on === _voiceMonitor) return;
+  _voiceMonitor = on;
+  invoke("voice_monitor", { on }).catch(reportError);
+  if (!on) updateVoiceMeter(-120);
+}
+
+function populateVoice() {
+  cfgVoiceActivation.value = currentConfig.voice_activation ?? "off";
+  cfgVoiceHotkey.value = currentConfig.voice_hotkey ?? "";
+  cfgVoiceEnd.value = currentConfig.voice_input_end ?? "release";
+  cfgVoiceLanguage.value = currentConfig.voice_language ?? "auto";
+  cfgVoiceCapture.value = currentConfig.voice_capture_moment ?? "start";
+  cfgVoiceUseGpu.value = currentConfig.voice_use_gpu ?? "auto";
+  cfgVoiceThreshold.value = currentConfig.voice_threshold_db ?? -45;
+  cfgVoiceBargeIn.checked = !!currentConfig.voice_barge_in;
+  updateVoiceVisibility();
+  showVoiceThreshold();
+  updateVoiceMeter(-120);
+
+  const savedDevice = currentConfig.voice_input_device ?? "";
+  cfgVoiceDevice.innerHTML = '<option value="">System default</option>';
+  invoke("list_input_devices").then(devices => {
+    for (const d of devices) {
+      const option = document.createElement("option");
+      option.value = d.id;
+      option.textContent = d.name + (d.is_default ? " (default)" : "");
+      cfgVoiceDevice.appendChild(option);
+    }
+    if (savedDevice && !devices.some(d => d.id === savedDevice)) {
+      const option = document.createElement("option");
+      option.value = savedDevice;
+      option.textContent = `${savedDevice} (not connected)`;
+      cfgVoiceDevice.appendChild(option);
+    }
+    cfgVoiceDevice.value = savedDevice;
+  }).catch(() => {});
+
+  const savedModel = currentConfig.voice_model ?? "base";
+  invoke("asr_models").then(models => {
+    cfgVoiceModel.innerHTML = "";
+    for (const m of models) {
+      const option = document.createElement("option");
+      option.value = m.name;
+      option.textContent = m.label;
+      cfgVoiceModel.appendChild(option);
+    }
+    cfgVoiceModel.value = savedModel;
+  }).catch(() => {});
+
+  voiceAsrStatus.textContent = "";
+  invoke("asr_status").then(status => {
+    voiceAsrStatus.textContent = status
+      ? `Speech recognition runs on the ${status.device}: ${status.detail}.`
+      : (currentConfig.voice_activation ?? "off") === "off" ? "" : "Speech recognition is not loaded.";
+  }).catch(() => {});
+}
+
+cfgVoiceActivation.addEventListener("change", () => { updateVoiceVisibility(); updateVoiceMeter(-120); });
+cfgVoiceThreshold.addEventListener("input", showVoiceThreshold);
+
+// Hotkey: "Record" waits for the next key combination and writes it the way the
+// backend's shortcut parser reads it ("Ctrl+Shift+KeyV", "F9", "Alt+Space").
+let _hotkeyListener = null;
+const _MODIFIER_CODES = new Set(["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"]);
+
+function stopHotkeyRecording() {
+  if (!_hotkeyListener) return;
+  window.removeEventListener("keydown", _hotkeyListener, true);
+  _hotkeyListener = null;
+  voiceHotkeyRecord.textContent = "Record";
+}
+
+voiceHotkeyRecord.addEventListener("click", () => {
+  if (_hotkeyListener) { stopHotkeyRecording(); return; }
+  voiceHotkeyRecord.textContent = "Press the keys…";
+  _hotkeyListener = (e) => {
+    // Nothing else may react to these keys meanwhile (Escape would close the settings).
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (e.code === "Escape") { stopHotkeyRecording(); return; }
+    if (_MODIFIER_CODES.has(e.code)) return;   // wait for the key itself
+    const parts = [];
+    if (e.ctrlKey) parts.push("Ctrl");
+    if (e.altKey) parts.push("Alt");
+    if (e.shiftKey) parts.push("Shift");
+    if (e.metaKey) parts.push("Super");
+    parts.push(e.code);
+    cfgVoiceHotkey.value = parts.join("+");
+    stopHotkeyRecording();
+  };
+  window.addEventListener("keydown", _hotkeyListener, true);
+});
+
+voiceHotkeyClear.addEventListener("click", () => { stopHotkeyRecording(); cfgVoiceHotkey.value = ""; });
+
+// Tells the backend whether the avatar is speaking, so that voice input does not take
+// its voice for the user's. Polled, because audio starts and ends in many places.
+let _lastSpeaking = false;
+setInterval(() => {
+  const speaking = isPlaying || systemPlaying;
+  if (speaking === _lastSpeaking) return;
+  _lastSpeaking = speaking;
+  invoke("voice_set_speaking", { speaking }).catch(() => {});
+}, 100);
 
 // Fetch model config and init avatar. Guarded to run only once.
 let _avatarInitStarted = false;

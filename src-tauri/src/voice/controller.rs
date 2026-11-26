@@ -253,6 +253,11 @@ impl<E: Effects> Controller<E> {
 
     fn key_pressed(&mut self) {
         if !self.running || self.settings.activation != Activation::PushToTalk {
+            // Said in the log, because a key that does nothing looks like a broken one.
+            log::info!(
+                "voice hotkey ignored: {}",
+                if !self.running { "the commentary is not running" } else { "voice input is not set to push to talk" }
+            );
             return;
         }
         match self.state {

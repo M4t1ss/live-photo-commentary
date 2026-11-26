@@ -62,6 +62,7 @@
         <button class="tab-btn active" data-tab="llm">LLM</button>
         <button class="tab-btn" data-tab="capture">Capture</button>
         <button class="tab-btn" data-tab="ui">UI</button>
+        <button class="tab-btn" data-tab="voice">Voice</button>
         <button class="tab-btn" data-tab="prompts">Prompts</button>
       </div>
 
@@ -263,6 +264,116 @@
       </section>
 
       </div><!-- #tab-ui -->
+
+      <div id="tab-voice" class="hidden">
+      <section>
+        <h3>Voice input</h3>
+        <p class="hint">Talk to the avatar: it stops what it is doing, listens, and answers what you said about your screen. It works while the commentary is running.</p>
+        <label>Start talking with
+          <select id="cfg-voice-activation">
+            <option value="off">Off</option>
+            <option value="push_to_talk">A hotkey (push to talk)</option>
+            <option value="threshold">My voice (volume threshold)</option>
+          </select>
+        </label>
+        <div id="voice-ptt-settings">
+          <label>Hotkey
+            <div class="inline-row">
+              <input id="cfg-voice-hotkey" type="text" readonly placeholder="Press Record, then the keys" />
+              <button type="button" class="small-btn" id="voice-hotkey-record">Record</button>
+              <button type="button" class="small-btn" id="voice-hotkey-clear">Clear</button>
+            </div>
+          </label>
+          <label>The recording ends
+            <select id="cfg-voice-end">
+              <option value="release">When I release the key</option>
+              <option value="toggle">When I press it again</option>
+              <option value="silence">After I stop talking</option>
+            </select>
+          </label>
+        </div>
+        <div id="voice-threshold-settings">
+          <label>Volume threshold
+            <div class="inline-row">
+              <input type="range" id="cfg-voice-threshold" min="-80" max="-10" step="1" />
+              <span id="cfg-voice-threshold-db"></span>
+            </div>
+          </label>
+          <label>Let my voice interrupt the avatar while it speaks
+            <input type="checkbox" id="cfg-voice-barge-in" />
+          </label>
+          <p class="hint">Without this, listening pauses while the avatar speaks, so it cannot take its own voice for yours. Turn it on only with headphones.</p>
+        </div>
+        <div class="field">
+          <span>Microphone level</span>
+          <div id="voice-meter" title="What the microphone hears right now; the line is the threshold">
+            <div id="voice-meter-fill"></div>
+            <div id="voice-meter-mark"></div>
+          </div>
+        </div>
+        <label>Microphone
+          <select id="cfg-voice-device">
+            <option value="">System default</option>
+          </select>
+        </label>
+        <label>Language
+          <input id="cfg-voice-language" type="text" list="voice-language-list" placeholder="auto" autocomplete="off" spellcheck="false" />
+          <datalist id="voice-language-list">
+            <option value="auto"></option>
+            <option value="en"></option>
+            <option value="ja"></option>
+            <option value="de"></option>
+            <option value="fr"></option>
+            <option value="es"></option>
+            <option value="it"></option>
+            <option value="pt"></option>
+            <option value="nl"></option>
+            <option value="ru"></option>
+            <option value="uk"></option>
+            <option value="pl"></option>
+            <option value="tr"></option>
+            <option value="ar"></option>
+            <option value="hi"></option>
+            <option value="zh"></option>
+            <option value="ko"></option>
+            <option value="sv"></option>
+            <option value="cs"></option>
+            <option value="id"></option>
+            <option value="vi"></option>
+            <option value="th"></option>
+            <option value="he"></option>
+            <option value="el"></option>
+            <option value="fi"></option>
+            <option value="da"></option>
+            <option value="no"></option>
+            <option value="hu"></option>
+            <option value="ro"></option>
+          </datalist>
+        </label>
+        <label>The screenshot is taken
+          <select id="cfg-voice-capture">
+            <option value="start">When I start talking</option>
+            <option value="end">When I finish talking</option>
+          </select>
+        </label>
+      </section>
+
+      <section>
+        <h3>Speech recognition</h3>
+        <label>Model
+          <select id="cfg-voice-model"></select>
+        </label>
+        <label>Runs on
+          <select id="cfg-voice-use-gpu">
+            <option value="auto">Automatic (the GPU if there is room)</option>
+            <option value="cpu">The CPU</option>
+            <option value="gpu">The GPU</option>
+          </select>
+        </label>
+        <p class="hint" id="voice-asr-status"></p>
+        <p class="hint">A model is downloaded the first time voice input is switched on.</p>
+      </section>
+      </div><!-- #tab-voice -->
 
       <div id="tab-prompts" class="hidden">
         <section>
