@@ -2,7 +2,7 @@
   "bundle": {
     "linux": {
       "deb": {
-        "depends": ["libvulkan1"]
+        "depends": ["libvulkan1", "libasound2 | libasound2t64"]
       }
     },
     "resources": {

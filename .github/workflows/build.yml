@@ -5,7 +5,7 @@ name: Build
 
 on:
   push:
-    branches: [rustification, main]
+    branches: [rustification, whisper, main]
     tags: ["v*"]
   pull_request:
     branches: [rustification, main]
@@ -20,7 +20,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: windows-latest
+          # windows-2022 (Visual Studio 2022), not windows-latest: with the newer MSVC 14.52 of
+          # the Visual Studio 2026 image (November 2026), CUDA 13.2's cudafe++ crashes
+          # (ACCESS_VIOLATION) while CMake identifies the CUDA compiler.
+          - platform: windows-2022
             os: windows
           - platform: ubuntu-24.04
             os: linux
@@ -53,15 +56,15 @@ jobs:
         with:
           workspaces: ". -> target"
           cache-directories: ${{ runner.os == 'Windows' && 'C:\b' || '' }}
-          key: cuda
+          # (Windows: a different Visual Studio than before, whose CMake cache would not match.)
+          key: ${{ runner.os == 'Windows' && 'cuda-vs2022' || 'cuda' }}
           # The CUDA build takes over an hour: keep what was compiled when a later
           # step fails, so that the next run starts from there.
           cache-on-failure: true
 
       # The toolkit has to be 13.x: the archive ships cublas64_13 / libcublas.so.13.
-      # Windows: the runner's Visual Studio is 2026 (version 18), which CUDA
-      # supports from 13.2 on (13.0 and 13.1: Visual Studio 2022 and older, and
-      # CMake then fails with "No CUDA toolset found"). The full installer,
+      # Windows: Visual Studio 2022, which every 13.x supports (2026, version 18, only
+      # from 13.2 on: 13.0 and 13.1 fail in CMake with "No CUDA toolset found"). The full installer,
       # because the sub-package names of a partial install are guesswork (and
       # visual_studio_integration is needed to compile CUDA with MSVC).
       - name: Install CUDA Toolkit (Windows)
@@ -107,7 +110,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: windows-latest
+          # windows-2022 (Visual Studio 2022), not windows-latest: with the Visual Studio
+          # 2026 image, espeak-ng's compat headers fail to compile in MSVC (error C7780,
+          # `__has_include_next` is not defined). Same reason as the CUDA job above.
+          - platform: windows-2022
             cuda-os: windows
             features: dynamic-backends,vulkan
             gpu-backend: vulkan
@@ -140,6 +146,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libdbus-1-dev \
+            libasound2-dev \
             libpipewire-0.3-dev libgbm-dev libdrm-dev libegl-dev libwayland-dev libxcb1-dev libxrandr-dev \
             spirv-headers \
             patchelf \
@@ -189,7 +196,7 @@ jobs:
           # bad state (the first Windows run's half-configured llama.cpp), or when
           # llama.cpp's CMake options change by way of .cargo/config.toml, which
           # llama-cpp-sys-2 doesn't notice (it only tracks GGML_* variables).
-          key: ${{ runner.os == 'Windows' && 'windows-3' || 'v3' }}
+          key: ${{ runner.os == 'Windows' && 'windows-vs2022' || 'v3' }}
           # llama.cpp is slow to build, and failed runs are likely for a while.
           cache-on-failure: true
 
