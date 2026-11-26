@@ -45,7 +45,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake clang libclang-dev patchelf
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: Rust 1.100's new target/ layout breaks llama-cpp-sys-2 0.1.158's build script
+      # (see CLAUDE.md). Move it up when that crate is updated.
+      - uses: dtolnay/rust-toolchain@1.99.1
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -174,7 +176,7 @@ jobs:
         run: '"LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV'
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
