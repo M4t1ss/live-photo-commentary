@@ -15,9 +15,12 @@ use super::vad::{self, FRAME_MS};
 
 /// The sample rate whisper takes.
 pub const WHISPER_RATE: u32 = 16_000;
-/// How much audio from before the speech started is kept, so the first
-/// syllable isn't cut off.
-pub const PRE_ROLL_MS: usize = 500;
+/// How much audio from before the speech was detected is kept, so the first
+/// syllable isn't cut off. Detection comes after the speech has begun (see
+/// `vad::ONSET_WINDOW_MS`), and a soft opening word can take a second or more
+/// to add up to enough loud time (measured: "Testing" at -35 to -47 dB against
+/// a -45 dB threshold, detected 1.4 s late), so this is generous.
+pub const PRE_ROLL_MS: usize = 2000;
 /// The longest recording kept; older audio is dropped.
 pub const MAX_RECORDING_S: usize = 30;
 
@@ -88,6 +91,17 @@ pub fn resample_to_16k(samples: &[f32], rate: u32) -> Result<Vec<f32>, String> {
     Ok(output.take_data())
 }
 
+/// Writes a recording as a 16-bit mono WAV at `WHISPER_RATE`, for listening to what the
+/// voice input was given (see `VOICE_DUMP_DIR` in `live.rs`).
+pub fn write_wav_16k(path: &std::path::Path, samples: &[f32]) -> Result<(), String> {
+    let spec = hound::WavSpec { channels: 1, sample_rate: WHISPER_RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+    let mut writer = hound::WavWriter::create(path, spec).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    for sample in samples {
+        writer.write_sample((sample.clamp(-1.0, 1.0) * 32767.0) as i16).map_err(|e| e.to_string())?;
+    }
+    writer.finalize().map_err(|e| e.to_string())
+}
+
 /// What the microphone has delivered: measured in frames of `FRAME_MS`, and
 /// kept, either just the last `PRE_ROLL_MS` while waiting for speech, or
 /// everything since `start` while a recording is going.
@@ -148,8 +162,7 @@ impl Recorder {
     }
 
     /// How many samples have been kept (the pre-roll included).
-    #[cfg(test)]
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.samples.len()
     }
 
@@ -241,6 +254,19 @@ mod tests {
 
     fn zero_crossings(samples: &[f32]) -> usize {
         samples.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count()
+    }
+
+    #[test]
+    fn a_recording_written_as_wav_reads_back_the_same() {
+        let path = std::env::temp_dir().join(format!("lpc-wav-test-{}.wav", std::process::id()));
+        let samples = sine(16_000, 440.0, 0.25);
+        write_wav_16k(&path, &samples).unwrap();
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!((reader.spec().sample_rate, reader.spec().channels, reader.spec().bits_per_sample), (16_000, 1, 16));
+        let back: Vec<f32> = reader.samples::<i16>().map(|s| s.unwrap() as f32 / 32767.0).collect();
+        assert_eq!(back.len(), samples.len());
+        assert!(back.iter().zip(&samples).all(|(a, b)| (a - b).abs() < 1e-3));
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

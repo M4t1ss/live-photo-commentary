@@ -93,7 +93,10 @@ impl Effects for LiveEffects {
 
     fn start_recording(&mut self) {
         if let Some(mic) = &self.mic {
-            mic.recorder.lock().expect("recorder mutex should not be poisoned").start();
+            let mut recorder = mic.recorder.lock().expect("recorder mutex should not be poisoned");
+            // What was heard before the recording began (up to the pre-roll) comes along.
+            log::info!("recording starts with {:.0} ms of lead-in", recorder.len() as f64 / f64::from(mic.sample_rate) * 1000.0);
+            recorder.start();
         }
     }
 
@@ -101,7 +104,17 @@ impl Effects for LiveEffects {
         let mic = self.mic.as_ref().ok_or("The microphone is not open")?;
         let samples = mic.recorder.lock().expect("recorder mutex should not be poisoned").finish();
         log::info!("recorded {:.1}s", samples.len() as f64 / f64::from(mic.sample_rate));
-        audio::resample_to_16k(&samples, mic.sample_rate)
+        let samples = audio::resample_to_16k(&samples, mic.sample_rate)?;
+        // For finding out what the voice input was given: with VOICE_DUMP_DIR set to a folder,
+        // each recording is also written there as `turn-<number>.wav`.
+        if let Some(dir) = std::env::var_os("VOICE_DUMP_DIR") {
+            let path = std::path::Path::new(&dir).join(format!("turn-{}.wav", self.newest_turn.load(Ordering::SeqCst)));
+            match audio::write_wav_16k(&path, &samples) {
+                Ok(()) => log::info!("recording saved to {}", path.display()),
+                Err(e) => log::warn!("{e}"),
+            }
+        }
+        Ok(samples)
     }
 
     fn discard_recording(&mut self) {
